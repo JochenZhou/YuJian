@@ -19,9 +19,9 @@ enum class Theme(val storageId: String) {
     DEFAULT("default");
 
     companion object {
-        /** 从 Prefs 读取主题；首发无记录或值非法时默认优先采用「修仙玉简」主题。 */
+        /** 从 Prefs 读取主题；默认优先采用「修仙玉简」主题。 */
         fun current(context: android.content.Context): Theme {
-            val saved = Prefs.getThemeId(context) ?: return XIUXIAN
+            val saved = Prefs.getThemeId(context)
             return entries.firstOrNull { it.storageId == saved } ?: XIUXIAN
         }
 

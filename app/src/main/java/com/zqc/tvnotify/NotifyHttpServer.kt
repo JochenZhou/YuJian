@@ -98,13 +98,15 @@ class NotifyHttpServer(
         val ip = NetUtils.localIpv4()
         val isMuted = Prefs.isMuted(context)
         val defaultPos = Prefs.getBannerPosition(context)
+        val currentTheme = Theme.current(context)
         val html = WebConsoleHtml.render(
             token = tokenProvider(),
             version = versionName,
             ip = ip,
             port = advertisedPort,
             isMuted = isMuted,
-            defaultPosition = defaultPos
+            defaultPosition = defaultPos,
+            theme = currentTheme
         )
         val response = NanoHTTPD.newFixedLengthResponse(
             NanoHTTPD.Response.Status.OK,
@@ -128,7 +130,7 @@ class NotifyHttpServer(
     }
 
     // ------------------------------------------------------------------
-    // POST /{token}/config —— 调整免扰与默认方位
+    // POST /{token}/config —— 调整免扰、默认方位与主题
     // ------------------------------------------------------------------
 
     private fun handleConfig(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -148,15 +150,21 @@ class NotifyHttpServer(
                         Prefs.setBannerPosition(context, pos)
                     }
                 }
+                if (json.has("theme")) {
+                    val themeStr = json.getString("theme").trim().lowercase()
+                    val targetTheme = if (themeStr == "default" || themeStr == "tvos") Theme.DEFAULT else Theme.XIUXIAN
+                    Theme.save(context, targetTheme)
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "解析配置失败", e)
             }
         }
         val muted = Prefs.isMuted(context)
         val position = Prefs.getBannerPosition(context)
+        val currentTheme = Theme.current(context).storageId
         return jsonResponse(
             NanoHTTPD.Response.Status.OK,
-            "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\"}"
+            "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\",\"theme\":\"$currentTheme\"}"
         )
     }
 
@@ -394,8 +402,9 @@ class NotifyHttpServer(
         val banner = if (bannerVisibleProvider()) "showing" else "idle"
         val muted = Prefs.isMuted(context)
         val pos = Prefs.getBannerPosition(context)
+        val currentTheme = Theme.current(context).storageId
         return "{\"ok\":true,\"version\":\"$versionName\",\"uptime\":$uptime," +
-                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted,\"position\":\"$pos\"}"
+                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted,\"position\":\"$pos\",\"theme\":\"$currentTheme\"}"
     }
 
     // ------------------------------------------------------------------

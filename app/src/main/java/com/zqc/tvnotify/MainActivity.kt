@@ -159,6 +159,11 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        val latestTheme = Theme.current(this)
+        if (latestTheme != theme) {
+            theme = latestTheme
+            setContentView(buildRootView())
+        }
         refreshUi()
     }
 

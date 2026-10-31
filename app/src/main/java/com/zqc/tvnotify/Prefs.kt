@@ -64,9 +64,9 @@ object Prefs {
         }
     }
 
-    /** 读取已保存的主题 id；无记录返回 null，由调用方回落默认主题。 */
-    fun getThemeId(context: Context): String? =
-        prefs(context).getString(KEY_THEME, null)
+    /** 读取已保存的主题 id；默认优先采用修仙玉简主题。 */
+    fun getThemeId(context: Context): String =
+        prefs(context).getString(KEY_THEME, "xiuxian") ?: "xiuxian"
 
     /** 保存主题 id。UI 切换后立即生效，不需要重启服务。 */
     fun setThemeId(context: Context, id: String) {
