@@ -20,6 +20,7 @@ import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -39,9 +40,13 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.util.ArrayDeque
@@ -200,11 +205,17 @@ class BannerController(private val context: Context) {
     // 轻量级 FIFO 排队队列（上限 5 条）
     private val requestQueue = ArrayDeque<BannerRequest>()
 
-    // 原生 TTS 语音引擎
+    // 原生 TTS 与云端 MP3 兜底语音引擎（兼容小米电视 Android 6.0 等精简掉了中文 TTS 的固件）
     private var ttsEngine: TextToSpeech? = null
     private var ttsReady: Boolean = false
+    private var ttsNativeChineseSupported: Boolean = false
+    private var ttsInitDone: Boolean = false
     private var ttsInitInProgress: Boolean = false
     private var pendingTtsText: String? = null
+    private var pendingTtsRunnable: Runnable? = null
+    private var ttsInitTimeoutRunnable: Runnable? = null
+    private var ttsMediaPlayer: MediaPlayer? = null
+    private var ttsWorkerThread: Thread? = null
 
     fun isShowing(): Boolean = bannerView != null
 
@@ -333,6 +344,7 @@ class BannerController(private val context: Context) {
             return
         }
         requestQueue.clear()
+        stopActiveTts()
         removeBannerNow()
     }
 
@@ -341,6 +353,7 @@ class BannerController(private val context: Context) {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             val wasShowing = isShowing()
             requestQueue.clear()
+            stopActiveTts()
             dismissAnimated()
             return wasShowing
         }
@@ -350,6 +363,7 @@ class BannerController(private val context: Context) {
             try {
                 wasShowing.set(isShowing())
                 requestQueue.clear()
+                stopActiveTts()
                 dismissAnimated()
             } finally {
                 latch.countDown()
@@ -379,14 +393,31 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // 原生 TTS 语音播报（灵音传诵）
+    // 语音播报（灵音传诵）：系统原生 TTS + 云端 MP3 兜底（完美兼容小米电视 Android 6.0）
     // ------------------------------------------------------------------
 
     private fun speakTtsIfNeeded(request: BannerRequest) {
         val ttsVal = request.tts?.trim() ?: return
         if (ttsVal.isEmpty() || Prefs.isMuted(context)) return
 
-        val textToSpeak = if (ttsVal.equals("true", ignoreCase = true)) {
+        pendingTtsRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingTtsRunnable = null
+
+        // 若传入直接的 HTTP(S) 音频流 URL（例如 Home Assistant 合成好的 TTS 音频地址）
+        if (ttsVal.startsWith("http://", ignoreCase = true) || ttsVal.startsWith("https://", ignoreCase = true)) {
+            val delayMs = if (request.sound) 350L else 0L
+            val runnable = Runnable {
+                pendingTtsRunnable = null
+                if (!Prefs.isMuted(context)) {
+                    playCloudAudioFromUrls(listOf(ttsVal), "direct-url")
+                }
+            }
+            pendingTtsRunnable = runnable
+            if (delayMs > 0L) mainHandler.postDelayed(runnable, delayMs) else runnable.run()
+            return
+        }
+
+        val textToSpeak = if (ttsVal.equals("true", ignoreCase = true) || ttsVal == "1") {
             val title = request.title.trim()
             val body = request.text.trim()
             when {
@@ -400,8 +431,26 @@ class BannerController(private val context: Context) {
 
         if (textToSpeak.isBlank()) return
 
-        if (ttsReady && ttsEngine != null) {
-            speakInternal(textToSpeak)
+        // 当同时开启提示音时，延迟 350ms 播报语音，避免老电视（Android 6.0）音频混音器抢占吞字
+        val delayMs = if (request.sound) 350L else 0L
+        val runnable = Runnable {
+            pendingTtsRunnable = null
+            dispatchTtsText(textToSpeak)
+        }
+        pendingTtsRunnable = runnable
+        if (delayMs > 0L) mainHandler.postDelayed(runnable, delayMs) else runnable.run()
+    }
+
+    private fun dispatchTtsText(textToSpeak: String) {
+        if (Prefs.isMuted(context)) return
+        if (ttsInitDone) {
+            if (ttsReady && ttsNativeChineseSupported && ttsEngine != null) {
+                if (!speakWithSystemTts(textToSpeak)) {
+                    speakWithCloudTts(textToSpeak)
+                }
+            } else {
+                speakWithCloudTts(textToSpeak)
+            }
             return
         }
         pendingTtsText = textToSpeak
@@ -411,60 +460,298 @@ class BannerController(private val context: Context) {
     }
 
     private fun initTts() {
-        if (ttsEngine != null || ttsInitInProgress) return
+        if (ttsInitDone || ttsInitInProgress) return
         ttsInitInProgress = true
+
+        // 守护超时：部分精简版电视固件（如小米电视 Android 6.0）删除了 TTS 服务，bindService 可能不回调
+        val timeout = Runnable {
+            if (ttsInitInProgress) {
+                Log.w(TAG, "系统 TextToSpeech 初始化超时(1200ms)，自动切换为云端灵音引擎")
+                ttsInitInProgress = false
+                ttsInitDone = true
+                ttsReady = false
+                ttsNativeChineseSupported = false
+                pendingTtsText?.let {
+                    pendingTtsText = null
+                    speakWithCloudTts(it)
+                }
+            }
+        }
+        ttsInitTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, 1200L)
+
         try {
             ttsEngine = TextToSpeech(context.applicationContext) { status ->
                 mainHandler.post {
+                    ttsInitTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+                    ttsInitTimeoutRunnable = null
+                    if (!ttsInitInProgress && ttsInitDone) return@post
                     ttsInitInProgress = false
+                    ttsInitDone = true
+
+                    var chineseOk = false
                     if (status == TextToSpeech.SUCCESS) {
                         ttsEngine?.let { engine ->
                             try {
-                                val langResult = engine.setLanguage(Locale.CHINESE)
-                                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                                    engine.setLanguage(Locale.getDefault())
+                                val candidates = listOf(
+                                    Locale.SIMPLIFIED_CHINESE,
+                                    Locale.CHINESE,
+                                    Locale("zh", "CN")
+                                )
+                                for (loc in candidates) {
+                                    val res = engine.setLanguage(loc)
+                                    if (res >= TextToSpeech.LANG_AVAILABLE) {
+                                        chineseOk = true
+                                        break
+                                    }
                                 }
-                            } catch (_: Exception) {}
-                            ttsReady = true
-                            pendingTtsText?.let {
-                                pendingTtsText = null
-                                speakInternal(it)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "检测系统 TTS 中文语言包异常", e)
                             }
                         }
-                    } else {
-                        Log.w(TAG, "TextToSpeech 初始化失败 status=$status")
+                    }
+
+                    ttsReady = (status == TextToSpeech.SUCCESS)
+                    ttsNativeChineseSupported = chineseOk
+                    Log.i(TAG, "系统 TTS 初始化完成: status=$status, nativeChinese=$chineseOk")
+
+                    pendingTtsText?.let { text ->
                         pendingTtsText = null
+                        if (ttsReady && ttsNativeChineseSupported) {
+                            if (!speakWithSystemTts(text)) {
+                                speakWithCloudTts(text)
+                            }
+                        } else {
+                            speakWithCloudTts(text)
+                        }
                     }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
+            ttsInitTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+            ttsInitTimeoutRunnable = null
             ttsInitInProgress = false
-            pendingTtsText = null
-            Log.w(TAG, "初始化 TextToSpeech 发生异常", e)
+            ttsInitDone = true
+            ttsReady = false
+            ttsNativeChineseSupported = false
+            Log.w(TAG, "初始化系统 TextToSpeech 异常，启用云端语音兜底", e)
+            pendingTtsText?.let {
+                pendingTtsText = null
+                speakWithCloudTts(it)
+            }
         }
     }
 
-    private fun speakInternal(text: String) {
-        if (Prefs.isMuted(context)) return
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                ttsEngine?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tvnotify_tts")
+    private fun speakWithSystemTts(text: String): Boolean {
+        if (Prefs.isMuted(context)) return true
+        val engine = ttsEngine ?: return false
+        return try {
+            stopCloudTtsPlayer()
+            val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                val params = Bundle().apply {
+                    putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+                    putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                }
+                engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, "tvnotify_tts")
             } else {
                 @Suppress("DEPRECATION")
-                ttsEngine?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
+                engine.speak(text, TextToSpeech.QUEUE_FLUSH, null)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "TTS 播报执行异常", e)
+            if (result == TextToSpeech.ERROR) {
+                Log.w(TAG, "系统 TTS speak 返回 ERROR，回退云端语音")
+                ttsNativeChineseSupported = false
+                false
+            } else {
+                true
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "系统 TTS 播报异常，回退云端语音", e)
+            ttsNativeChineseSupported = false
+            false
         }
+    }
+
+    /**
+     * 云端 MP3 语音合成兜底：
+     * 针对小米电视 Android 6.0 等移除了中文 TTS 引擎的电视 ROM，自动拉取轻量 MP3 并通过 FileDescriptor 播放。
+     * 若网络不通或接口失效，静默放弃，绝对不影响横幅与系统的正常展示与运行。
+     */
+    private fun speakWithCloudTts(text: String) {
+        if (Prefs.isMuted(context)) return
+        val clean = text.trim().replace(Regex("\\s+"), " ").take(220)
+        if (clean.isEmpty()) return
+        val encoded = try {
+            URLEncoder.encode(clean, "UTF-8")
+        } catch (_: Exception) {
+            return
+        }
+        val urls = listOf(
+            "https://fanyi.baidu.com/gettts?lan=zh&text=$encoded&spd=5&source=web"
+        )
+        playCloudAudioFromUrls(urls, clean.take(24))
+    }
+
+    private fun playCloudAudioFromUrls(urls: List<String>, tagHint: String) {
+        ttsWorkerThread?.interrupt()
+        ttsWorkerThread = Thread({
+            var audioBytes: ByteArray? = null
+            for (url in urls) {
+                if (Thread.currentThread().isInterrupted) return@Thread
+                try {
+                    val bytes = downloadTtsAudioBytes(url)
+                    if (bytes != null && isValidAudioPayload(bytes)) {
+                        audioBytes = bytes
+                        break
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "云端 TTS 节点拉取失败 ($url): ${e.message}")
+                }
+            }
+            val validBytes = audioBytes
+            if (validBytes == null || Thread.currentThread().isInterrupted) {
+                Log.w(TAG, "所有云端 TTS 节点均未能获取有效音频: $tagHint")
+                return@Thread
+            }
+            try {
+                val cacheFile = File(context.cacheDir, "yujian_tts_voice.mp3")
+                FileOutputStream(cacheFile).use { fos ->
+                    fos.write(validBytes)
+                    fos.flush()
+                }
+                mainHandler.post {
+                    if (!Prefs.isMuted(context)) {
+                        playLocalTtsFile(cacheFile)
+                    }
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "写入或播放云端 TTS 缓存文件失败", e)
+            }
+        }, "yujian-cloud-tts").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun downloadTtsAudioBytes(urlStr: String): ByteArray? {
+        val conn = SafeNetworkHelper.openConnection(
+            urlStr = urlStr,
+            connectTimeoutMs = 3500,
+            readTimeoutMs = 5000,
+            userAgent = "Mozilla/5.0 (Linux; Android 6.0; MiTV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36",
+            acceptHeader = "audio/mpeg, audio/*, */*"
+        )
+        return try {
+            conn.connect()
+            if (conn.responseCode != 200) {
+                Log.w(TAG, "云端 TTS HTTP ${conn.responseCode}: $urlStr")
+                return null
+            }
+            val out = ByteArrayOutputStream()
+            conn.inputStream.use { input ->
+                val buf = ByteArray(8192)
+                val maxBytes = 2 * 1024 * 1024
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    if (out.size() + n > maxBytes) break
+                    out.write(buf, 0, n)
+                }
+            }
+            out.toByteArray()
+        } finally {
+            try { conn.disconnect() } catch (_: Exception) {}
+        }
+    }
+
+    /** 过滤掉部分接口报错时返回的 HTML (`<...`) 或 JSON (`{...`) 文本 */
+    private fun isValidAudioPayload(bytes: ByteArray): Boolean {
+        if (bytes.size < 256) return false
+        val b0 = bytes[0].toInt() and 0xFF
+        val b1 = bytes[1].toInt() and 0xFF
+        if (b0 == '<'.code || b0 == '{'.code) return false
+        // MP3 Sync Word (0xFF 0xE0..0xFF), ID3v2 ("ID3"), WAV ("RIFF"), OGG ("OggS")
+        return (b0 == 0xFF && (b1 and 0xE0) == 0xE0) ||
+                (b0 == 'I'.code && b1 == 'D'.code) ||
+                (b0 == 'R'.code && b1 == 'I'.code) ||
+                (b0 == 'O'.code && b1 == 'g'.code) ||
+                bytes.size > 1024
+    }
+
+    @Suppress("DEPRECATION")
+    private fun playLocalTtsFile(file: File) {
+        stopCloudTtsPlayer()
+        val player = MediaPlayer()
+        try {
+            player.setAudioStreamType(AudioManager.STREAM_MUSIC)
+            // 关键：Android 6.0 mediaserver 进程无权直接按路径打开应用私有 cacheDir，必须通过 FileDescriptor 传递句柄
+            FileInputStream(file).use { fis ->
+                player.setDataSource(fis.fd)
+            }
+            player.setVolume(1.0f, 1.0f)
+            player.setOnCompletionListener { mp ->
+                if (ttsMediaPlayer === mp) {
+                    ttsMediaPlayer = null
+                }
+                try { mp.release() } catch (_: Exception) {}
+            }
+            player.setOnErrorListener { mp, what, extra ->
+                Log.w(TAG, "云端 TTS MediaPlayer 播放错误: what=$what extra=$extra")
+                if (ttsMediaPlayer === mp) {
+                    ttsMediaPlayer = null
+                }
+                try { mp.release() } catch (_: Exception) {}
+                true
+            }
+            player.prepare()
+            player.start()
+            ttsMediaPlayer = player
+            Log.i(TAG, "云端 TTS 语音开始播放 (${file.length()} bytes)")
+        } catch (e: Throwable) {
+            Log.w(TAG, "播放本地 TTS 音频失败", e)
+            try { player.release() } catch (_: Exception) {}
+        }
+    }
+
+    private fun stopActiveTts() {
+        pendingTtsRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingTtsRunnable = null
+        ttsWorkerThread?.interrupt()
+        ttsWorkerThread = null
+        stopCloudTtsPlayer()
+        try {
+            ttsEngine?.stop()
+        } catch (_: Exception) {}
+    }
+
+    private fun stopCloudTtsPlayer() {
+        val player = ttsMediaPlayer ?: return
+        ttsMediaPlayer = null
+        try {
+            if (player.isPlaying) {
+                player.stop()
+            }
+        } catch (_: Exception) {}
+        try {
+            player.release()
+        } catch (_: Exception) {}
     }
 
     private fun releaseTts() {
+        pendingTtsRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingTtsRunnable = null
+        ttsInitTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        ttsInitTimeoutRunnable = null
+        ttsWorkerThread?.interrupt()
+        ttsWorkerThread = null
+        stopCloudTtsPlayer()
         try {
             ttsEngine?.stop()
             ttsEngine?.shutdown()
         } catch (_: Exception) {}
         ttsEngine = null
         ttsReady = false
+        ttsNativeChineseSupported = false
+        ttsInitDone = false
         ttsInitInProgress = false
         pendingTtsText = null
     }
@@ -482,7 +769,8 @@ class BannerController(private val context: Context) {
             mainHandler.postDelayed(hideRunnable, maxSeconds * 1000L)
             mainHandler.postDelayed(clearKeepScreenOnRunnable, KEEP_SCREEN_ON_WINDOW_MS)
         } else {
-            val seconds = request.durationSeconds.coerceIn(MIN_DURATION_SEC, MAX_DURATION_SEC)
+            val minForTts = if (!request.tts.isNullOrBlank()) 7 else MIN_DURATION_SEC
+            val seconds = request.durationSeconds.coerceAtLeast(minForTts).coerceIn(MIN_DURATION_SEC, MAX_DURATION_SEC)
             mainHandler.postDelayed(hideRunnable, seconds * 1000L)
         }
     }
