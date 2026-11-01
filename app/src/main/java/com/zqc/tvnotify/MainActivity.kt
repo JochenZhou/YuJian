@@ -126,6 +126,7 @@ class MainActivity : Activity() {
     private lateinit var copyButton: Button
     private lateinit var resetButton: Button
     private lateinit var aboutButton: Button
+    private lateinit var updateButton: Button
 
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
@@ -153,6 +154,13 @@ class MainActivity : Activity() {
         NotifyService.start(this)
         mainHandler.postDelayed({ if (!isFinishing) refreshUi() }, 600L)
         mainHandler.postDelayed({ if (!isFinishing) refreshUi() }, 1600L)
+
+        // 启动时后台静默检查更新，发现新版时提醒
+        AppUpdater.checkUpdate(this, manual = false) {
+            if (!isFinishing) {
+                updateButton.text = AppUpdater.getButtonText(this, theme)
+            }
+        }
 
         testButton.requestFocus()
     }
@@ -373,14 +381,16 @@ class MainActivity : Activity() {
         buttonRow2.addView(themeButton, weightedParams(3, gapDp = 8))
         leftColumn.addView(buttonRow2, linearParams(topMargin = dp(6)))
 
-        // (e) 操作按钮第三排：符钥与系统（复制 / 重置 / 溯源关于）
+        // (e) 操作按钮第三排：符钥与系统（复制 / 重置 / 溯源关于 / 破境更新）
         val buttonRow3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         copyButton = buildButton(theme.copyButtonText) { copyCallUrl() }
         resetButton = buildButton(theme.resetButtonText) { resetToken() }
         aboutButton = buildButton(theme.aboutButtonText) { showAboutDialog() }
+        updateButton = buildButton(AppUpdater.getButtonText(this, theme)) { checkUpdateManual() }
         buttonRow3.addView(copyButton, weightedParams(0, gapDp = 8))
         buttonRow3.addView(resetButton, weightedParams(1, gapDp = 8))
         buttonRow3.addView(aboutButton, weightedParams(2, gapDp = 8))
+        buttonRow3.addView(updateButton, weightedParams(3, gapDp = 8))
         leftColumn.addView(buttonRow3, linearParams(topMargin = dp(6)))
 
         // (f) 底部运维与 Aerial 保活说明箱
@@ -685,6 +695,7 @@ class MainActivity : Activity() {
 
         positionButton.text = theme.positionButtonText(Prefs.getBannerPosition(this))
         muteButton.text = theme.muteButtonText(Prefs.isMuted(this))
+        updateButton.text = AppUpdater.getButtonText(this, theme)
 
         refreshQrDisplay()
     }
@@ -965,6 +976,14 @@ class MainActivity : Activity() {
             .setMessage(message)
             .setPositiveButton(if (theme.isXianxia) "知道了" else "确定", null)
             .show()
+    }
+
+    private fun checkUpdateManual() {
+        AppUpdater.checkUpdate(this, manual = true) {
+            if (!isFinishing) {
+                updateButton.text = AppUpdater.getButtonText(this, theme)
+            }
+        }
     }
 
     private fun copyCallUrl() {

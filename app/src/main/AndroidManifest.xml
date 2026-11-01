@@ -26,6 +26,9 @@
     <!-- API 33+ 的前台服务通知需要运行时授权；未授权也不影响服务运行 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- 应用内版本升级：Android 8.0+ 安装更新包权限 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- TV 端必须两个都是 required=false，否则手机/无触摸设备会被商店过滤 -->
     <uses-feature
         android:name="android.software.leanback"
@@ -86,6 +89,13 @@
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
+
+        <!-- 应用内升级：原生零依赖 ContentProvider 为系统安装器提供安装包句柄 -->
+        <provider
+            android:name=".ApkFileProvider"
+            android:authorities="com.zqc.tvnotify.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

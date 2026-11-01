@@ -87,6 +87,20 @@ enum class Theme(val storageId: String) {
     val ttsTestButtonText: String get() = if (isXianxia) "灵音试诵" else "语音播报"
     val historyButtonText: String get() = if (isXianxia) "传音简录" else "通知历史"
     val aboutButtonText: String get() = if (isXianxia) "简牍溯源" else "关于"
+    val updateButtonText: String get() = if (isXianxia) "破境飞升" else "检查更新"
+    fun updateAvailableButtonText(version: String): String =
+        if (isXianxia) "⚡ 破境 $version" else "⚡ 升级 $version"
+    val checkingUpdateToast: String get() = if (isXianxia) "正在感应天机…" else "正在检查更新…"
+    fun alreadyLatestToast(version: String): String =
+        if (isXianxia) "当前已是最高境界（v$version）" else "当前已是最新版本（v$version）"
+    val updateCheckFailToast: String get() =
+        if (isXianxia) "天机晦涩，暂未感应到新简，请稍后重试" else "检查更新失败，请稍后重试"
+    fun updateDialogTitle(version: String): String =
+        if (isXianxia) "感应到飞升契机（$version）" else "发现新版本（$version）"
+    val updateDialogAction: String get() = if (isXianxia) "立即破境" else "立即升级"
+    val updateDialogCancel: String get() = if (isXianxia) "稍后再议" else "稍后再说"
+    val downloadingUpdateTitle: String get() = if (isXianxia) "正在凝练新简…" else "正在下载新版安装包…"
+    val downloadFailToast: String get() = if (isXianxia) "新简凝练受阻，请检查灵网" else "安装包下载失败，请检查网络"
 
     fun positionDisplayName(rawPosition: String): String = when (rawPosition.lowercase()) {
         "top" -> if (isXianxia) "顶部天幕" else "顶部居中"
