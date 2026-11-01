@@ -796,51 +796,52 @@ class BannerController(private val context: Context) {
             Log.d(TAG, "闭关免扰模式生效，静默不播放提示音")
             return
         }
-        val player = ensureMediaPlayer() ?: return
+        val resId = soundResId()
+        // 每次重新创建提示音实例播放，播放完成或错误立即释放；
+        // 彻底解决 Android 6.0 (小米电视等) 上长期持有一个 MediaPlayer 进行 pause/seekTo(0) 重放时
+        // 底层 AudioTrack / mediaserver 偶发挂死或状态机报错导致后续无提示音的顽疾
+        val player = try {
+            MediaPlayer.create(context, resId)
+        } catch (e: Exception) {
+            Log.w(TAG, "创建提示音 MediaPlayer 失败", e)
+            null
+        } ?: return
+
+        releaseMediaPlayer()
+        mediaPlayer = player
+        mediaPlayerResId = resId
+
         try {
-            if (player.isPlaying) {
-                player.pause()
+            player.setAudioStreamType(AudioManager.STREAM_MUSIC)
+            player.setOnCompletionListener { mp ->
+                if (mediaPlayer === mp) {
+                    mediaPlayer = null
+                    mediaPlayerResId = 0
+                }
+                try { mp.release() } catch (_: Exception) {}
             }
-            player.seekTo(0)
+            player.setOnErrorListener { mp, what, extra ->
+                Log.w(TAG, "提示音播放错误 what=$what extra=$extra")
+                if (mediaPlayer === mp) {
+                    mediaPlayer = null
+                    mediaPlayerResId = 0
+                }
+                try { mp.release() } catch (_: Exception) {}
+                true
+            }
             player.start()
         } catch (e: Exception) {
             Log.w(TAG, "提示音播放失败", e)
+            if (mediaPlayer === player) {
+                mediaPlayer = null
+                mediaPlayerResId = 0
+            }
+            try { player.release() } catch (_: Exception) {}
         }
     }
 
     private fun soundResId(): Int =
         if (Theme.current(context) == Theme.XIUXIAN) R.raw.chord_xiuxian else R.raw.chord
-
-    @Suppress("DEPRECATION")
-    private fun ensureMediaPlayer(): MediaPlayer? {
-        val resId = soundResId()
-        if (mediaPlayer != null && mediaPlayerResId != resId) {
-            releaseMediaPlayer()
-        }
-        mediaPlayer?.let { return it }
-        val created = try {
-            MediaPlayer.create(context, resId)
-        } catch (e: Exception) {
-            Log.w(TAG, "创建 MediaPlayer 失败", e)
-            null
-        }
-        if (created == null) {
-            Log.w(TAG, "提示音资源不可用：resId=$resId")
-            return null
-        }
-        try {
-            created.setAudioStreamType(AudioManager.STREAM_MUSIC)
-        } catch (e: Exception) {
-            Log.w(TAG, "设置音频流类型失败，沿用默认流", e)
-        }
-        created.setOnErrorListener { _, what, extra ->
-            Log.w(TAG, "提示音播放错误 what=$what extra=$extra")
-            true
-        }
-        mediaPlayer = created
-        mediaPlayerResId = resId
-        return created
-    }
 
     private fun releaseMediaPlayer() {
         val player = mediaPlayer ?: return
@@ -848,16 +849,12 @@ class BannerController(private val context: Context) {
         mediaPlayerResId = 0
         try {
             if (player.isPlaying) {
-                player.pause()
+                player.stop()
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "暂停提示音失败", e)
-        }
+        } catch (_: Exception) {}
         try {
             player.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "释放 MediaPlayer 失败", e)
-        }
+        } catch (_: Exception) {}
     }
 
     // ------------------------------------------------------------------

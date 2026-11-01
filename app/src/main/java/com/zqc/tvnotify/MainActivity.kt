@@ -877,7 +877,7 @@ class MainActivity : Activity() {
         controller.show(
             BannerRequest(
                 title = if (theme.isXianxia) "灵音传诵" else "语音播报",
-                text = if (theme.isXianxia) "千里传音，玉简已同步为您语音朗诵此条灵讯。" else "这是一条由 Android 原生引擎朗读的语音播报测试通知。",
+                text = if (theme.isXianxia) "千里传音，玉简已同步为您语音朗诵此条灵讯。" else "这是一条来自玉简的语音播报测试通知，正在为您朗读此条内容。",
                 durationSeconds = 8,
                 tts = "true"
             )
