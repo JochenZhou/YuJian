@@ -369,12 +369,16 @@ class MainActivity : Activity() {
         buttonRow1.addView(ttsTestButton, weightedParams(3, gapDp = 8))
         leftColumn.addView(buttonRow1, linearParams(topMargin = dp(8)))
 
-        // (d) 操作按钮第二排：阵法调控（简录回看 / 默认方位循环 / 闭关免扰 / 主题切换）
+        // (d) 操作按钮第二排：阵法调控（简录回看 / 默认方位循环 / 闭关免扰 / 8大主题选择）
         val buttonRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         historyButton = buildButton(theme.historyButtonText) { showHistoryDialog() }
         positionButton = buildButton(theme.positionButtonText(Prefs.getBannerPosition(this))) { cycleBannerPosition() }
         muteButton = buildButton(theme.muteButtonText(Prefs.isMuted(this))) { toggleMute() }
-        themeButton = buildButton(themeToggleLabel()) { toggleTheme() }
+        themeButton = buildButton(
+            label = themeToggleLabel(),
+            onClick = { showThemeSelectorDialog() },
+            onLongClick = { cycleTheme(); true }
+        )
         buttonRow2.addView(historyButton, weightedParams(0, gapDp = 8))
         buttonRow2.addView(positionButton, weightedParams(1, gapDp = 8))
         buttonRow2.addView(muteButton, weightedParams(2, gapDp = 8))
@@ -635,6 +639,11 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------
 
     private fun refreshUi() {
+        val latestTheme = Theme.current(this)
+        if (latestTheme != theme) {
+            theme = latestTheme
+            setContentView(buildRootView())
+        }
         val token = Prefs.getToken(this)
         val overlayGranted = Settings.canDrawOverlays(this)
         val running = NotifyService.isServerRunning
@@ -695,6 +704,7 @@ class MainActivity : Activity() {
 
         positionButton.text = theme.positionButtonText(Prefs.getBannerPosition(this))
         muteButton.text = theme.muteButtonText(Prefs.isMuted(this))
+        themeButton.text = themeToggleLabel()
         updateButton.text = AppUpdater.getButtonText(this, theme)
 
         refreshQrDisplay()
@@ -1015,17 +1025,42 @@ class MainActivity : Activity() {
         toast(theme.tokenResetToast(token))
     }
 
-    private fun themeToggleLabel(): String = when (theme) {
-        Theme.XIUXIAN -> "切换：tvOS"
-        Theme.DEFAULT -> "切换：修仙玉简"
+    private fun themeToggleLabel(): String = "${theme.emoji} 主题：${theme.shortName}"
+
+    private fun showThemeSelectorDialog() {
+        val allThemes = Theme.entries
+        val labels = allThemes.map { item ->
+            val prefix = if (item == theme) "✓ " else "   "
+            "$prefix${item.fullName}"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(if (theme.isXianxia) "选择法相主题（共 8 款 · 含专属提示音）" else "选择横幅与界面主题（共 8 款 · 含专属提示音）")
+            .setItems(labels) { _, which ->
+                val selected = allThemes[which]
+                applySelectedTheme(selected)
+            }
+            .setNegativeButton(if (theme.isXianxia) "收起" else "取消", null)
+            .show()
     }
 
-    private fun toggleTheme() {
-        theme = if (theme == Theme.XIUXIAN) Theme.DEFAULT else Theme.XIUXIAN
+    private fun cycleTheme() {
+        val allThemes = Theme.entries
+        val next = allThemes[(theme.ordinal + 1) % allThemes.size]
+        applySelectedTheme(next)
+    }
+
+    private fun applySelectedTheme(selected: Theme) {
+        theme = selected
         Theme.save(this, theme)
         setContentView(buildRootView())
         refreshUi()
-        testButton.requestFocus()
+        themeButton.requestFocus()
+        if (Settings.canDrawOverlays(this)) {
+            showTestBanner()
+        } else {
+            toast("已切换至：${theme.fullName}")
+        }
     }
 
     private fun openOverlaySettings() {

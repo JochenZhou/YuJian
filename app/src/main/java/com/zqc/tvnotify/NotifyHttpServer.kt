@@ -152,7 +152,7 @@ class NotifyHttpServer(
                 }
                 if (json.has("theme")) {
                     val themeStr = json.getString("theme").trim().lowercase()
-                    val targetTheme = if (themeStr == "default" || themeStr == "tvos") Theme.DEFAULT else Theme.XIUXIAN
+                    val targetTheme = Theme.fromRaw(themeStr) ?: Theme.XIUXIAN
                     Theme.save(context, targetTheme)
                 }
             } catch (e: Exception) {
@@ -330,6 +330,7 @@ class NotifyHttpServer(
         val imageIntervalMs = if (rawInterval in 1..10) rawInterval * 1000 else rawInterval
 
         val queue = payload.optBoolean("queue", false)
+        val reqTheme = Theme.fromRaw(payload.optString("theme", ""))
 
         // 记入传音简录（历史记录）
         val historyId = id ?: System.currentTimeMillis().toString()
@@ -365,7 +366,8 @@ class NotifyHttpServer(
                 position = position,
                 tts = ttsVal,
                 imageIntervalMs = imageIntervalMs,
-                queue = queue
+                queue = queue,
+                theme = reqTheme
             )
         )
         return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")

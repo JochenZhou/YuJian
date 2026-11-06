@@ -51,6 +51,90 @@ body[data-theme="default"] {
   --danger: #ff453a;
   --warn: #ffb020;
 }
+/* 大唐鎏金 */
+body[data-theme="palace"] {
+  --bg: #160a0b;
+  --card-bg: #241113;
+  --card-stroke: #4a281e;
+  --text: #fff3d6;
+  --text-muted: #c4a48c;
+  --accent: #e6b450;
+  --accent-glow: rgba(230, 180, 80, 0.25);
+  --btn-bg: #33181a;
+  --btn-stroke: #633928;
+  --danger: #ff4d40;
+  --warn: #ff9e2c;
+}
+/* 赛博霓虹 */
+body[data-theme="cyberpunk"] {
+  --bg: #0b0716;
+  --card-bg: #150e2a;
+  --card-stroke: #2e1e5a;
+  --text: #baf7ff;
+  --text-muted: #9e92c8;
+  --accent: #00f0ff;
+  --accent-glow: rgba(0, 240, 255, 0.25);
+  --btn-bg: #21153f;
+  --btn-stroke: #3c2773;
+  --danger: #ff0055;
+  --warn: #fcee09;
+}
+/* 黑神话·暗金 */
+body[data-theme="wukong"] {
+  --bg: #11100e;
+  --card-bg: #1b1916;
+  --card-stroke: #332d24;
+  --text: #ede3ce;
+  --text-muted: #a69e8e;
+  --accent: #c8a668;
+  --accent-glow: rgba(200, 166, 104, 0.25);
+  --btn-bg: #26231e;
+  --btn-stroke: #453c2f;
+  --danger: #df4638;
+  --warn: #e88e38;
+}
+/* 极客终端 */
+body[data-theme="matrix"] {
+  --bg: #040a06;
+  --card-bg: #08140c;
+  --card-stroke: #12381e;
+  --text: #4dff94;
+  --text-muted: #62b582;
+  --accent: #00ff66;
+  --accent-glow: rgba(0, 255, 102, 0.25);
+  --btn-bg: #0d2114;
+  --btn-stroke: #1b4f2b;
+  --danger: #ff3333;
+  --warn: #ccff00;
+}
+/* 江南宣纸 */
+body[data-theme="ink_light"] {
+  --bg: #1a1815;
+  --card-bg: #25221d;
+  --card-stroke: #3d372e;
+  --text: #f5f2e9;
+  --text-muted: #b5ada0;
+  --accent: #d95338;
+  --accent-glow: rgba(217, 83, 56, 0.25);
+  --btn-bg: #302c25;
+  --btn-stroke: #4a4338;
+  --danger: #ff453a;
+  --warn: #e69b28;
+}
+/* 主机奖杯 */
+body[data-theme="gamer"] {
+  --bg: #080e1c;
+  --card-bg: #101b35;
+  --card-stroke: #1f3463;
+  --text: #f5f8ff;
+  --text-muted: #8fa6cc;
+  --accent: #3d8bff;
+  --accent-glow: rgba(61, 139, 255, 0.25);
+  --btn-bg: #17264a;
+  --btn-stroke: #2b4682;
+  --danger: #ff5566;
+  --warn: #f5c84c;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
 body { background: var(--bg); color: var(--text); padding: 16px; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; transition: background 0.25s, color 0.25s; }
 .container { max-width: 680px; margin: 0 auto; }
@@ -108,10 +192,10 @@ button {
 <div class="container">
   <header>
     <div class="brand">
-      <div class="brand-icon" id="brand-icon">${if (theme == Theme.XIUXIAN) "📜" else "📺"}</div>
+      <div class="brand-icon" id="brand-icon">${theme.emoji}</div>
       <div>
-        <h1 id="brand-title">${if (theme == Theme.XIUXIAN) "玉简 · 传音控制台" else "玉简 · 通知控制台"}</h1>
-        <div class="sub" id="brand-sub">${if (theme == Theme.XIUXIAN) "灵讯横幅 · 电视大屏局域网传音" else "局域网通知横幅 · 电视大屏悬浮通知"}</div>
+        <h1 id="brand-title">${if (theme.isXianxia) "玉简 · 传音控制台" else "玉简 · 通知控制台"}</h1>
+        <div class="sub" id="brand-sub">${if (theme.isXianxia) "灵讯横幅 · 电视大屏局域网传音" else "局域网通知横幅 · 电视大屏悬浮通知"}</div>
       </div>
     </div>
     <span class="version-badge">v$version</span>
@@ -120,31 +204,31 @@ button {
   <div class="status-pill">
     <div class="status-dot"></div>
     <span id="pill-online">阵法在线 · $ip:$port</span>
-    <span id="pill-muted">· ${if (isMuted) (if (theme == Theme.XIUXIAN) "闭关免扰" else "静音模式") else (if (theme == Theme.XIUXIAN) "灵音畅通" else "提示声音")}</span>
+    <span id="pill-muted">· ${if (isMuted) (if (theme.isXianxia) "闭关免扰" else "静音模式") else (if (theme.isXianxia) "灵音畅通" else "提示声音")}</span>
     <span id="pill-pos">· 方位：$defaultPosition</span>
   </div>
 
   <!-- 发送通知卡片 -->
   <div class="card">
     <div class="card-title">
-      <span id="card-send-title">${if (theme == Theme.XIUXIAN) "🚀 传音入室" else "📢 发送通知"}</span>
+      <span id="card-send-title">${if (theme.isXianxia) "🚀 传音入室" else "📢 发送通知"}</span>
       <span style="font-size: 11.5px; color: var(--text-muted);">POST /{token}/notify</span>
     </div>
     <div class="form-group">
       <label id="label-title">主标题 (Title)</label>
-      <input type="text" id="title" value="${if (theme == Theme.XIUXIAN) "玉简传音" else "系统通知"}" placeholder="例如：门铃感应 / 洗衣机提醒">
+      <input type="text" id="title" value="${theme.testBannerTitle}" placeholder="例如：门铃感应 / 洗衣机提醒">
     </div>
     <div class="form-group">
       <label id="label-text">正文内容 (Text)</label>
-      <textarea id="text" placeholder="输入推送文案内容...">${if (theme == Theme.XIUXIAN) "山门感应到外部灵讯，此简已传音入室。" else "收到来自智能家居的测试通知横幅。"}</textarea>
+      <textarea id="text" placeholder="输入推送文案内容...">${theme.testBannerText}</textarea>
     </div>
     <div class="row">
       <div class="col form-group">
         <label id="label-level">分级着色 (Level)</label>
         <select id="level">
-          <option value="info" selected id="opt-info">${if (theme == Theme.XIUXIAN) "传音 (Info)" else "普通 (Info)"}</option>
-          <option value="warn" id="opt-warn">${if (theme == Theme.XIUXIAN) "灵警 (Warn)" else "警告 (Warn)"}</option>
-          <option value="error" id="opt-error">${if (theme == Theme.XIUXIAN) "告急 (Error)" else "紧急 (Error)"}</option>
+          <option value="info" selected id="opt-info">${if (theme.isXianxia) "传音 (Info)" else "普通 (Info)"}</option>
+          <option value="warn" id="opt-warn">${if (theme.isXianxia) "灵警 (Warn)" else "警告 (Warn)"}</option>
+          <option value="error" id="opt-error">${if (theme.isXianxia) "告急 (Error)" else "紧急 (Error)"}</option>
         </select>
       </div>
       <div class="col form-group">
@@ -163,6 +247,20 @@ button {
         <label>显示时长 (Duration)</label>
         <input type="number" id="duration" min="1" max="30" value="5">
       </div>
+    </div>
+    <div class="form-group">
+      <label>单次通知专属主题与音效 (Theme，可选覆盖)</label>
+      <select id="req-theme">
+        <option value="" selected>跟随电视全局主题（当前：${theme.emoji} ${theme.shortName}）</option>
+        <option value="xiuxian">🔮 修仙玉简（青羊脂玉 · 仙家玉磬音）</option>
+        <option value="default">🍎 tvOS 极简（暗黑毛玻璃 · 柔和三和弦）</option>
+        <option value="palace">🏮 大唐鎏金（朱漆赤金 · 宫廷青铜编钟）</option>
+        <option value="cyberpunk">⚡ 赛博霓虹（夜之城光效 · 科幻 HUD 脉冲音）</option>
+        <option value="wukong">🐵 黑神话·暗金（焦墨古铜 · 古刹金钵低鸣）</option>
+        <option value="matrix">💻 极客终端（黑客荧光绿 · CRT 终端蜂鸣音）</option>
+        <option value="ink_light">🍵 江南宣纸（雅白宣纸 · 空谷清竹水滴音）</option>
+        <option value="gamer">🏆 主机奖杯（白金流光 · 奖杯解锁升调琶音）</option>
+      </select>
     </div>
 
     <div class="checkbox-grid">
@@ -193,21 +291,21 @@ button {
     </div>
 
     <div class="btn-group">
-      <button class="btn-primary" id="btn-send" onclick="sendNotify()">${if (theme == Theme.XIUXIAN) "🚀 立即传音" else "🚀 立即发送"}</button>
-      <button class="btn-secondary" id="btn-dismiss" onclick="dismissBanner()">${if (theme == Theme.XIUXIAN) "🧹 消散当前横幅" else "🧹 关闭当前横幅"}</button>
+      <button class="btn-primary" id="btn-send" onclick="sendNotify()">${if (theme.isXianxia) "🚀 立即传音" else "🚀 立即发送"}</button>
+      <button class="btn-secondary" id="btn-dismiss" onclick="dismissBanner()">${if (theme.isXianxia) "🧹 消散当前横幅" else "🧹 关闭当前横幅"}</button>
     </div>
   </div>
 
   <!-- 电视控制与阵法设置 -->
   <div class="card">
     <div class="card-title">
-      <span id="card-control-title">${if (theme == Theme.XIUXIAN) "🎛️ 电视阵法调控" else "🎛️ 电视服务调控"}</span>
+      <span id="card-control-title">${if (theme.isXianxia) "🎛️ 电视阵法调控" else "🎛️ 电视服务调控"}</span>
       <span style="font-size: 11.5px; color: var(--text-muted);">实时下发配置</span>
     </div>
     <div class="row" style="align-items: center; margin-bottom: 10px;">
       <div class="col">
         <button id="btn-toggle-mute" class="btn-secondary" onclick="toggleMute()">
-          ${if (isMuted) (if (theme == Theme.XIUXIAN) "🔇 闭关免扰 (已开启静音)" else "🔇 静音模式 (已开启)") else (if (theme == Theme.XIUXIAN) "🔊 灵音畅通 (已开启声音)" else "🔊 提示音效 (已开启)")}
+          ${if (isMuted) (if (theme.isXianxia) "🔇 闭关免扰 (已开启静音)" else "🔇 静音模式 (已开启)") else (if (theme.isXianxia) "🔊 灵音畅通 (已开启声音)" else "🔊 提示音效 (已开启)")}
         </button>
       </div>
       <div class="col">
@@ -223,9 +321,16 @@ button {
     </div>
     <div class="row" style="align-items: center;">
       <div class="col">
-        <button id="btn-toggle-theme" class="btn-secondary" onclick="toggleTheme()">
-          ${if (theme == Theme.XIUXIAN) "🎋 主题：修仙玉简 (点此切换 tvOS)" else "📺 主题：tvOS 深色 (点此切换修仙玉简)"}
-        </button>
+        <select id="config-theme" onchange="changeGlobalTheme()">
+          <option value="xiuxian" ${if (theme == Theme.XIUXIAN) "selected" else ""}>全局默认主题：🔮 修仙玉简（仙家玉磬音）</option>
+          <option value="default" ${if (theme == Theme.DEFAULT) "selected" else ""}>全局默认主题：🍎 tvOS 极简（柔和三和弦）</option>
+          <option value="palace" ${if (theme == Theme.PALACE) "selected" else ""}>全局默认主题：🏮 大唐鎏金（宫廷青铜编钟）</option>
+          <option value="cyberpunk" ${if (theme == Theme.CYBERPUNK) "selected" else ""}>全局默认主题：⚡ 赛博霓虹（科幻 HUD 脉冲音）</option>
+          <option value="wukong" ${if (theme == Theme.WUKONG) "selected" else ""}>全局默认主题：🐵 黑神话·暗金（古刹金钵低鸣）</option>
+          <option value="matrix" ${if (theme == Theme.MATRIX) "selected" else ""}>全局默认主题：💻 极客终端（CRT 终端蜂鸣音）</option>
+          <option value="ink_light" ${if (theme == Theme.INK_LIGHT) "selected" else ""}>全局默认主题：🍵 江南宣纸（空谷清竹水滴音）</option>
+          <option value="gamer" ${if (theme == Theme.GAMER) "selected" else ""}>全局默认主题：🏆 主机奖杯（奖杯解锁升调琶音）</option>
+        </select>
       </div>
     </div>
   </div>
@@ -233,7 +338,7 @@ button {
   <!-- 传音简录 (历史记录) -->
   <div class="card">
     <div class="card-title">
-      <span id="card-history-title">${if (theme == Theme.XIUXIAN) "📜 传音简录 (最近 20 条)" else "📜 通知历史 (最近 20 条)"}</span>
+      <span id="card-history-title">${if (theme.isXianxia) "📜 传音简录 (最近 20 条)" else "📜 通知历史 (最近 20 条)"}</span>
       <button class="history-btn" onclick="fetchHistory()">🔄 刷新列表</button>
     </div>
     <div id="history-container">正在载入简录...</div>
@@ -265,6 +370,21 @@ let currentTheme = "${theme.storageId}";
 let currentMuted = $isMuted;
 let currentPosition = "$defaultPosition";
 
+const THEME_META = {
+  xiuxian: { emoji: "🔮", name: "修仙玉简", classical: true },
+  default: { emoji: "🍎", name: "tvOS 极简", classical: false },
+  palace: { emoji: "🏮", name: "大唐鎏金", classical: true },
+  cyberpunk: { emoji: "⚡", name: "赛博霓虹", classical: false },
+  wukong: { emoji: "🐵", name: "黑神话·暗金", classical: true },
+  matrix: { emoji: "💻", name: "极客终端", classical: false },
+  ink_light: { emoji: "🍵", name: "江南宣纸", classical: true },
+  gamer: { emoji: "🏆", name: "主机奖杯", classical: false }
+};
+
+function isClassicalTheme(key) {
+  return (THEME_META[key] && THEME_META[key].classical) || false;
+}
+
 function toast(msg) {
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -275,9 +395,10 @@ function toast(msg) {
 function applyTheme(themeKey) {
   currentTheme = themeKey;
   document.body.setAttribute("data-theme", themeKey);
-  const isX = themeKey === "xiuxian";
+  const meta = THEME_META[themeKey] || THEME_META.xiuxian;
+  const isX = meta.classical;
 
-  document.getElementById("brand-icon").textContent = isX ? "📜" : "📺";
+  document.getElementById("brand-icon").textContent = meta.emoji;
   document.getElementById("brand-title").textContent = isX ? "玉简 · 传音控制台" : "玉简 · 通知控制台";
   document.getElementById("brand-sub").textContent = isX ? "灵讯横幅 · 电视大屏局域网传音" : "局域网通知横幅 · 电视大屏悬浮通知";
   document.getElementById("card-send-title").textContent = isX ? "🚀 传音入室" : "📢 发送通知";
@@ -285,7 +406,11 @@ function applyTheme(themeKey) {
   document.getElementById("btn-dismiss").textContent = isX ? "🧹 消散当前横幅" : "🧹 关闭当前横幅";
   document.getElementById("card-control-title").textContent = isX ? "🎛️ 电视阵法调控" : "🎛️ 电视服务调控";
   document.getElementById("card-history-title").textContent = isX ? "📜 传音简录 (最近 20 条)" : "📜 通知历史 (最近 20 条)";
-  document.getElementById("btn-toggle-theme").textContent = isX ? "🎋 主题：修仙玉简 (点此切换 tvOS)" : "📺 主题：tvOS 深色 (点此切换修仙玉简)";
+  document.getElementById("config-theme").value = themeKey;
+  const reqThemeDefaultOpt = document.querySelector('#req-theme option[value=""]');
+  if (reqThemeDefaultOpt) {
+    reqThemeDefaultOpt.textContent = "跟随电视全局主题（当前：" + meta.emoji + " " + meta.name + "）";
+  }
 
   document.getElementById("opt-info").textContent = isX ? "传音 (Info)" : "普通 (Info)";
   document.getElementById("opt-warn").textContent = isX ? "灵警 (Warn)" : "警告 (Warn)";
@@ -296,14 +421,14 @@ function applyTheme(themeKey) {
 }
 
 function updateStatusPill() {
-  const isX = currentTheme === "xiuxian";
+  const isX = isClassicalTheme(currentTheme);
   document.getElementById("pill-online").textContent = (isX ? "阵法在线 · " : "服务在线 · ") + IP_PORT;
   document.getElementById("pill-muted").textContent = "· " + (currentMuted ? (isX ? "闭关免扰" : "静音模式") : (isX ? "灵音畅通" : "提示声音"));
   document.getElementById("pill-pos").textContent = "· " + (isX ? "方位：" : "位置：") + currentPosition;
 }
 
 function updateMuteButton() {
-  const isX = currentTheme === "xiuxian";
+  const isX = isClassicalTheme(currentTheme);
   document.getElementById("btn-toggle-mute").textContent = currentMuted 
     ? (isX ? "🔇 闭关免扰 (已开启静音)" : "🔇 静音模式 (已开启)") 
     : (isX ? "🔊 灵音畅通 (已开启声音)" : "🔊 提示音效 (已开启)");
@@ -325,6 +450,8 @@ function buildPayload() {
   };
   const pos = document.getElementById("position").value;
   if (pos) p.position = pos;
+  const reqTheme = document.getElementById("req-theme").value;
+  if (reqTheme) p.theme = reqTheme;
   if (document.getElementById("tts").checked) p.tts = true;
   if (document.getElementById("queue").checked) p.queue = true;
 
@@ -409,8 +536,8 @@ async function toggleMute() {
   }
 }
 
-async function toggleTheme() {
-  const targetTheme = currentTheme === "xiuxian" ? "default" : "xiuxian";
+async function changeGlobalTheme() {
+  const targetTheme = document.getElementById("config-theme").value;
   try {
     const res = await fetch(CONFIG_URL, {
       method: "POST",
@@ -419,8 +546,10 @@ async function toggleTheme() {
     });
     const data = await res.json();
     if (data.ok) {
-      applyTheme(data.theme || targetTheme);
-      toast("主题已切换为：" + (currentTheme === "xiuxian" ? "修仙玉简" : "tvOS 现代深色"));
+      const actual = data.theme || targetTheme;
+      applyTheme(actual);
+      const meta = THEME_META[actual] || THEME_META.xiuxian;
+      toast("全局主题已切换为：" + meta.emoji + " " + meta.name);
       fetchHistory();
     }
   } catch (e) {
@@ -449,7 +578,7 @@ async function changeDefaultPosition() {
 
 async function fetchHistory() {
   const cont = document.getElementById("history-container");
-  const isX = currentTheme === "xiuxian";
+  const isX = isClassicalTheme(currentTheme);
   try {
     const res = await fetch(HISTORY_URL);
     const list = await res.json();

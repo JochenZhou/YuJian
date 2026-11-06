@@ -123,7 +123,9 @@ data class BannerRequest(
     /** 静态快照定时刷新间隔（毫秒），大于 0 时自动启动低开销准视频流模式 */
     val imageIntervalMs: Int = 0,
     /** 是否开启排队展示：true 时若当前已有横幅在展示，则进入队列顺延播放，不抢占顶替 */
-    val queue: Boolean = false
+    val queue: Boolean = false,
+    /** 可选单次通知主题覆盖：非空时本次横幅配色、图标与提示音均按该主题呈现 */
+    val theme: Theme? = null
 ) {
     val hasMedia: Boolean
         get() = assetFrames || !videoUrl.isNullOrBlank() || !imageUrl.isNullOrBlank() ||
@@ -252,10 +254,11 @@ class BannerController(private val context: Context) {
         removeBannerNow()
 
         val targetPosition = request.position ?: BannerPosition.fromRaw(Prefs.getBannerPosition(context))
+        val targetTheme = request.theme ?: Theme.current(context)
         currentPosition = targetPosition
         currentRequestId = request.id
 
-        val view = buildBannerView(request, targetPosition)
+        val view = buildBannerView(request, targetPosition, targetTheme)
         val params = buildLayoutParams(targetPosition, request.hasMedia)
 
         view.alpha = 0f
@@ -272,7 +275,7 @@ class BannerController(private val context: Context) {
         activeMediaSession?.start()
 
         if (request.sound) {
-            playSound()
+            playSound(targetTheme)
         }
         speakTtsIfNeeded(request)
 
@@ -302,11 +305,11 @@ class BannerController(private val context: Context) {
      * 同 ID 原地平滑更新（无重入动画，不重置悬浮窗）
      */
     private fun updateBannerInPlace(request: BannerRequest) {
-        val theme = Theme.current(context)
+        val theme = request.theme ?: Theme.current(context)
         val trimmedTitle = request.title.trim()
         val trimmedText = request.text.trim()
 
-        currentTitleView?.text = if (trimmedTitle.isNotEmpty()) trimmedTitle else if (theme == Theme.XIUXIAN) "传音灵讯" else "系统通知"
+        currentTitleView?.text = if (trimmedTitle.isNotEmpty()) trimmedTitle else theme.defaultBannerTitle
         currentBodyView?.let { body ->
             if (trimmedText.isNotEmpty()) {
                 body.text = trimmedText
@@ -331,7 +334,7 @@ class BannerController(private val context: Context) {
         currentContainerView?.background = buildBannerBackground(theme, request.level)
 
         if (request.sound) {
-            playSound()
+            playSound(theme)
         }
         speakTtsIfNeeded(request)
         scheduleAutoHide(request)
@@ -788,28 +791,22 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // 提示音
+    // 提示音（内置 R.raw 与 6 款主题 PCM/WAV 声学合成器）
     // ------------------------------------------------------------------
 
-    private fun playSound() {
+    private fun playSound(theme: Theme = Theme.current(context)) {
         if (Prefs.isMuted(context)) {
             Log.d(TAG, "闭关免扰模式生效，静默不播放提示音")
             return
         }
-        val resId = soundResId()
+
         // 每次重新创建提示音实例播放，播放完成或错误立即释放；
         // 彻底解决 Android 6.0 (小米电视等) 上长期持有一个 MediaPlayer 进行 pause/seekTo(0) 重放时
         // 底层 AudioTrack / mediaserver 偶发挂死或状态机报错导致后续无提示音的顽疾
-        val player = try {
-            MediaPlayer.create(context, resId)
-        } catch (e: Exception) {
-            Log.w(TAG, "创建提示音 MediaPlayer 失败", e)
-            null
-        } ?: return
+        val player = createThemeMediaPlayer(theme) ?: return
 
         releaseMediaPlayer()
         mediaPlayer = player
-        mediaPlayerResId = resId
 
         try {
             player.setAudioStreamType(AudioManager.STREAM_MUSIC)
@@ -840,8 +837,32 @@ class BannerController(private val context: Context) {
         }
     }
 
-    private fun soundResId(): Int =
-        if (Theme.current(context) == Theme.XIUXIAN) R.raw.chord_xiuxian else R.raw.chord
+    private fun createThemeMediaPlayer(theme: Theme): MediaPlayer? {
+        if (theme != Theme.XIUXIAN && theme != Theme.DEFAULT) {
+            val wavFile = ThemeSoundSynth.getOrGenerateWav(context, theme)
+            if (wavFile != null && wavFile.exists()) {
+                val synthPlayer = MediaPlayer()
+                try {
+                    synthPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC)
+                    FileInputStream(wavFile).use { fis ->
+                        synthPlayer.setDataSource(fis.fd)
+                    }
+                    synthPlayer.prepare()
+                    return synthPlayer
+                } catch (e: Exception) {
+                    Log.w(TAG, "加载合成主题音效失败 (${theme.storageId})，回退至内置音效", e)
+                    try { synthPlayer.release() } catch (_: Exception) {}
+                }
+            }
+        }
+        val resId = if (theme.isXianxia) R.raw.chord_xiuxian else R.raw.chord
+        return try {
+            MediaPlayer.create(context, resId)
+        } catch (e: Exception) {
+            Log.w(TAG, "创建提示音 MediaPlayer 失败", e)
+            null
+        }
+    }
 
     private fun releaseMediaPlayer() {
         val player = mediaPlayer ?: return
@@ -964,28 +985,27 @@ class BannerController(private val context: Context) {
     // 视图构建
     // ------------------------------------------------------------------
 
-    private fun buildBannerView(request: BannerRequest, position: BannerPosition): View {
+    private fun buildBannerView(request: BannerRequest, position: BannerPosition, theme: Theme): View {
         val trimmedTitle = request.title.trim()
         val trimmedText = request.text.trim()
-        val theme = Theme.current(context)
 
         val container = LinearLayout(context)
         currentContainerView = container
         container.orientation = LinearLayout.HORIZONTAL
         container.gravity = Gravity.CENTER_VERTICAL
-        if (theme == Theme.XIUXIAN) {
+        if (theme != Theme.DEFAULT) {
             container.setPadding(dp(22f), dp(16f), dp(22f), dp(17f))
         } else {
             container.setPadding(dp(18f), dp(13f), dp(18f), dp(14f))
         }
         container.background = buildBannerBackground(theme, request.level)
 
-        // 玉简法宝图标
-        val iconSize = dp(if (theme == Theme.XIUXIAN) 36f else 30f)
+        // 8 大主题专属法宝/徽章自绘图标
+        val iconSize = dp(if (theme != Theme.DEFAULT) 36f else 30f)
         val iconParams = LinearLayout.LayoutParams(iconSize, iconSize)
         iconParams.gravity = Gravity.CENTER_VERTICAL
         iconParams.setMargins(0, 0, dp(14f), 0)
-        val icon = JadeSlipIconView(context, theme.bannerIconColor(request.level))
+        val icon = ThemeIconView(context, theme, theme.bannerIconColor(request.level))
         currentIconView = icon
         container.addView(icon, iconParams)
 
@@ -998,18 +1018,20 @@ class BannerController(private val context: Context) {
         headerRow.gravity = Gravity.CENTER_VERTICAL
 
         val badgeColor = theme.bannerIconColor(request.level)
+        val badgeFillAlpha = if (theme.isLightBanner) 0x22 else 0x2A
+        val badgeStrokeAlpha = if (theme.isLightBanner) 0x88 else 0x66
         val badgeView = TextView(context).apply {
             text = theme.levelBadgeText(request.level)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(badgeColor)
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = theme.bannerTitleTypeface
             setPadding(dp(6f), dp(1f), dp(6f), dp(1f))
             includeFontPadding = false
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(6f).toFloat()
-                setColor(Color.argb(0x2A, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
-                setStroke(dp(1f), Color.argb(0x66, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
+                cornerRadius = dp(if (theme == Theme.CYBERPUNK || theme == Theme.MATRIX) 3f else 6f).toFloat()
+                setColor(Color.argb(badgeFillAlpha, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
+                setStroke(dp(1f), Color.argb(badgeStrokeAlpha, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
             }
         }
         currentBadgeView = badgeView
@@ -1021,7 +1043,7 @@ class BannerController(private val context: Context) {
         }
         headerRow.addView(badgeView, badgeParams)
 
-        val finalTitle = if (trimmedTitle.isNotEmpty()) trimmedTitle else if (theme == Theme.XIUXIAN) "传音灵讯" else "系统通知"
+        val finalTitle = if (trimmedTitle.isNotEmpty()) trimmedTitle else theme.defaultBannerTitle
         val titleView = buildTitleView(finalTitle, theme, request.level, position.isPip)
         currentTitleView = titleView
         val titleParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -1056,8 +1078,9 @@ class BannerController(private val context: Context) {
             intArrayOf(theme.bannerBackgroundStart, theme.bannerBackgroundEnd)
         )
         drawable.shape = GradientDrawable.RECTANGLE
-        drawable.cornerRadius = dp(if (theme == Theme.XIUXIAN) 20f else 15f).toFloat()
-        drawable.setStroke(dp(if (theme == Theme.XIUXIAN) 1.8f else 1.3f), theme.bannerStrokeColor(level))
+        drawable.cornerRadius = dp(theme.bannerCornerRadiusDp).toFloat()
+        val strokeWidth = if (theme != Theme.DEFAULT) 1.8f else 1.3f
+        drawable.setStroke(dp(strokeWidth), theme.bannerStrokeColor(level))
         return drawable
     }
 
@@ -1066,16 +1089,12 @@ class BannerController(private val context: Context) {
         view.text = title
         view.setTextColor(theme.bannerTitle)
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isPip) 16f else 18f)
-        view.typeface = if (theme.bannerTitleSerif) {
-            Typeface.SERIF
-        } else {
-            Typeface.DEFAULT_BOLD
-        }
-        if (theme == Theme.XIUXIAN) {
+        view.typeface = theme.bannerTitleTypeface
+        if (!theme.isLightBanner && theme != Theme.DEFAULT) {
             val glowColor = theme.bannerIconColor(level)
             view.setShadowLayer(
                 8f, 0f, 1f,
-                Color.argb(0x80, Color.red(glowColor), Color.green(glowColor), Color.blue(glowColor))
+                Color.argb(0x70, Color.red(glowColor), Color.green(glowColor), Color.blue(glowColor))
             )
         }
         view.isSingleLine = true
@@ -1088,9 +1107,7 @@ class BannerController(private val context: Context) {
         val view = TextView(context)
         view.text = text
         view.setTextColor(theme.bannerBodyText)
-        if (theme == Theme.XIUXIAN) {
-            view.typeface = Typeface.SERIF
-        }
+        view.typeface = theme.bannerBodyTypeface
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isPip) 13.5f else 15f)
         view.maxLines = if (isPip) 3 else 4
         view.ellipsize = TextUtils.TruncateAt.END
@@ -1173,14 +1190,14 @@ class BannerController(private val context: Context) {
         val mediaWidth = minOf(dp(if (isPip) 160f else 220f), (bannerWidthPx * 0.36f).toInt()).coerceAtLeast(dp(88f))
         val mediaHeight = (mediaWidth * 9 / 16).coerceAtLeast(dp(50f))
 
-        val mediaCornerRadius = dp(if (theme == Theme.XIUXIAN) 13f else 10f).toFloat()
+        val mediaCornerRadius = dp(if (theme.isXianxia) 13f else 10f).toFloat()
 
         val frame = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(mediaWidth, mediaHeight).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 setMargins(dp(14f), 0, 0, 0)
             }
-            val strokeColor = if (theme == Theme.XIUXIAN) {
+            val strokeColor = if (theme != Theme.DEFAULT) {
                 theme.bannerStrokeColor(request.level)
             } else {
                 Color.argb(0x55, 0xFF, 0xFF, 0xFF)
@@ -1188,7 +1205,7 @@ class BannerController(private val context: Context) {
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 this.cornerRadius = mediaCornerRadius
-                setColor(if (theme == Theme.XIUXIAN) Color.argb(0xA0, 0x09, 0x16, 0x1A) else Color.argb(0xA0, 0x15, 0x16, 0x1A))
+                setColor(if (theme.isXianxia) Color.argb(0xA0, 0x09, 0x16, 0x1A) else Color.argb(0xA0, 0x15, 0x16, 0x1A))
                 setStroke(dp(1.2f), strokeColor)
             }
         }
@@ -1202,7 +1219,7 @@ class BannerController(private val context: Context) {
         }
         val status = MediaStatus()
         val placeholder = TextView(context).apply {
-            text = if (theme == Theme.XIUXIAN) "灵图凝聚中…" else "正在载入…"
+            text = if (theme.isXianxia) "灵图凝聚中…" else "正在载入…"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(Color.argb(0xCC, 0xFF, 0xFF, 0xFF))
             gravity = Gravity.CENTER
@@ -1222,7 +1239,7 @@ class BannerController(private val context: Context) {
             placeholder.text = text
             placeholder.visibility = View.VISIBLE
         }
-        val prefix = if (theme == Theme.XIUXIAN) "灵图未显：" else "未加载："
+        val prefix = if (theme.isXianxia) "灵图未显：" else "未加载："
         val markFailed = Runnable { showStatus(prefix + status.step) }
 
         val watchdog = Runnable {
@@ -1233,7 +1250,7 @@ class BannerController(private val context: Context) {
         val isLiveStream = !request.videoUrl.isNullOrBlank() || (request.imageIntervalMs > 0 && !request.imageUrl.isNullOrBlank())
         if (isLiveStream) {
             val liveBadge = TextView(context).apply {
-                text = if (theme == Theme.XIUXIAN) "灵镜" else "LIVE"
+                text = if (theme.isXianxia) "灵镜" else "LIVE"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
                 setTextColor(Color.WHITE)
                 typeface = Typeface.DEFAULT_BOLD
@@ -1242,7 +1259,7 @@ class BannerController(private val context: Context) {
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
                     cornerRadius = dp(4f).toFloat()
-                    setColor(if (theme == Theme.XIUXIAN) Color.argb(0xC0, 0x13, 0x56, 0x47) else Color.argb(0xD0, 0xD9, 0x38, 0x3A))
+                    setColor(if (theme.isXianxia) Color.argb(0xC0, 0x13, 0x56, 0x47) else Color.argb(0xD0, 0xD9, 0x38, 0x3A))
                 }
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -1813,27 +1830,24 @@ class BannerController(private val context: Context) {
     ).toInt()
 
     // ------------------------------------------------------------------
-    // 自绘图标组件
+    // 8 大主题专属自绘矢量图标组件
     // ------------------------------------------------------------------
 
-    private class JadeSlipIconView(context: Context, private val levelColor: Int) : View(context) {
+    private class ThemeIconView(
+        context: Context,
+        private val theme: Theme,
+        private val levelColor: Int
+    ) : View(context) {
 
-        private val jadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
-        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = 2f
-            color = Color.argb(0x99, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
-        }
-        private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
         }
-        private val notchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-            color = Color.argb(0xDD, 0x0A, 0x18, 0x1B)
-        }
+        private val path = Path()
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
@@ -1841,22 +1855,34 @@ class BannerController(private val context: Context) {
             val h = height.toFloat()
             if (w <= 0f || h <= 0f) return
 
+            when (theme) {
+                Theme.XIUXIAN, Theme.DEFAULT -> drawJadeSlip(canvas, w, h)
+                Theme.PALACE -> drawPalaceScroll(canvas, w, h)
+                Theme.CYBERPUNK -> drawCyberHex(canvas, w, h)
+                Theme.WUKONG -> drawGoldenHoop(canvas, w, h)
+                Theme.MATRIX -> drawMatrixTerminal(canvas, w, h)
+                Theme.INK_LIGHT -> drawInkSeal(canvas, w, h)
+                Theme.GAMER -> drawGamerTrophy(canvas, w, h)
+            }
+        }
+
+        /** 1. 修仙玉简 / tvOS：灵玉简牍 + 双重灵波纹 */
+        private fun drawJadeSlip(canvas: Canvas, w: Float, h: Float) {
             val cx = w * 0.5f
             val cy = h * 0.5f
-
             val r1 = w * 0.36f
             val r2 = w * 0.46f
             val sweepAngle = 56f
 
-            wavePaint.strokeWidth = w * 0.045f
-            wavePaint.color = Color.argb(0xB3, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
-            canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), 180f - sweepAngle / 2, sweepAngle, false, wavePaint)
-            canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), -sweepAngle / 2, sweepAngle, false, wavePaint)
+            strokePaint.strokeWidth = w * 0.045f
+            strokePaint.color = Color.argb(0xB3, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), 180f - sweepAngle / 2, sweepAngle, false, strokePaint)
+            canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), -sweepAngle / 2, sweepAngle, false, strokePaint)
 
-            wavePaint.strokeWidth = w * 0.035f
-            wavePaint.color = Color.argb(0x55, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
-            canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), 180f - sweepAngle / 2, sweepAngle, false, wavePaint)
-            canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), -sweepAngle / 2, sweepAngle, false, wavePaint)
+            strokePaint.strokeWidth = w * 0.035f
+            strokePaint.color = Color.argb(0x55, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), 180f - sweepAngle / 2, sweepAngle, false, strokePaint)
+            canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), -sweepAngle / 2, sweepAngle, false, strokePaint)
 
             val jadeW = w * 0.30f
             val jadeH = h * 0.74f
@@ -1866,7 +1892,7 @@ class BannerController(private val context: Context) {
             val bottom = cy + jadeH / 2
             val radius = jadeW * 0.22f
 
-            val shader = LinearGradient(
+            fillPaint.shader = LinearGradient(
                 left, top, right, bottom,
                 intArrayOf(
                     Color.argb(0xFF, 0xF2, 0xFF, 0xFA),
@@ -1876,21 +1902,209 @@ class BannerController(private val context: Context) {
                 floatArrayOf(0.0f, 0.45f, 1.0f),
                 Shader.TileMode.CLAMP
             )
-            jadePaint.shader = shader
             val jadeRect = RectF(left, top, right, bottom)
-            canvas.drawRoundRect(jadeRect, radius, radius, jadePaint)
-            canvas.drawRoundRect(jadeRect, radius, radius, borderPaint)
+            canvas.drawRoundRect(jadeRect, radius, radius, fillPaint)
+            fillPaint.shader = null
 
-            canvas.drawCircle(cx, top + jadeW * 0.36f, jadeW * 0.12f, notchPaint)
+            strokePaint.strokeWidth = 2f
+            strokePaint.color = Color.argb(0x99, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawRoundRect(jadeRect, radius, radius, strokePaint)
 
-            val runePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(0x70, 0xFF, 0xFF, 0xFF)
-                strokeWidth = w * 0.024f
-            }
+            fillPaint.color = Color.argb(0xDD, 0x0A, 0x18, 0x1B)
+            canvas.drawCircle(cx, top + jadeW * 0.36f, jadeW * 0.12f, fillPaint)
+
+            strokePaint.color = Color.argb(0x70, 0xFF, 0xFF, 0xFF)
+            strokePaint.strokeWidth = w * 0.024f
             val lineY1 = cy + jadeH * 0.06f
             val lineY2 = cy + jadeH * 0.22f
-            canvas.drawLine(cx - jadeW * 0.24f, lineY1, cx + jadeW * 0.24f, lineY1, runePaint)
-            canvas.drawLine(cx - jadeW * 0.18f, lineY2, cx + jadeW * 0.18f, lineY2, runePaint)
+            canvas.drawLine(cx - jadeW * 0.24f, lineY1, cx + jadeW * 0.24f, lineY1, strokePaint)
+            canvas.drawLine(cx - jadeW * 0.18f, lineY2, cx + jadeW * 0.18f, lineY2, strokePaint)
+        }
+
+        /** 2. 大唐鎏金：宫廷鎏金卷轴圣旨令牌 */
+        private fun drawPalaceScroll(canvas: Canvas, w: Float, h: Float) {
+            val cx = w * 0.5f
+            val cy = h * 0.5f
+
+            // 上下鎏金卷轴轴杆
+            fillPaint.shader = null
+            fillPaint.color = levelColor
+            val rodW = w * 0.78f
+            val rodH = h * 0.10f
+            canvas.drawRoundRect(RectF(cx - rodW / 2, h * 0.12f, cx + rodW / 2, h * 0.12f + rodH), rodH / 2, rodH / 2, fillPaint)
+            canvas.drawRoundRect(RectF(cx - rodW / 2, h * 0.78f, cx + rodW / 2, h * 0.78f + rodH), rodH / 2, rodH / 2, fillPaint)
+
+            // 卷轴朱红锦缎主体
+            val bodyW = w * 0.58f
+            val bodyRect = RectF(cx - bodyW / 2, h * 0.20f, cx + bodyW / 2, h * 0.80f)
+            fillPaint.shader = LinearGradient(
+                bodyRect.left, bodyRect.top, bodyRect.right, bodyRect.bottom,
+                intArrayOf(Color.rgb(0x6E, 0x18, 0x18), Color.rgb(0x38, 0x0A, 0x0A)),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(bodyRect, fillPaint)
+            fillPaint.shader = null
+
+            strokePaint.strokeWidth = w * 0.045f
+            strokePaint.color = levelColor
+            canvas.drawRect(bodyRect, strokePaint)
+
+            // 中央菱形鎏金玉玺印记
+            path.reset()
+            val r = w * 0.15f
+            path.moveTo(cx, cy - r)
+            path.lineTo(cx + r, cy)
+            path.lineTo(cx, cy + r)
+            path.lineTo(cx - r, cy)
+            path.close()
+            fillPaint.color = levelColor
+            canvas.drawPath(path, fillPaint)
+        }
+
+        /** 3. 赛博霓虹：双层六边形全息能量核 */
+        private fun drawCyberHex(canvas: Canvas, w: Float, h: Float) {
+            val cx = w * 0.5f
+            val cy = h * 0.5f
+            val outerR = w * 0.42f
+            val innerR = w * 0.24f
+
+            // 外层霓虹六边形
+            buildHexPath(cx, cy, outerR)
+            fillPaint.shader = null
+            fillPaint.color = Color.argb(0x28, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawPath(path, fillPaint)
+
+            strokePaint.strokeWidth = w * 0.055f
+            strokePaint.color = levelColor
+            canvas.drawPath(path, strokePaint)
+
+            // 内层荧光黄能量核
+            buildHexPath(cx, cy, innerR)
+            fillPaint.color = Color.rgb(0xFC, 0xEE, 0x09)
+            canvas.drawPath(path, fillPaint)
+
+            // 核心黑点与十字准星线
+            fillPaint.color = Color.rgb(0x14, 0x0B, 0x29)
+            canvas.drawCircle(cx, cy, w * 0.07f, fillPaint)
+        }
+
+        private fun buildHexPath(cx: Float, cy: Float, r: Float) {
+            path.reset()
+            for (i in 0 until 6) {
+                val angle = Math.toRadians((60.0 * i - 30.0))
+                val x = (cx + r * kotlin.math.cos(angle)).toFloat()
+                val y = (cy + r * kotlin.math.sin(angle)).toFloat()
+                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            path.close()
+        }
+
+        /** 4. 黑神话·暗金：暗金紧箍咒环 */
+        private fun drawGoldenHoop(canvas: Canvas, w: Float, h: Float) {
+            val cx = w * 0.5f
+            val cy = h * 0.54f
+            val r = w * 0.34f
+
+            strokePaint.strokeWidth = w * 0.085f
+            strokePaint.color = levelColor
+            // 金箍主圆弧（顶部留出卷云缺口）
+            canvas.drawArc(RectF(cx - r, cy - r, cx + r, cy + r), -70f, 320f, false, strokePaint)
+
+            // 顶部向内微卷的双祥云金箍扣
+            strokePaint.strokeWidth = w * 0.068f
+            val curlR = w * 0.11f
+            canvas.drawArc(
+                RectF(cx - curlR * 2.05f, cy - r - curlR * 0.5f, cx - curlR * 0.05f, cy - r + curlR * 1.5f),
+                -90f, 220f, false, strokePaint
+            )
+            canvas.drawArc(
+                RectF(cx + curlR * 0.05f, cy - r - curlR * 0.5f, cx + curlR * 2.05f, cy - r + curlR * 1.5f),
+                -40f, 220f, false, strokePaint
+            )
+
+            // 中央灵光暗金点
+            fillPaint.shader = null
+            fillPaint.color = Color.argb(0x99, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawCircle(cx, cy + r * 0.15f, w * 0.065f, fillPaint)
+        }
+
+        /** 5. 极客终端：CRT 终端命令行 `>_` */
+        private fun drawMatrixTerminal(canvas: Canvas, w: Float, h: Float) {
+            val pad = w * 0.10f
+            val rect = RectF(pad, pad, w - pad, h - pad)
+
+            fillPaint.shader = null
+            fillPaint.color = Color.argb(0x26, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawRoundRect(rect, w * 0.12f, w * 0.12f, fillPaint)
+
+            strokePaint.strokeWidth = w * 0.055f
+            strokePaint.color = levelColor
+            canvas.drawRoundRect(rect, w * 0.12f, w * 0.12f, strokePaint)
+
+            // 绘制 '>' 符号
+            path.reset()
+            path.moveTo(w * 0.27f, h * 0.34f)
+            path.lineTo(w * 0.46f, h * 0.50f)
+            path.lineTo(w * 0.27f, h * 0.66f)
+            strokePaint.strokeWidth = w * 0.075f
+            canvas.drawPath(path, strokePaint)
+
+            // 绘制 '_' 光标
+            canvas.drawLine(w * 0.52f, h * 0.66f, w * 0.73f, h * 0.66f, strokePaint)
+        }
+
+        /** 6. 江南宣纸：阳刻朱砂方印 */
+        private fun drawInkSeal(canvas: Canvas, w: Float, h: Float) {
+            val pad = w * 0.11f
+            val rect = RectF(pad, pad, w - pad, h - pad)
+
+            // 朱砂印底
+            fillPaint.shader = null
+            fillPaint.color = levelColor
+            canvas.drawRoundRect(rect, w * 0.10f, w * 0.10f, fillPaint)
+
+            // 宣纸白内框与篆书几何印纹
+            val innerPad = w * 0.19f
+            strokePaint.color = Color.rgb(0xF7, 0xF3, 0xE8)
+            strokePaint.strokeWidth = w * 0.042f
+            canvas.drawRect(RectF(innerPad, innerPad, w - innerPad, h - innerPad), strokePaint)
+
+            val cx = w * 0.5f
+            val cy = h * 0.5f
+            canvas.drawLine(cx, innerPad, cx, h - innerPad, strokePaint)
+            canvas.drawLine(innerPad, cy, w - innerPad, cy, strokePaint)
+        }
+
+        /** 7. 主机奖杯：黄金圣杯 + 底座 */
+        private fun drawGamerTrophy(canvas: Canvas, w: Float, h: Float) {
+            val cx = w * 0.5f
+
+            // 左右双耳手柄
+            strokePaint.color = levelColor
+            strokePaint.strokeWidth = w * 0.06f
+            canvas.drawArc(RectF(w * 0.12f, h * 0.20f, w * 0.36f, h * 0.48f), 90f, 180f, false, strokePaint)
+            canvas.drawArc(RectF(w * 0.64f, h * 0.20f, w * 0.88f, h * 0.48f), -90f, 180f, false, strokePaint)
+
+            // 奖杯杯身
+            fillPaint.shader = LinearGradient(
+                w * 0.26f, h * 0.16f, w * 0.74f, h * 0.58f,
+                intArrayOf(Color.rgb(0xFF, 0xF0, 0xA8), levelColor),
+                null,
+                Shader.TileMode.CLAMP
+            )
+            val cupRect = RectF(w * 0.26f, h * 0.16f, w * 0.74f, h * 0.56f)
+            canvas.drawRoundRect(cupRect, w * 0.16f, w * 0.16f, fillPaint)
+            fillPaint.shader = null
+
+            // 杯柱与底座
+            fillPaint.color = levelColor
+            canvas.drawRect(RectF(cx - w * 0.055f, h * 0.54f, cx + w * 0.055f, h * 0.74f), fillPaint)
+            canvas.drawRoundRect(RectF(w * 0.26f, h * 0.73f, w * 0.74f, h * 0.85f), w * 0.04f, w * 0.04f, fillPaint)
+
+            // 杯身中央白金星芒
+            fillPaint.color = Color.WHITE
+            canvas.drawCircle(cx, h * 0.34f, w * 0.065f, fillPaint)
         }
     }
 }
