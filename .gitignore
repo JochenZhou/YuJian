@@ -24,3 +24,4 @@ captures/
 *.aab
 
 .DS_Store
+.superpowers/
