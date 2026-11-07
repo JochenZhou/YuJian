@@ -88,6 +88,9 @@ class NotifyService : Service() {
         bannerController = BannerController(this)
         // onCreate 里就先升级为前台，满足 API 26+ 的 5 秒限制
         startForegroundSafely()
+        SendspinManager.init(applicationContext) {
+            launchSendspinActivityFromBackground()
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -100,6 +103,7 @@ class NotifyService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        SendspinManager.shutdown()
         stopMdns()
         stopServer()
         // 先移除横幅再释放提示音，顺序反了会在 release 后还尝试播放
@@ -109,6 +113,19 @@ class NotifyService : Service() {
         isServerRunning = false
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
+    }
+
+    private fun launchSendspinActivityFromBackground() {
+        mainHandler.post {
+            try {
+                val intent = Intent(this, SendspinActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "后台拉起 Sendspin 歌词页受限", e)
+            }
+        }
     }
 
     // ------------------------------------------------------------------

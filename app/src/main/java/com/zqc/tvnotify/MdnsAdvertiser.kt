@@ -48,6 +48,7 @@ class MdnsAdvertiser(
         private const val MULTICAST_ADDRESS = "224.0.0.251"
         private const val MDNS_PORT = 5353
         private const val SERVICE_TYPE = "_tvnotify._tcp"
+        private const val SENDSPIN_SERVICE_TYPE = "_sendspin._tcp"
         private const val SERVICE_DOMAIN = "local"
 
         /** 与 python-zeroconf / Avahi 默认行为对齐，120s 内没刷新才会过期 */
@@ -256,7 +257,13 @@ class MdnsAdvertiser(
         val instance = instanceFqdn().lowercase()
         val host = hostFqdn().lowercase()
 
-        val asked = HashSet<Int>()
+        val sendspinEnabled = SendspinManager.shouldAdvertiseMdns()
+        val sendspinPort = SendspinManager.boundPort
+        val sendspinType = sendspinServiceTypeFqdn().lowercase()
+        val sendspinInstance = sendspinInstanceFqdn().lowercase()
+
+        val askedTv = HashSet<Int>()
+        val askedSendspin = HashSet<Int>()
         var offset = HEADER_BYTES
         for (i in 0 until questionCount) {
             val parsed = readName(data, offset) ?: return
@@ -273,53 +280,89 @@ class MdnsAdvertiser(
                 continue
             }
             if (type == TYPE_ANY) {
-                if (name == serviceType) {
-                    asked.add(TYPE_PTR)
-                }
+                if (name == serviceType) askedTv.add(TYPE_PTR)
                 if (name == instance) {
-                    asked.add(TYPE_SRV)
-                    asked.add(TYPE_TXT)
+                    askedTv.add(TYPE_SRV)
+                    askedTv.add(TYPE_TXT)
+                }
+                if (sendspinEnabled && sendspinPort > 0) {
+                    if (name == sendspinType) askedSendspin.add(TYPE_PTR)
+                    if (name == sendspinInstance) {
+                        askedSendspin.add(TYPE_SRV)
+                        askedSendspin.add(TYPE_TXT)
+                    }
                 }
                 if (name == host) {
-                    asked.add(TYPE_A)
+                    askedTv.add(TYPE_A)
                 }
                 continue
             }
             when (type) {
-                TYPE_PTR -> if (name == serviceType) asked.add(TYPE_PTR)
-                TYPE_SRV -> if (name == instance) asked.add(TYPE_SRV)
-                TYPE_TXT -> if (name == instance) asked.add(TYPE_TXT)
-                TYPE_A -> if (name == host) asked.add(TYPE_A)
+                TYPE_PTR -> {
+                    if (name == serviceType) askedTv.add(TYPE_PTR)
+                    if (sendspinEnabled && sendspinPort > 0 && name == sendspinType) askedSendspin.add(TYPE_PTR)
+                }
+                TYPE_SRV -> {
+                    if (name == instance) askedTv.add(TYPE_SRV)
+                    if (sendspinEnabled && sendspinPort > 0 && name == sendspinInstance) askedSendspin.add(TYPE_SRV)
+                }
+                TYPE_TXT -> {
+                    if (name == instance) askedTv.add(TYPE_TXT)
+                    if (sendspinEnabled && sendspinPort > 0 && name == sendspinInstance) askedSendspin.add(TYPE_TXT)
+                }
+                TYPE_A -> if (name == host) askedTv.add(TYPE_A)
             }
         }
-        respond(asked)
+        respond(askedTv, askedSendspin)
     }
 
-    private fun respond(asked: Set<Int>) {
-        if (asked.isEmpty()) {
+    private fun respond(askedTv: Set<Int>, askedSendspin: Set<Int> = emptySet()) {
+        if (askedTv.isEmpty() && askedSendspin.isEmpty()) {
             return
         }
-        val records = ArrayList<Record>(4)
-        if (asked.contains(TYPE_PTR)) {
-            // PTR 是服务发现入口，顺手把 SRV/TXT/A 一起给出去，
-            // 浏览器就不用再发三轮查询，HA 里的显示也更快
+        val records = ArrayList<Record>(8)
+        var needA = false
+
+        if (askedTv.contains(TYPE_PTR)) {
             records.add(ptrRecord())
             records.add(srvRecord())
             records.add(txtRecord())
-            buildARecord()?.let { records.add(it) }
+            needA = true
         } else {
-            if (asked.contains(TYPE_SRV)) {
+            if (askedTv.contains(TYPE_SRV)) {
                 records.add(srvRecord())
-                // SRV 的 target 要能解析成地址，需要 A 记录配合
-                buildARecord()?.let { records.add(it) }
+                needA = true
             }
-            if (asked.contains(TYPE_TXT)) {
+            if (askedTv.contains(TYPE_TXT)) {
                 records.add(txtRecord())
             }
-            if (asked.contains(TYPE_A)) {
-                buildARecord()?.let { records.add(it) }
+            if (askedTv.contains(TYPE_A)) {
+                needA = true
             }
         }
+
+        val sendspinPort = SendspinManager.boundPort
+        if (SendspinManager.shouldAdvertiseMdns() && sendspinPort > 0) {
+            if (askedSendspin.contains(TYPE_PTR)) {
+                records.add(sendspinPtrRecord())
+                records.add(sendspinSrvRecord(sendspinPort))
+                records.add(sendspinTxtRecord())
+                needA = true
+            } else {
+                if (askedSendspin.contains(TYPE_SRV)) {
+                    records.add(sendspinSrvRecord(sendspinPort))
+                    needA = true
+                }
+                if (askedSendspin.contains(TYPE_TXT)) {
+                    records.add(sendspinTxtRecord())
+                }
+            }
+        }
+
+        if (needA) {
+            buildARecord()?.let { records.add(it) }
+        }
+
         if (records.isEmpty()) {
             return
         }
@@ -328,7 +371,12 @@ class MdnsAdvertiser(
 
     /** 主动公告：等价于「把所有记录都回答一遍」。 */
     private fun announce() {
-        respond(setOf(TYPE_PTR))
+        val sendspinSet = if (SendspinManager.shouldAdvertiseMdns() && SendspinManager.boundPort > 0) {
+            setOf(TYPE_PTR)
+        } else {
+            emptySet()
+        }
+        respond(setOf(TYPE_PTR), sendspinSet)
     }
 
     private fun send(payload: ByteArray) {
@@ -396,6 +444,48 @@ class MdnsAdvertiser(
         )
     }
 
+    private fun sendspinPtrRecord(): Record = Record(
+        name = sendspinServiceTypeFqdn(),
+        type = TYPE_PTR,
+        cacheFlush = false,
+        rdata = encodeName(sendspinInstanceFqdn())
+    )
+
+    private fun sendspinSrvRecord(port: Int): Record {
+        val rdata = ByteArrayOutputStream()
+        writeShort(rdata, 0) // priority
+        writeShort(rdata, 0) // weight
+        writeShort(rdata, port)
+        writeName(rdata, hostFqdn())
+        return Record(
+            name = sendspinInstanceFqdn(),
+            type = TYPE_SRV,
+            cacheFlush = true,
+            rdata = rdata.toByteArray()
+        )
+    }
+
+    private fun sendspinTxtRecord(): Record {
+        val out = ByteArrayOutputStream()
+        val clientName = Prefs.getSendspinClientName(appContext)
+        val entries = listOf(
+            "path=/sendspin",
+            "name=$clientName"
+        )
+        for (entry in entries) {
+            val bytes = entry.toByteArray(Charsets.UTF_8)
+            val length = minOf(bytes.size, TXT_STRING_MAX)
+            out.write(length)
+            out.write(bytes, 0, length)
+        }
+        return Record(
+            name = sendspinInstanceFqdn(),
+            type = TYPE_TXT,
+            cacheFlush = true,
+            rdata = out.toByteArray()
+        )
+    }
+
     private fun buildARecord(): Record? {
         val ip = NetUtils.localIpv4()
         if (!NetUtils.hasUsableIp(ip)) {
@@ -446,6 +536,10 @@ class MdnsAdvertiser(
     private fun serviceTypeFqdn(): String = "$SERVICE_TYPE.$SERVICE_DOMAIN"
 
     private fun instanceFqdn(): String = "${instanceName()}.${serviceTypeFqdn()}"
+
+    private fun sendspinServiceTypeFqdn(): String = "$SENDSPIN_SERVICE_TYPE.$SERVICE_DOMAIN"
+
+    private fun sendspinInstanceFqdn(): String = "${instanceName()}.${sendspinServiceTypeFqdn()}"
 
     /** SRV 的 target：与实例名同源，保证多台电视不会抢同一个主机名 */
     private fun hostFqdn(): String = "${instanceName().lowercase()}.$SERVICE_DOMAIN"
