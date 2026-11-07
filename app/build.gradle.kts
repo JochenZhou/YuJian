@@ -44,8 +44,8 @@ android {
         // 红米电视 Android 6.0，API 23 是硬底线；targetSdk 34 只是为了通过商店/安装器检查
         minSdk = 23
         targetSdk = 34
-        versionCode = 23
-        versionName = "1.4.0"
+        versionCode = 24
+        versionName = "1.5.0"
         // 不引入 support 库，矢量图交给系统渲染（API 21+ 原生支持 VectorDrawable）
         vectorDrawables.useSupportLibrary = false
         // 仅保留中英文语言资源，剔除第三方库自带的多国语言包缩减体积
@@ -127,4 +127,7 @@ dependencies {
     // 仍然是 fi.iki.elonen（源码里的 import 不能改），这是最容易写混的地方。
     implementation("org.nanohttpd:nanohttpd:2.3.1")
     implementation("com.google.zxing:core:3.5.3")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20231013")
 }

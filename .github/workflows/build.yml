@@ -73,8 +73,8 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # 没有配置签名 secret 时，build.gradle.kts 会自动回退 debug 签名，job 不会失败
-      - name: Build release APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Run unit tests and build release APK
+        run: gradle testDebugUnitTest assembleRelease --no-daemon --stacktrace
 
       # 统一输出 YuJian-release.apk
       - name: Collect APK

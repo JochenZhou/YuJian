@@ -21,6 +21,12 @@ object Prefs {
     private const val KEY_POSITION = "banner_position"
     private const val KEY_MUTED = "banner_muted"
     private const val KEY_HISTORY = "notify_history"
+    private const val KEY_SENDSPIN_ENABLED = "sendspin_enabled"
+    private const val KEY_SENDSPIN_AUTO_POPUP = "sendspin_auto_popup"
+    private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
+    private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
+    private const val KEY_SENDSPIN_PRIV_KEY = "sendspin_priv_key"
+    private const val KEY_SENDSPIN_PAIRINGS = "sendspin_pairings"
 
     private const val TOKEN_LENGTH = 8
 
@@ -98,6 +104,78 @@ object Prefs {
     /** 保存历史记录 JSON 字符串 */
     fun setHistoryRaw(context: Context, rawJson: String) {
         prefs(context).edit().putString(KEY_HISTORY, rawJson).apply()
+    }
+
+    /** 读取 Sendspin 服务是否启用 */
+    fun isSendspinEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SENDSPIN_ENABLED, true)
+
+    /** 设置 Sendspin 服务是否启用 */
+    fun setSendspinEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SENDSPIN_ENABLED, enabled).apply()
+    }
+
+    /** 读取收到音乐流时是否自动弹出全屏歌词页 */
+    fun isSendspinAutoPopup(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SENDSPIN_AUTO_POPUP, true)
+
+    /** 设置收到音乐流时是否自动弹出全屏歌词页 */
+    fun setSendspinAutoPopup(context: Context, autoPopup: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SENDSPIN_AUTO_POPUP, autoPopup).apply()
+    }
+
+    /** 读取手动配置的 Sendspin 服务端 WebSocket 地址（留空则为 mDNS 自动发现模式） */
+    fun getSendspinServerUrl(context: Context): String =
+        prefs(context).getString(KEY_SENDSPIN_SERVER_URL, "") ?: ""
+
+    /** 设置手动配置的 Sendspin 服务端 WebSocket 地址 */
+    fun setSendspinServerUrl(context: Context, url: String) {
+        prefs(context).edit().putString(KEY_SENDSPIN_SERVER_URL, url.trim()).apply()
+    }
+
+    /** 读取 Sendspin 客户端对外展示的友好设备名 */
+    fun getSendspinClientName(context: Context): String {
+        val defaultName = "玉简·${(android.os.Build.MODEL ?: "TV").trim()}"
+        return prefs(context).getString(KEY_SENDSPIN_CLIENT_NAME, defaultName) ?: defaultName
+    }
+
+    /** 设置 Sendspin 客户端对外展示的友好设备名 */
+    fun setSendspinClientName(context: Context, name: String) {
+        prefs(context).edit().putString(KEY_SENDSPIN_CLIENT_NAME, name.trim()).apply()
+    }
+
+    /** 读取或生成客户端静态 X25519 私钥（32 字节 CSPRNG） */
+    fun getOrCreateSendspinPrivateKey(context: Context): ByteArray {
+        val store = prefs(context)
+        val encoded = store.getString(KEY_SENDSPIN_PRIV_KEY, null)
+        if (!encoded.isNullOrEmpty()) {
+            val decoded = SendspinCrypto.base64UrlDecode(encoded)
+            if (decoded.size == 32) {
+                return decoded
+            }
+        }
+        synchronized(this) {
+            val again = store.getString(KEY_SENDSPIN_PRIV_KEY, null)
+            if (!again.isNullOrEmpty()) {
+                val decoded = SendspinCrypto.base64UrlDecode(again)
+                if (decoded.size == 32) {
+                    return decoded
+                }
+            }
+            val key = ByteArray(32)
+            random.nextBytes(key)
+            store.edit().putString(KEY_SENDSPIN_PRIV_KEY, SendspinCrypto.base64UrlEncode(key)).commit()
+            return key
+        }
+    }
+
+    /** 读取已持久化的配对记录 JSON */
+    fun getSendspinPairingsJson(context: Context): String? =
+        prefs(context).getString(KEY_SENDSPIN_PAIRINGS, null)
+
+    /** 保存已持久化的配对记录 JSON */
+    fun setSendspinPairingsJson(context: Context, raw: String) {
+        prefs(context).edit().putString(KEY_SENDSPIN_PAIRINGS, raw).apply()
     }
 
     private fun generateToken(): String {
