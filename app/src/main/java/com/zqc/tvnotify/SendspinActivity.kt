@@ -76,7 +76,7 @@ class SendspinActivity : Activity() {
     private lateinit var lyricsScrollView: LyricsScrollView
 
     private var updateProgressRunnable: Runnable? = null
-    private val sendspinListener = {
+    private val sendspinListener: () -> Unit = {
         mainHandler.post {
             if (!isFinishing && !isDestroyed) {
                 refreshPlayerUi()
