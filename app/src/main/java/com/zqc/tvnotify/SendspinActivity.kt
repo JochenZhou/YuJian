@@ -3,6 +3,7 @@ package com.zqc.tvnotify
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
@@ -29,6 +30,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.google.zxing.BarcodeFormat
@@ -440,32 +442,49 @@ class SendspinActivity : Activity() {
 
     private fun showPairingDialog() {
         val snap = SendspinManager.snapshot()
-        val dialogView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            val p = dp(18)
-            setPadding(p, p, p, p)
+        val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+        val scrollView = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = true
+            clipToPadding = false
             setBackgroundColor(theme.cardBg)
         }
 
+        val dialogView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pH = if (isLandscape) dp(14) else dp(18)
+            val pV = if (isLandscape) dp(10) else dp(16)
+            setPadding(pH, pV, pH, pV)
+            setBackgroundColor(theme.cardBg)
+        }
+        scrollView.addView(dialogView, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
         val titleTv = TextView(this).apply {
             text = "🔗 Sendspin 配对与服务端配置"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isLandscape) 15f else 16f)
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, dp(10))
+            setPadding(0, 0, 0, dp(4))
         }
         dialogView.addView(titleTv)
 
-        // 二维码区域
+        // 设备标识与状态描述
+        val infoTv = TextView(this).apply {
+            val statusStr = if (snap.connected) "🟢 已就绪 (${snap.serverName.ifBlank { "MA" }})" else "⚪ 监听发现中"
+            text = "本机设备：${snap.clientName} | 端口: ${snap.boundPort} | 状态: $statusStr"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(theme.hintColor)
+            setPadding(0, 0, 0, dp(8))
+        }
+        dialogView.addView(infoTv)
+
+        // 二维码与配对提示区域（横屏手机左右排布，竖屏上下排布）
+        val qrSize = if (isLandscape) dp(110) else dp(150)
         val qrBox = ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
             setBackgroundColor(Color.WHITE)
         }
-        val qrSize = dp(160)
-        dialogView.addView(qrBox, LinearLayout.LayoutParams(qrSize, qrSize).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = dp(8)
-        })
 
         Thread({
             val qrBmp = createQrBitmap(snap.pairingToken, qrSize)
@@ -473,18 +492,37 @@ class SendspinActivity : Activity() {
         }, "sendspin-qr").start()
 
         val tokenHint = TextView(this).apply {
-            text = "在 Music Assistant 中添加 Sendspin 播放器并扫描上方二维码配对\n配对码：${snap.pairingToken.take(20)}..."
+            text = "在 Music Assistant「设置->播放器/提供商->Sendspin」中批准或配对本设备。\n配对 Token：${snap.pairingToken.take(24)}..."
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             setTextColor(theme.hintColor)
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, 0, 0, dp(10))
         }
-        dialogView.addView(tokenHint)
+
+        if (isLandscape) {
+            val topRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 0, 0, dp(8))
+            }
+            topRow.addView(qrBox, LinearLayout.LayoutParams(qrSize, qrSize).apply {
+                rightMargin = dp(12)
+            })
+            topRow.addView(tokenHint, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            dialogView.addView(topRow)
+        } else {
+            dialogView.addView(qrBox, LinearLayout.LayoutParams(qrSize, qrSize).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                bottomMargin = dp(8)
+            })
+            tokenHint.gravity = Gravity.CENTER_HORIZONTAL
+            tokenHint.setPadding(0, 0, 0, dp(8))
+            dialogView.addView(tokenHint)
+        }
 
         // 自动弹出歌词屏开关
         val autoPopupCb = CheckBox(this).apply {
             text = "收到音乐播放流时自动弹出此歌词大屏"
             setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
             isChecked = Prefs.isSendspinAutoPopup(this@SendspinActivity)
         }
         dialogView.addView(autoPopupCb)
@@ -493,17 +531,17 @@ class SendspinActivity : Activity() {
         if (discovered.isNotEmpty()) {
             val discLayout = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, dp(8), 0, dp(4))
+                setPadding(0, dp(6), 0, dp(4))
             }
             val discLabel = TextView(this).apply {
-                text = "💡 局域网已发现 Music Assistant (点击填入)："
+                text = "💡 局域网已发现 Music Assistant (点击一键填入并连接)："
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
                 setTextColor(theme.accentColor)
             }
             discLayout.addView(discLabel)
             for (srv in discovered) {
                 val srvBtn = Button(this).apply {
-                    text = "▶ 连接 ${srv.name} (${srv.host}:${srv.port})"
+                    text = "▶ 一键连接: ${srv.name} (${srv.host}:${srv.port})"
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
                     setTextColor(Color.WHITE)
                     background = roundedRect(dp(4).toFloat(), theme.buttonBg, dp(1), theme.accentColor)
@@ -523,7 +561,7 @@ class SendspinActivity : Activity() {
 
         // 手动服务端地址
         val urlEt = EditText(this).apply {
-            hint = "输入 MA 服务端 IP 或地址，例如 192.168.1.50:8927"
+            hint = "手动输入 MA 服务端 IP 或地址，例如 192.168.1.50:8927"
             setTextColor(Color.WHITE)
             setHintTextColor(theme.hintColor)
             setText(Prefs.getSendspinServerUrl(this@SendspinActivity))
@@ -536,7 +574,7 @@ class SendspinActivity : Activity() {
         })
 
         AlertDialog.Builder(this)
-            .setView(dialogView)
+            .setView(scrollView)
             .setPositiveButton("立即连接") { _, _ ->
                 Prefs.setSendspinAutoPopup(this, autoPopupCb.isChecked)
                 val newUrl = urlEt.text.toString().trim()

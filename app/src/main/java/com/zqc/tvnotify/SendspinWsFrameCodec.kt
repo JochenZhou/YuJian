@@ -38,7 +38,7 @@ object SendspinWsFrameCodec {
 
         val requestLine = lines[0].trim()
         val path = requestLine.split(" ").getOrNull(1)?.substringBefore('?') ?: ""
-        if (path != expectedPath) {
+        if (path.trimEnd('/') != expectedPath.trimEnd('/')) {
             writeHttp404(output)
             return false
         }

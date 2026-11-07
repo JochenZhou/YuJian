@@ -540,17 +540,12 @@ object SendspinManager {
             }
         }
 
-        // 切换至传输模式：发送 client/hello 告知服务端本机的播放器角色与能力
-        sendClientHello(clientName)
-
-        // 建立周期时间同步任务
-        startTimeSyncLoop()
-
-        // 接收服务端加密帧循环
+        // 切换至传输模式后，严守 Sendspin 规范状态机：
+        // 1. 等待服务端主动发送 server/hello，客户端才回复 client/hello；
+        // 2. 等待服务端发送 server/activate，客户端才发送 client/state 并启动 client/time 时钟同步。
         val fragReassembler = SendspinWsFrameCodec.FragmentReassembler()
         val artworkAssembler = SendspinWsFrameCodec.ArtworkAssembler()
 
-        isConnected = true
         notifyListeners()
 
         while (running && !socket.isClosed) {
@@ -593,11 +588,8 @@ object SendspinManager {
             }
         }
 
-        // 发送 client/hello
+        // 收到 server/hello，回复 client/hello，等待 server/activate 激活
         sendClientHello(clientName)
-        startTimeSyncLoop()
-
-        isConnected = true
         notifyListeners()
 
         val fragReassembler = SendspinWsFrameCodec.FragmentReassembler()
@@ -618,11 +610,18 @@ object SendspinManager {
         closeActiveConnection()
     }
 
-    private fun sendClientHello(clientName: String) {
-        val hello = JSONObject().apply {
+    fun buildClientHelloJson(clientName: String, clientId: String, appVersion: String = "1.5.2"): JSONObject {
+        return JSONObject().apply {
             put("type", "client/hello")
             put("payload", JSONObject().apply {
+                put("version", 1)
+                put("client_id", clientId)
                 put("name", clientName)
+                put("device_info", JSONObject().apply {
+                    put("product_name", "YuJian TV")
+                    put("manufacturer", "Android")
+                    put("software_version", appVersion)
+                })
                 put("unpaired_access", JSONObject().apply { put("enabled", true) })
                 put("supported_pair_methods", JSONObject().apply {
                     put("pairing_psk", JSONObject().apply {
@@ -650,6 +649,20 @@ object SendspinManager {
                 })
             })
         }
+    }
+
+    private fun sendClientHello(clientName: String) {
+        val ctx = appContext
+        val privKey = if (ctx != null) Prefs.getOrCreateSendspinPrivateKey(ctx) else ByteArray(32)
+        val pubKey = SendspinCrypto.x25519PublicFromPrivate(privKey)
+        val clientId = SendspinCrypto.base64UrlEncode(pubKey)
+        val appVersion = if (ctx != null) {
+            try {
+                ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "1.5.2"
+            } catch (_: Exception) { "1.5.2" }
+        } else "1.5.2"
+
+        val hello = buildClientHelloJson(clientName, clientId, appVersion)
         val bytes = hello.toString().toByteArray(Charsets.UTF_8)
         frameSender?.invoke(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + bytes)
     }
@@ -768,9 +781,16 @@ object SendspinManager {
                 notifyListeners()
             }
             "server/activate" -> {
+                isConnected = true
                 sendClientState()
+                startTimeSyncLoop()
+                notifyListeners()
             }
             "server/time" -> {
+                if (!isConnected) {
+                    isConnected = true
+                    startTimeSyncLoop()
+                }
                 val t1 = payload.optLong("client_transmitted")
                 val t2 = payload.optLong("server_received")
                 val t3 = payload.optLong("server_transmitted")
@@ -779,6 +799,10 @@ object SendspinManager {
                 notifyListeners()
             }
             "stream/start" -> {
+                if (!isConnected) {
+                    isConnected = true
+                    startTimeSyncLoop()
+                }
                 val playerObj = payload.optJSONObject("player")
                 if (playerObj != null) {
                     val sampleRate = playerObj.optInt("sample_rate", 48000)

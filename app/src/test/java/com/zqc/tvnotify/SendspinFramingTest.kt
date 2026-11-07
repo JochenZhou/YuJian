@@ -78,4 +78,39 @@ class SendspinFramingTest {
         assertEquals("ws://192.168.1.50:8927/sendspin", SendspinManager.normalizeSendspinUrl("ws://192.168.1.50:8927/sendspin"))
         assertEquals("ws://homeassistant.local:8927/sendspin", SendspinManager.normalizeSendspinUrl("homeassistant.local"))
     }
+
+    @Test
+    fun serverUpgradeToleratesTrailingSlash() {
+        val validReq = (
+            "GET /sendspin/ HTTP/1.1\r\n" +
+            "Host: 192.168.1.50:8928\r\n" +
+            "Upgrade: websocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        ).toByteArray(Charsets.US_ASCII)
+        val respOut = ByteArrayOutputStream()
+        assertTrue(SendspinWsFrameCodec.performServerUpgrade(ByteArrayInputStream(validReq), respOut))
+        assertTrue(respOut.toString("UTF-8").contains("101 Switching Protocols"))
+    }
+
+    @Test
+    fun buildsCompliantClientHelloJson() {
+        val json = SendspinManager.buildClientHelloJson("Living Room TV", "mockClientIdXYZ", "1.5.2")
+        assertEquals("client/hello", json.getString("type"))
+        val payload = json.getJSONObject("payload")
+        assertEquals(1, payload.getInt("version"))
+        assertEquals("mockClientIdXYZ", payload.getString("client_id"))
+        assertEquals("Living Room TV", payload.getString("name"))
+        val dev = payload.getJSONObject("device_info")
+        assertEquals("YuJian TV", dev.getString("product_name"))
+        assertEquals("1.5.2", dev.getString("software_version"))
+        val roles = payload.getJSONArray("supported_roles")
+        val rolesList = (0 until roles.length()).map { roles.getString(it) }
+        assertTrue(rolesList.contains("player@v1"))
+        assertTrue(rolesList.contains("metadata@v1"))
+        assertTrue(rolesList.contains("artwork@v1"))
+        val playerSupport = payload.getJSONObject("player@v1_support")
+        assertTrue(playerSupport.getInt("buffer_capacity") > 0)
+        assertTrue(playerSupport.getJSONArray("supported_formats").length() > 0)
+    }
 }
