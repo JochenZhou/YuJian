@@ -61,7 +61,8 @@ data class SendspinSnapshot(
     val playerMuted: Boolean,
     val rttMs: Long,
     val synced: Boolean,
-    val colorPalette: SendspinColorPalette?
+    val colorPalette: SendspinColorPalette?,
+    val discoveredServers: List<String> = emptyList()
 )
 
 /**

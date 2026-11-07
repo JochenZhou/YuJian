@@ -212,7 +212,9 @@ class NotifyHttpServer(
                             Prefs.setSendspinAutoPopup(context, json.getBoolean("auto_popup"))
                         }
                         if (json.has("server_url")) {
-                            Prefs.setSendspinServerUrl(context, json.getString("server_url"))
+                            val rawUrl = json.getString("server_url").trim()
+                            val normalized = if (rawUrl.isNotBlank()) SendspinManager.normalizeSendspinUrl(rawUrl) else ""
+                            Prefs.setSendspinServerUrl(context, normalized)
                         }
                         if (json.has("client_name")) {
                             Prefs.setSendspinClientName(context, json.getString("client_name"))
@@ -488,6 +490,7 @@ class NotifyHttpServer(
             put("album", snap.metadata.album)
             put("volume", snap.playerVolume)
             put("muted", snap.playerMuted)
+            put("discovered_servers", org.json.JSONArray(snap.discoveredServers))
         }
     }
 

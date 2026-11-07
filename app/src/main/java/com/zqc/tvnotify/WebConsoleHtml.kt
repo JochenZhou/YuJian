@@ -356,9 +356,10 @@ button {
       <span>收到音乐播放流时自动弹出电视歌词大屏</span>
     </label>
     <div class="form-group" style="margin-bottom: 0;">
-      <label>手动服务端地址 (留空则为局域网自动被发现模式 :8928)</label>
+      <label>手动服务端地址 (留空则为局域网自动发现模式 :8928)</label>
+      <div id="sendspin-discovered-box" style="margin-bottom: 8px; font-size: 12px; display: none;"></div>
       <div class="row">
-        <input type="text" id="sendspin-url" placeholder="例如 ws://192.168.1.50:8927/sendspin">
+        <input type="text" id="sendspin-url" placeholder="例如 192.168.1.50:8927 或 ws://.../sendspin">
         <button class="btn-secondary" style="flex: 0 0 80px;" onclick="updateSendspinConfig()">保存</button>
       </div>
     </div>
@@ -694,6 +695,28 @@ function updateSendspinUi(s) {
   const urlInp = document.getElementById("sendspin-url");
   if (urlInp && !urlInp.value && s.server_url) {
     urlInp.value = s.server_url;
+  }
+  const discBox = document.getElementById("sendspin-discovered-box");
+  if (discBox) {
+    if (s.discovered_servers && s.discovered_servers.length > 0) {
+      discBox.style.display = "block";
+      discBox.innerHTML = '<span style="color: var(--accent);">💡 局域网已发现 MA 服务端：</span>' +
+        s.discovered_servers.map(function(srv) {
+          return '<a href="javascript:void(0)" onclick="setSendspinUrl(\'' + srv + '\')" style="color: var(--accent); text-decoration: underline; margin-right: 8px;">' + srv + '</a>';
+        }).join('');
+    } else {
+      discBox.style.display = "none";
+    }
+  }
+}
+
+function setSendspinUrl(srv) {
+  const match = srv.match(/\((.*?)\)/);
+  const hostPort = match ? match[1] : srv;
+  const urlInp = document.getElementById("sendspin-url");
+  if (urlInp) {
+    urlInp.value = "ws://" + hostPort + "/sendspin";
+    updateSendspinConfig();
   }
 }
 

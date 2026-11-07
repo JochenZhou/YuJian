@@ -88,18 +88,41 @@ object SendspinManager {
     private var activeSocket: Socket? = null
     private var workerThread: Thread? = null
     private var timeSyncThread: Thread? = null
+    private var outboundJobThread: Thread? = null
+
+    @Volatile
+    private var nsdHelper: SendspinNsdHelper? = null
 
     // 活跃传输层发送闭包 (Thread-safe)
     @Volatile
     private var frameSender: ((opcode: Int, payload: ByteArray) -> Unit)? = null
 
+    fun normalizeSendspinUrl(raw: String): String {
+        var s = raw.trim()
+        if (s.isEmpty()) return ""
+        if (s.startsWith("http://", ignoreCase = true)) {
+            s = "ws://" + s.substring(7)
+        } else if (s.startsWith("https://", ignoreCase = true)) {
+            s = "wss://" + s.substring(8)
+        } else if (!s.startsWith("ws://", ignoreCase = true) && !s.startsWith("wss://", ignoreCase = true)) {
+            s = "ws://$s"
+        }
+        val uri = try { URI(s) } catch (_: Exception) { return s }
+        val host = uri.host ?: return s
+        val port = if (uri.port > 0) uri.port else 8927
+        val path = if (uri.path.isNullOrEmpty() || uri.path == "/") "/sendspin" else uri.path
+        return "ws://$host:$port$path"
+    }
+
     fun init(context: Context, onAutoPopupRequested: () -> Unit) {
         if (running) return
-        appContext = context.applicationContext
+        val app = context.applicationContext
+        appContext = app
         autoPopupCallback = onAutoPopupRequested
         running = true
 
-        audioPlayer = SendspinAudioPlayer(context.applicationContext, clockFilter)
+        nsdHelper = SendspinNsdHelper(app)
+        audioPlayer = SendspinAudioPlayer(app, clockFilter)
         regeneratePairingPsk()
 
         startWorker()
@@ -122,6 +145,10 @@ object SendspinManager {
 
     fun shutdown() {
         running = false
+        nsdHelper?.releaseAll()
+        nsdHelper = null
+        outboundJobThread?.interrupt()
+        outboundJobThread = null
         closeActiveConnection()
         closeServerSocket()
         audioPlayer?.release()
@@ -133,6 +160,9 @@ object SendspinManager {
         currentMetadata = SendspinTrackMetadata()
         notifyListeners()
     }
+
+    fun discoveredServers(): List<SendspinNsdHelper.DiscoveredServer> =
+        nsdHelper?.discoveredServers ?: emptyList()
 
     fun shouldAdvertiseMdns(): Boolean {
         val ctx = appContext ?: return false
@@ -168,7 +198,8 @@ object SendspinManager {
             playerMuted = playerMuted,
             rttMs = clockFilter.minRttUs / 1000L,
             synced = clockFilter.isSynced,
-            colorPalette = currentColorPalette
+            colorPalette = currentColorPalette,
+            discoveredServers = nsdHelper?.discoveredServers?.map { "${it.name} (${it.host}:${it.port})" } ?: emptyList()
         )
     }
 
@@ -246,7 +277,7 @@ object SendspinManager {
                 closeServerSocket()
                 runOutboundClientLoop(manualUrl)
             } else {
-                // 被动等待发现模式 (Server-Initiated)
+                // 被动等待发现模式 (Server-Initiated) + 局域网 MA 服务端自动扫描
                 runInboundServerLoop()
             }
         }, "sendspin-worker")
@@ -259,7 +290,10 @@ object SendspinManager {
         var ssocket: ServerSocket? = null
         for (port in DEFAULT_PORT..(DEFAULT_PORT + 4)) {
             try {
-                ssocket = ServerSocket(port).apply { reuseAddress = true }
+                val ss = ServerSocket()
+                ss.reuseAddress = true
+                ss.bind(java.net.InetSocketAddress(port))
+                ssocket = ss
                 boundPort = port
                 Log.i(TAG, "Sendspin 服务端已在端口 $port 监听")
                 break
@@ -270,6 +304,25 @@ object SendspinManager {
             return
         }
         serverSocket = ssocket
+
+        val ctx = appContext
+        if (ctx != null) {
+            val clientName = Prefs.getSendspinClientName(ctx)
+            // 1. 系统级 NsdManager 广播自身播放器能力（无 5353 端口冲突，手机与电视全通用）
+            nsdHelper?.registerSendspinPlayer(boundPort, clientName) {
+                notifyListeners()
+            }
+            // 2. 自动扫描局域网 Music Assistant 服务端 (_sendspin-server._tcp)
+            nsdHelper?.startDiscoveringServers { discovered ->
+                notifyListeners()
+                val manual = Prefs.getSendspinServerUrl(ctx)
+                if (manual.isBlank() && !isConnected) {
+                    Log.i(TAG, "检测到局域网 MA 服务端: ${discovered.wsUrl}，尝试自动对接")
+                    triggerOutboundConnect(discovered.wsUrl)
+                }
+            }
+        }
+
         notifyListeners()
 
         while (running && !ssocket.isClosed) {
@@ -285,11 +338,46 @@ object SendspinManager {
         }
     }
 
+    fun triggerOutboundConnect(url: String) {
+        if (isConnected) return
+        outboundJobThread?.interrupt()
+        val thread = Thread({
+            try {
+                val normalized = normalizeSendspinUrl(url)
+                val uri = URI(normalized)
+                val host = uri.host ?: return@Thread
+                val port = if (uri.port > 0) uri.port else 8927
+                val path = if (!uri.path.isNullOrEmpty()) uri.path else "/sendspin"
+
+                Log.i(TAG, "正在主动连接 Sendspin 服务端 $host:$port$path")
+                val socket = Socket(host, port).apply { tcpNoDelay = true }
+                closeActiveConnection()
+                activeSocket = socket
+                activeServerUrl = normalized
+
+                val input = socket.getInputStream()
+                val output = socket.getOutputStream()
+                val upgraded = SendspinWsFrameCodec.performClientUpgrade(input, output, "$host:$port", path)
+                if (!upgraded) {
+                    socket.close()
+                    return@Thread
+                }
+                handleConnectedSocket(socket, isOutbound = true, manualUrl = normalized)
+            } catch (e: Exception) {
+                Log.w(TAG, "主动对接服务端失败: ${e.message}")
+            }
+        }, "sendspin-outbound-auto")
+        thread.isDaemon = true
+        outboundJobThread = thread
+        thread.start()
+    }
+
     private fun runOutboundClientLoop(manualUrl: String) {
         var backoffMs = 2000L
+        val normalized = normalizeSendspinUrl(manualUrl)
         while (running) {
             try {
-                val uri = URI(manualUrl)
+                val uri = URI(normalized)
                 val host = uri.host ?: "127.0.0.1"
                 val port = if (uri.port > 0) uri.port else 8927
                 val path = if (!uri.path.isNullOrEmpty()) uri.path else "/sendspin"
@@ -298,7 +386,7 @@ object SendspinManager {
                 val socket = Socket(host, port).apply { tcpNoDelay = true }
                 closeActiveConnection()
                 activeSocket = socket
-                activeServerUrl = manualUrl
+                activeServerUrl = normalized
 
                 val input = socket.getInputStream()
                 val output = socket.getOutputStream()
@@ -309,7 +397,7 @@ object SendspinManager {
                 }
 
                 backoffMs = 2000L
-                handleConnectedSocket(socket, isOutbound = true, manualUrl = manualUrl)
+                handleConnectedSocket(socket, isOutbound = true, manualUrl = normalized)
             } catch (e: Exception) {
                 if (!running) break
                 Log.w(TAG, "连接 Sendspin 服务端失败，将在 ${backoffMs}ms 后重试: ${e.message}")
@@ -451,6 +539,9 @@ object SendspinManager {
                 }
             }
         }
+
+        // 切换至传输模式：发送 client/hello 告知服务端本机的播放器角色与能力
+        sendClientHello(clientName)
 
         // 建立周期时间同步任务
         startTimeSyncLoop()

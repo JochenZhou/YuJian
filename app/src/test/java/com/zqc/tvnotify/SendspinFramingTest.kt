@@ -69,4 +69,13 @@ class SendspinFramingTest {
         assertTrue(completed is SendspinWsFrameCodec.ArtworkEvent.Completed)
         assertArrayEquals(imgBytes, (completed as SendspinWsFrameCodec.ArtworkEvent.Completed).imageBytes)
     }
+
+    @Test
+    fun normalizesSendspinUrlsCorrectly() {
+        assertEquals("ws://192.168.1.50:8927/sendspin", SendspinManager.normalizeSendspinUrl("192.168.1.50"))
+        assertEquals("ws://192.168.1.50:8927/sendspin", SendspinManager.normalizeSendspinUrl("192.168.1.50:8927"))
+        assertEquals("ws://192.168.1.50:8927/sendspin", SendspinManager.normalizeSendspinUrl("http://192.168.1.50:8927"))
+        assertEquals("ws://192.168.1.50:8927/sendspin", SendspinManager.normalizeSendspinUrl("ws://192.168.1.50:8927/sendspin"))
+        assertEquals("ws://homeassistant.local:8927/sendspin", SendspinManager.normalizeSendspinUrl("homeassistant.local"))
+    }
 }

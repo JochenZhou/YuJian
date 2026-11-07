@@ -180,8 +180,20 @@ class SendspinActivity : Activity() {
             typeface = Typeface.DEFAULT_BOLD
             setPadding(dp(10), dp(4), dp(10), dp(4))
             background = roundedRect(dp(12).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
+            isClickable = true
+            setOnClickListener { showPairingDialog() }
         }
         topStatusRow.addView(statusBadge, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+
+        val serverLinkBtn = buildControlButton("🔗 连接 MA", isPrimary = false) {
+            showPairingDialog()
+        }.apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+        }
+        topStatusRow.addView(serverLinkBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            rightMargin = dp(8)
+        })
 
         volumeBadge = TextView(this).apply {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -477,9 +489,41 @@ class SendspinActivity : Activity() {
         }
         dialogView.addView(autoPopupCb)
 
+        val discovered = SendspinManager.discoveredServers()
+        if (discovered.isNotEmpty()) {
+            val discLayout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(0, dp(8), 0, dp(4))
+            }
+            val discLabel = TextView(this).apply {
+                text = "💡 局域网已发现 Music Assistant (点击填入)："
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setTextColor(theme.accentColor)
+            }
+            discLayout.addView(discLabel)
+            for (srv in discovered) {
+                val srvBtn = Button(this).apply {
+                    text = "▶ 连接 ${srv.name} (${srv.host}:${srv.port})"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                    setTextColor(Color.WHITE)
+                    background = roundedRect(dp(4).toFloat(), theme.buttonBg, dp(1), theme.accentColor)
+                    setOnClickListener {
+                        Prefs.setSendspinServerUrl(this@SendspinActivity, srv.wsUrl)
+                        SendspinManager.reloadConfig()
+                        Toast.makeText(this@SendspinActivity, "正在连接至 ${srv.name}...", Toast.LENGTH_SHORT).show()
+                        refreshPlayerUi()
+                    }
+                }
+                discLayout.addView(srvBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dp(4)
+                })
+            }
+            dialogView.addView(discLayout)
+        }
+
         // 手动服务端地址
         val urlEt = EditText(this).apply {
-            hint = "可选手动服务端地址，例如 ws://192.168.1.50:8927/sendspin"
+            hint = "输入 MA 服务端 IP 或地址，例如 192.168.1.50:8927"
             setTextColor(Color.WHITE)
             setHintTextColor(theme.hintColor)
             setText(Prefs.getSendspinServerUrl(this@SendspinActivity))
@@ -493,17 +537,20 @@ class SendspinActivity : Activity() {
 
         AlertDialog.Builder(this)
             .setView(dialogView)
-            .setPositiveButton("保存设置") { _, _ ->
+            .setPositiveButton("立即连接") { _, _ ->
                 Prefs.setSendspinAutoPopup(this, autoPopupCb.isChecked)
                 val newUrl = urlEt.text.toString().trim()
-                Prefs.setSendspinServerUrl(this, newUrl)
+                val normalized = if (newUrl.isNotBlank()) SendspinManager.normalizeSendspinUrl(newUrl) else ""
+                Prefs.setSendspinServerUrl(this, normalized)
                 SendspinManager.reloadConfig()
-                Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, if (normalized.isNotBlank()) "正在连接至 $normalized" else "已恢复局域网自动发现模式", Toast.LENGTH_SHORT).show()
                 refreshPlayerUi()
             }
-            .setNeutralButton("重铸配对码") { _, _ ->
-                SendspinManager.regeneratePairingToken()
-                Toast.makeText(this, "配对码已重铸", Toast.LENGTH_SHORT).show()
+            .setNeutralButton("重置为自动发现") { _, _ ->
+                Prefs.setSendspinServerUrl(this, "")
+                SendspinManager.reloadConfig()
+                Toast.makeText(this, "已重置为局域网自动发现模式", Toast.LENGTH_SHORT).show()
+                refreshPlayerUi()
             }
             .setNegativeButton("关闭", null)
             .show()

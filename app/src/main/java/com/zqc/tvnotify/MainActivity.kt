@@ -281,6 +281,10 @@ class MainActivity : Activity() {
                 rightMargin = dp(10)
             })
             headerBar.addView(headerBadgeView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        } else {
+            headerBar.addView(sendspinButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+                rightMargin = dp(6)
+            })
         }
         rootColumn.addView(headerBar)
 

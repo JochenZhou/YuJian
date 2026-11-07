@@ -88,6 +88,7 @@ class MdnsAdvertiser(
 
     private var worker: Thread? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var nsdHelper: SendspinNsdHelper? = null
 
     /** 供 NotifyService 判断是否需要重启广播。 */
     val isRunning: Boolean get() = running
@@ -102,6 +103,16 @@ class MdnsAdvertiser(
         }
         running = true
         acquireMulticastLock()
+
+        // 优先使用系统级 NsdManager 注册 _tvnotify._tcp 服务（手机与现代系统免 5353 冲突）
+        try {
+            val helper = SendspinNsdHelper(appContext)
+            nsdHelper = helper
+            helper.registerTvNotify(servicePort, instanceName(), currentToken(), versionName)
+        } catch (e: Exception) {
+            Log.w(TAG, "NsdManager 广播 TvNotify 失败，依赖底层 socket", e)
+        }
+
         val thread = Thread({ runLoop() }, "tvnotify-mdns")
         thread.isDaemon = true
         worker = thread
@@ -110,6 +121,8 @@ class MdnsAdvertiser(
 
     /** 停止广播。可重复调用（幂等）。 */
     fun stop() {
+        nsdHelper?.unregisterTvNotify()
+        nsdHelper = null
         val wasRunning = running
         running = false
         // 先关 socket：它是打断阻塞中 receive() 的唯一可靠手段
