@@ -30,7 +30,7 @@ object SendspinManager {
     private const val SYNC_INITIAL_INTERVAL_MS = 250L
     private const val SYNC_STEADY_INTERVAL_MS = 5000L
 
-    private val mainHandler = Handler(Looper.getMainLooper())
+    private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     @Volatile
