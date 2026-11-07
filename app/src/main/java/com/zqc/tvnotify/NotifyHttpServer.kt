@@ -45,6 +45,7 @@ class NotifyHttpServer(
         private const val ROUTE_STREAM = "stream"
         private const val ROUTE_HISTORY = "history"
         private const val ROUTE_CONFIG = "config"
+        private const val ROUTE_SENDSPIN = "sendspin"
         private const val ROUTE_UI = "ui"
 
         private const val DEFAULT_DURATION_SEC = 5
@@ -86,6 +87,7 @@ class NotifyHttpServer(
             ROUTE_STREAM -> handleTestStream(session)
             ROUTE_HISTORY -> handleHistory(session)
             ROUTE_CONFIG -> handleConfig(session)
+            ROUTE_SENDSPIN -> handleSendspin(session)
             else -> jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
         }
     }
@@ -164,7 +166,67 @@ class NotifyHttpServer(
         val currentTheme = Theme.current(context).storageId
         return jsonResponse(
             NanoHTTPD.Response.Status.OK,
-            "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\",\"theme\":\"$currentTheme\"}"
+            "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\",\"theme\":\"$currentTheme\",\"sendspin\":${buildSendspinStatusJson()}}"
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // POST /{token}/sendspin —— 歌词大屏控制与 Sendspin 播控/配置
+    // ------------------------------------------------------------------
+
+    private fun handleSendspin(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (session.method != NanoHTTPD.Method.POST) {
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+        val body = readRequestBody(session)
+        if (body.text.isNotEmpty()) {
+            try {
+                val json = JSONObject(body.text)
+                when (json.optString("action", "").lowercase()) {
+                    "open_ui" -> {
+                        try {
+                            val intent = android.content.Intent(context, SendspinActivity::class.java).apply {
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "启动 SendspinActivity 失败", e)
+                        }
+                    }
+                    "close_ui" -> {
+                        SendspinActivity.closeIfOpen()
+                    }
+                    "command" -> {
+                        val cmd = json.optString("command", "")
+                        val vol = if (json.has("volume")) json.getInt("volume") else null
+                        val mute = if (json.has("mute")) json.getBoolean("mute") else null
+                        if (cmd.isNotEmpty()) {
+                            SendspinManager.sendControllerCommand(cmd, vol, mute)
+                        }
+                    }
+                    "config" -> {
+                        if (json.has("enabled")) {
+                            Prefs.setSendspinEnabled(context, json.getBoolean("enabled"))
+                        }
+                        if (json.has("auto_popup")) {
+                            Prefs.setSendspinAutoPopup(context, json.getBoolean("auto_popup"))
+                        }
+                        if (json.has("server_url")) {
+                            Prefs.setSendspinServerUrl(context, json.getString("server_url"))
+                        }
+                        if (json.has("client_name")) {
+                            Prefs.setSendspinClientName(context, json.getString("client_name"))
+                        }
+                        SendspinManager.reloadConfig()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "解析 sendspin 请求体失败", e)
+            }
+        }
+        return jsonResponse(
+            NanoHTTPD.Response.Status.OK,
+            "{\"ok\":true,\"sendspin\":${buildSendspinStatusJson()}}"
         )
     }
 
@@ -406,7 +468,27 @@ class NotifyHttpServer(
         val pos = Prefs.getBannerPosition(context)
         val currentTheme = Theme.current(context).storageId
         return "{\"ok\":true,\"version\":\"$versionName\",\"uptime\":$uptime," +
-                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted,\"position\":\"$pos\",\"theme\":\"$currentTheme\"}"
+                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted,\"position\":\"$pos\",\"theme\":\"$currentTheme\"," +
+                "\"sendspin\":${buildSendspinStatusJson()}}"
+    }
+
+    private fun buildSendspinStatusJson(): JSONObject {
+        val snap = SendspinManager.snapshot()
+        return JSONObject().apply {
+            put("enabled", snap.enabled)
+            put("auto_popup", snap.autoPopup)
+            put("connected", snap.connected)
+            put("playing", snap.playing)
+            put("port", snap.boundPort)
+            put("server_name", snap.serverName)
+            put("server_url", snap.serverUrl)
+            put("client_name", snap.clientName)
+            put("title", snap.metadata.title)
+            put("artist", snap.metadata.artist)
+            put("album", snap.metadata.album)
+            put("volume", snap.playerVolume)
+            put("muted", snap.playerMuted)
+        }
     }
 
     // ------------------------------------------------------------------

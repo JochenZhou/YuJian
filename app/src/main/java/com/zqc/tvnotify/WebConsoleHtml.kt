@@ -335,6 +335,35 @@ button {
     </div>
   </div>
 
+  <!-- Sendspin 灵音歌词台控制卡片 -->
+  <div class="card">
+    <div class="card-title">
+      <span>🎵 Sendspin 灵音歌词台</span>
+      <span id="sendspin-status" style="font-size: 11.5px; color: var(--accent);">正在获取状态...</span>
+    </div>
+    <div style="margin-bottom: 12px; font-size: 13px;" id="sendspin-track-info">曲目：暂无播放</div>
+    <div class="btn-group" style="margin-bottom: 12px;">
+      <button class="btn-secondary" onclick="sendspinCmd('previous')">⏮ 上一曲</button>
+      <button class="btn-primary" onclick="sendspinCmd('play')">⏯ 播放/暂停</button>
+      <button class="btn-secondary" onclick="sendspinCmd('next')">⏭ 下一曲</button>
+    </div>
+    <div class="btn-group" style="margin-bottom: 12px;">
+      <button class="btn-secondary" onclick="openSendspinUi()">📺 弹开歌词大屏</button>
+      <button class="btn-secondary" onclick="closeSendspinUi()">✖ 收起大屏</button>
+    </div>
+    <label class="checkbox-item" style="margin-bottom: 10px; cursor: pointer;">
+      <input type="checkbox" id="sendspin-auto-popup" onchange="updateSendspinConfig()">
+      <span>收到音乐播放流时自动弹出电视歌词大屏</span>
+    </label>
+    <div class="form-group" style="margin-bottom: 0;">
+      <label>手动服务端地址 (留空则为局域网自动被发现模式 :8928)</label>
+      <div class="row">
+        <input type="text" id="sendspin-url" placeholder="例如 ws://192.168.1.50:8927/sendspin">
+        <button class="btn-secondary" style="flex: 0 0 80px;" onclick="updateSendspinConfig()">保存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 传音简录 (历史记录) -->
   <div class="card">
     <div class="card-title">
@@ -365,6 +394,7 @@ const NOTIFY_URL = window.location.origin + "/" + TOKEN + "/notify";
 const DISMISS_URL = window.location.origin + "/" + TOKEN + "/dismiss";
 const CONFIG_URL = window.location.origin + "/" + TOKEN + "/config";
 const HISTORY_URL = window.location.origin + "/" + TOKEN + "/history";
+const SENDSPIN_URL = window.location.origin + "/" + TOKEN + "/sendspin";
 
 let currentTheme = "${theme.storageId}";
 let currentMuted = $isMuted;
@@ -636,7 +666,99 @@ function copyCurl() {
   });
 }
 
+async function fetchSendspinStatus() {
+  try {
+    const res = await fetch(CONFIG_URL);
+    const data = await res.json();
+    if (data.sendspin) {
+      updateSendspinUi(data.sendspin);
+    }
+  } catch (_) {}
+}
+
+function updateSendspinUi(s) {
+  const statusEl = document.getElementById("sendspin-status");
+  const trackEl = document.getElementById("sendspin-track-info");
+  if (!statusEl || !trackEl) return;
+  if (s.connected) {
+    statusEl.textContent = "● 已连接 " + (s.server_name || "Music Assistant");
+    statusEl.style.color = "var(--accent)";
+  } else {
+    statusEl.textContent = "○ 等待连接 :" + (s.port || 8928);
+    statusEl.style.color = "var(--warn)";
+  }
+  const title = s.title ? (s.title + (s.artist ? " - " + s.artist : "")) : "暂无播放";
+  trackEl.textContent = "曲目：" + title + (s.playing ? " [播放中]" : " [已暂停]");
+  const cb = document.getElementById("sendspin-auto-popup");
+  if (cb) cb.checked = !!s.auto_popup;
+  const urlInp = document.getElementById("sendspin-url");
+  if (urlInp && !urlInp.value && s.server_url) {
+    urlInp.value = s.server_url;
+  }
+}
+
+async function sendspinCmd(cmd) {
+  try {
+    const res = await fetch(SENDSPIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "command", command: cmd })
+    });
+    const data = await res.json();
+    if (data.ok && data.sendspin) updateSendspinUi(data.sendspin);
+  } catch (e) {
+    toast("播控失败: " + e.message);
+  }
+}
+
+async function openSendspinUi() {
+  try {
+    await fetch(SENDSPIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "open_ui" })
+    });
+    toast("📺 已指令电视打开全屏歌词页");
+  } catch (e) {
+    toast("打开失败: " + e.message);
+  }
+}
+
+async function closeSendspinUi() {
+  try {
+    await fetch(SENDSPIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "close_ui" })
+    });
+    toast("已收起歌词大屏");
+  } catch (e) {
+    toast("收起失败: " + e.message);
+  }
+}
+
+async function updateSendspinConfig() {
+  const autoPopup = document.getElementById("sendspin-auto-popup").checked;
+  const serverUrl = document.getElementById("sendspin-url").value.trim();
+  try {
+    const res = await fetch(SENDSPIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "config", auto_popup: autoPopup, server_url: serverUrl })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast("Sendspin 配置已更新");
+      if (data.sendspin) updateSendspinUi(data.sendspin);
+    }
+  } catch (e) {
+    toast("配置保存失败: " + e.message);
+  }
+}
+
 fetchHistory();
+fetchSendspinStatus();
+setInterval(fetchSendspinStatus, 4000);
 </script>
 </body>
 </html>"""
