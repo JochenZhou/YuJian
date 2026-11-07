@@ -34,10 +34,38 @@ object SendspinCrypto {
     private val BASE_POINT_U: BigInteger = BigInteger.valueOf(9)
 
     // ------------------------------------------------------------------
-    // Base64URL 纯 Kotlin 编解码（无填充，API 23 与 JVM 通用）
+    // Base64 & Base64URL 纯 Kotlin 编解码（API 23 与 JVM 通用，零依赖）
     // ------------------------------------------------------------------
 
+    private const val BASE64_STD_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     private const val BASE64URL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+    fun base64Encode(bytes: ByteArray): String {
+        val out = StringBuilder((bytes.size * 4 + 2) / 3)
+        var i = 0
+        while (i < bytes.size) {
+            val b0 = bytes[i].toInt() and 0xFF
+            val b1 = if (i + 1 < bytes.size) bytes[i + 1].toInt() and 0xFF else -1
+            val b2 = if (i + 2 < bytes.size) bytes[i + 2].toInt() and 0xFF else -1
+
+            out.append(BASE64_STD_CHARS[b0 shr 2])
+            if (b1 >= 0) {
+                out.append(BASE64_STD_CHARS[((b0 and 0x03) shl 4) or (b1 shr 4)])
+                if (b2 >= 0) {
+                    out.append(BASE64_STD_CHARS[((b1 and 0x0F) shl 2) or (b2 shr 6)])
+                    out.append(BASE64_STD_CHARS[b2 and 0x3F])
+                } else {
+                    out.append(BASE64_STD_CHARS[(b1 and 0x0F) shl 2])
+                    out.append('=')
+                }
+            } else {
+                out.append(BASE64_STD_CHARS[(b0 and 0x03) shl 4])
+                out.append("==")
+            }
+            i += 3
+        }
+        return out.toString()
+    }
 
     fun base64UrlEncode(bytes: ByteArray): String {
         val out = StringBuilder((bytes.size * 4 + 2) / 3)

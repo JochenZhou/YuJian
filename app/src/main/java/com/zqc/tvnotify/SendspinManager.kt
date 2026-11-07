@@ -1,0 +1,909 @@
+package com.zqc.tvnotify
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.URI
+import java.security.SecureRandom
+import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * Sendspin 传输连接、协议状态机与各子系统协调中枢：
+ * 1. 双连接模式：默认端口 8928 被动等待发现（Server-Initiated），支持手动指定服务端（Client-Initiated）；
+ * 2. 双协议自适应：现代 Noise_KKpsk2 加密信道优先，自动兼容旧版明文 WebSocket；
+ * 3. 驱动音频播放（SendspinAudioPlayer）、歌词检索（LyricsFetcher）与时间同步（SendspinClockFilter）；
+ * 4. 音乐流到达且处于播放态时，联动 NotifyService 自动唤起全屏歌词大屏。
+ */
+object SendspinManager {
+
+    private const val TAG = "SendspinManager"
+    private const val DEFAULT_PORT = 8928
+    private const val SYNC_INITIAL_INTERVAL_MS = 250L
+    private const val SYNC_STEADY_INTERVAL_MS = 5000L
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+    @Volatile
+    private var appContext: Context? = null
+
+    @Volatile
+    private var autoPopupCallback: (() -> Unit)? = null
+
+    @Volatile
+    private var running = false
+
+    @Volatile
+    var boundPort: Int = 0
+        private set
+
+    @Volatile
+    private var isConnected = false
+
+    @Volatile
+    private var serverName = ""
+
+    @Volatile
+    private var activeServerUrl = ""
+
+    @Volatile
+    private var currentFormat: SendspinPlayerFormat? = null
+
+    @Volatile
+    private var currentMetadata = SendspinTrackMetadata()
+
+    @Volatile
+    private var currentController = SendspinControllerState()
+
+    @Volatile
+    private var currentColorPalette: SendspinColorPalette? = null
+
+    @Volatile
+    private var activeArtwork: Bitmap? = null
+
+    @Volatile
+    private var activeLyrics: ParsedLyrics? = null
+
+    @Volatile
+    private var playerVolume: Int = 100
+
+    @Volatile
+    private var playerMuted: Boolean = false
+
+    @Volatile
+    private var activePairingPsk: ByteArray? = null
+
+    private val clockFilter = SendspinClockFilter()
+    private var audioPlayer: SendspinAudioPlayer? = null
+    private var serverSocket: ServerSocket? = null
+    private var activeSocket: Socket? = null
+    private var workerThread: Thread? = null
+    private var timeSyncThread: Thread? = null
+
+    // 活跃传输层发送闭包 (Thread-safe)
+    @Volatile
+    private var frameSender: ((opcode: Int, payload: ByteArray) -> Unit)? = null
+
+    fun init(context: Context, onAutoPopupRequested: () -> Unit) {
+        if (running) return
+        appContext = context.applicationContext
+        autoPopupCallback = onAutoPopupRequested
+        running = true
+
+        audioPlayer = SendspinAudioPlayer(context.applicationContext, clockFilter)
+        regeneratePairingPsk()
+
+        startWorker()
+    }
+
+    fun reloadConfig() {
+        val ctx = appContext ?: return
+        if (!Prefs.isSendspinEnabled(ctx)) {
+            shutdown()
+            return
+        }
+        if (!running) {
+            init(ctx, autoPopupCallback ?: {})
+            return
+        }
+        // 重启底层 Socket 连接以应用新模式或新服务端 URL
+        closeActiveConnection()
+        startWorker()
+    }
+
+    fun shutdown() {
+        running = false
+        closeActiveConnection()
+        closeServerSocket()
+        audioPlayer?.release()
+        audioPlayer = null
+        boundPort = 0
+        isConnected = false
+        activeArtwork = null
+        activeLyrics = null
+        currentMetadata = SendspinTrackMetadata()
+        notifyListeners()
+    }
+
+    fun shouldAdvertiseMdns(): Boolean {
+        val ctx = appContext ?: return false
+        return running && Prefs.isSendspinEnabled(ctx) && Prefs.getSendspinServerUrl(ctx).isBlank() && boundPort > 0
+    }
+
+    fun snapshot(): SendspinSnapshot {
+        val ctx = appContext
+        val enabled = if (ctx != null) Prefs.isSendspinEnabled(ctx) else false
+        val autoPopup = if (ctx != null) Prefs.isSendspinAutoPopup(ctx) else true
+        val clientName = if (ctx != null) Prefs.getSendspinClientName(ctx) else "YuJian TV"
+        val privKey = if (ctx != null) Prefs.getOrCreateSendspinPrivateKey(ctx) else ByteArray(32)
+        val pubKey = SendspinCrypto.x25519PublicFromPrivate(privKey)
+        val clientId = SendspinCrypto.base64UrlEncode(pubKey)
+        val psk = activePairingPsk ?: ByteArray(32)
+        val token = SendspinCrypto.buildPairingToken(clientId, psk)
+
+        return SendspinSnapshot(
+            enabled = enabled,
+            autoPopup = autoPopup,
+            connected = isConnected,
+            playing = currentMetadata.playbackSpeed > 0,
+            boundPort = boundPort,
+            serverName = serverName,
+            serverUrl = activeServerUrl,
+            clientName = clientName,
+            clientId = clientId,
+            pairingToken = token,
+            format = currentFormat,
+            metadata = currentMetadata,
+            controller = currentController,
+            playerVolume = playerVolume,
+            playerMuted = playerMuted,
+            rttMs = clockFilter.minRttUs / 1000L,
+            synced = clockFilter.isSynced,
+            colorPalette = currentColorPalette
+        )
+    }
+
+    fun currentArtwork(): Bitmap? = activeArtwork
+
+    fun currentLyrics(): ParsedLyrics? = activeLyrics
+
+    fun currentPositionMs(): Long {
+        return clockFilter.currentTrackPositionMs(currentMetadata, System.nanoTime() / 1000L)
+    }
+
+    fun sendControllerCommand(command: String, volume: Int? = null, mute: Boolean? = null) {
+        val sender = frameSender ?: return
+        val payload = JSONObject().apply {
+            put("type", "client/command")
+            val ctrl = JSONObject().apply {
+                put("command", command)
+                if (volume != null) put("volume", volume)
+                if (mute != null) put("mute", mute)
+            }
+            put("payload", JSONObject().apply { put("controller", ctrl) })
+        }
+        val bytes = payload.toString().toByteArray(Charsets.UTF_8)
+        sender(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + bytes)
+    }
+
+    fun adjustLocalOrGroupVolume(deltaPercent: Int) {
+        val newVol = (playerVolume + deltaPercent).coerceIn(0, 100)
+        playerVolume = newVol
+        audioPlayer?.setVolumeAndMute(newVol, playerMuted)
+        sendControllerCommand("volume", volume = newVol)
+        notifyListeners()
+    }
+
+    fun regeneratePairingToken(): String {
+        regeneratePairingPsk()
+        notifyListeners()
+        return snapshot().pairingToken
+    }
+
+    fun addListener(listener: () -> Unit) {
+        listeners.add(listener)
+    }
+
+    fun removeListener(listener: () -> Unit) {
+        listeners.remove(listener)
+    }
+
+    private fun notifyListeners() {
+        mainHandler.post {
+            for (l in listeners) {
+                try { l() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun regeneratePairingPsk() {
+        val psk = ByteArray(32)
+        SecureRandom().nextBytes(psk)
+        activePairingPsk = psk
+    }
+
+    // ------------------------------------------------------------------
+    // 连接驱动与生命周期
+    // ------------------------------------------------------------------
+
+    private fun startWorker() {
+        workerThread?.interrupt()
+        val thread = Thread({
+            val ctx = appContext ?: return@Thread
+            val manualUrl = Prefs.getSendspinServerUrl(ctx)
+
+            if (manualUrl.isNotBlank()) {
+                // 主动连接模式 (Client-Initiated)
+                closeServerSocket()
+                runOutboundClientLoop(manualUrl)
+            } else {
+                // 被动等待发现模式 (Server-Initiated)
+                runInboundServerLoop()
+            }
+        }, "sendspin-worker")
+        thread.isDaemon = true
+        workerThread = thread
+        thread.start()
+    }
+
+    private fun runInboundServerLoop() {
+        var ssocket: ServerSocket? = null
+        for (port in DEFAULT_PORT..(DEFAULT_PORT + 4)) {
+            try {
+                ssocket = ServerSocket(port).apply { reuseAddress = true }
+                boundPort = port
+                Log.i(TAG, "Sendspin 服务端已在端口 $port 监听")
+                break
+            } catch (_: Exception) {}
+        }
+        if (ssocket == null) {
+            Log.e(TAG, "无法绑定 Sendspin 端口 8928..8932")
+            return
+        }
+        serverSocket = ssocket
+        notifyListeners()
+
+        while (running && !ssocket.isClosed) {
+            try {
+                val clientSocket = ssocket.accept()
+                clientSocket.tcpNoDelay = true
+                closeActiveConnection()
+                activeSocket = clientSocket
+                handleConnectedSocket(clientSocket, isOutbound = false, manualUrl = "")
+            } catch (e: Exception) {
+                if (!running) break
+            }
+        }
+    }
+
+    private fun runOutboundClientLoop(manualUrl: String) {
+        var backoffMs = 2000L
+        while (running) {
+            try {
+                val uri = URI(manualUrl)
+                val host = uri.host ?: "127.0.0.1"
+                val port = if (uri.port > 0) uri.port else 8927
+                val path = if (!uri.path.isNullOrEmpty()) uri.path else "/sendspin"
+
+                Log.i(TAG, "尝试连接 Sendspin 服务端 $host:$port$path")
+                val socket = Socket(host, port).apply { tcpNoDelay = true }
+                closeActiveConnection()
+                activeSocket = socket
+                activeServerUrl = manualUrl
+
+                val input = socket.getInputStream()
+                val output = socket.getOutputStream()
+                val upgraded = SendspinWsFrameCodec.performClientUpgrade(input, output, "$host:$port", path)
+                if (!upgraded) {
+                    socket.close()
+                    throw java.io.IOException("WebSocket upgrade failed")
+                }
+
+                backoffMs = 2000L
+                handleConnectedSocket(socket, isOutbound = true, manualUrl = manualUrl)
+            } catch (e: Exception) {
+                if (!running) break
+                Log.w(TAG, "连接 Sendspin 服务端失败，将在 ${backoffMs}ms 后重试: ${e.message}")
+                try { Thread.sleep(backoffMs) } catch (_: InterruptedException) { break }
+                backoffMs = minOf(backoffMs * 2, 30_000L)
+            }
+        }
+    }
+
+    private fun closeActiveConnection() {
+        val s = activeSocket
+        activeSocket = null
+        frameSender = null
+        isConnected = false
+        timeSyncThread?.interrupt()
+        timeSyncThread = null
+        try { s?.close() } catch (_: Exception) {}
+    }
+
+    private fun closeServerSocket() {
+        val ss = serverSocket
+        serverSocket = null
+        boundPort = 0
+        try { ss?.close() } catch (_: Exception) {}
+    }
+
+    // ------------------------------------------------------------------
+    // 会话交互、握手与报文流转
+    // ------------------------------------------------------------------
+
+    private fun handleConnectedSocket(socket: Socket, isOutbound: Boolean, manualUrl: String) {
+        val ctx = appContext ?: return
+        val input = socket.getInputStream()
+        val output = socket.getOutputStream()
+
+        if (!isOutbound) {
+            // 服务端模式：先校验 HTTP Upgrade，包含 Origin 时直接 403 阻断
+            val upgraded = SendspinWsFrameCodec.performServerUpgrade(input, output)
+            if (!upgraded) {
+                try { socket.close() } catch (_: Exception) {}
+                return
+            }
+        }
+
+        val privKey = Prefs.getOrCreateSendspinPrivateKey(ctx)
+        val pubKey = SendspinCrypto.x25519PublicFromPrivate(privKey)
+        val clientId = SendspinCrypto.base64UrlEncode(pubKey)
+        val clientName = Prefs.getSendspinClientName(ctx)
+
+        // 1. 发送 client/init
+        val clientInitJson = JSONObject().apply {
+            put("type", "client/init")
+            put("payload", JSONObject().apply {
+                put("version", 1)
+                put("client_id", clientId)
+                put("suite", "25519_AESGCM_SHA256")
+            })
+        }
+        val clientInitBytes = clientInitJson.toString().toByteArray(Charsets.UTF_8)
+        SendspinWsFrameCodec.writeFrame(output, SendspinWsFrameCodec.OPCODE_TEXT, clientInitBytes, maskClientToServer = isOutbound)
+
+        // 2. 读取对端第一条消息（判断为 Noise 握手还是旧版明文）
+        val firstMsg = SendspinWsFrameCodec.readMessage(input) { pingData ->
+            SendspinWsFrameCodec.writeFrame(output, SendspinWsFrameCodec.OPCODE_PONG, pingData, maskClientToServer = isOutbound)
+        } ?: return
+
+        val firstText = String(firstMsg.payload, Charsets.UTF_8)
+        val firstJson = try { JSONObject(firstText) } catch (e: Exception) { return }
+
+        if (firstJson.optString("type") == "server/init") {
+            // 模式 A: 现代 Noise_KKpsk2 加密握手
+            handleNoiseEncryptedSession(socket, input, output, firstMsg.payload, firstJson, clientInitBytes, privKey, pubKey, clientName, isOutbound)
+        } else if (firstJson.optString("type") == "server/hello") {
+            // 模式 B: 旧版明文 Sendspin
+            handleCleartextSession(socket, input, output, firstJson, clientName, isOutbound)
+        }
+    }
+
+    private fun handleNoiseEncryptedSession(
+        socket: Socket,
+        input: InputStream,
+        output: OutputStream,
+        serverInitRawBytes: ByteArray,
+        serverInitJson: JSONObject,
+        clientInitRawBytes: ByteArray,
+        clientPriv: ByteArray,
+        clientPub: ByteArray,
+        clientName: String,
+        isOutbound: Boolean
+    ) {
+        val serverPayload = serverInitJson.optJSONObject("payload") ?: return
+        val serverId = serverPayload.optString("server_id")
+        val serverPub = SendspinCrypto.base64UrlDecode(serverId)
+        if (serverPub.size != 32) return
+
+        // 读取 noise/handshake msg1
+        val msg1Packet = SendspinWsFrameCodec.readMessage(input) {} ?: return
+        val msg1Json = try { JSONObject(String(msg1Packet.payload, Charsets.UTF_8)) } catch (e: Exception) { return }
+        if (msg1Json.optString("type") != "noise/handshake") return
+
+        val msg1DataBase64 = msg1Json.optJSONObject("payload")?.optString("data") ?: return
+        val msg1Bytes = SendspinCrypto.base64UrlDecode(msg1DataBase64)
+
+        val prologue = ByteArray(clientInitRawBytes.size + serverInitRawBytes.size)
+        System.arraycopy(clientInitRawBytes, 0, prologue, 0, clientInitRawBytes.size)
+        System.arraycopy(serverInitRawBytes, 0, prologue, clientInitRawBytes.size, serverInitRawBytes.size)
+
+        val responder = SendspinCrypto.NoiseResponder(clientPriv, clientPub, serverPub, prologue)
+        val (msg2Bytes, transport) = try {
+            responder.processHandshakeMsg1AndBuildMsg2(msg1Bytes, loadPairingRecords(), activePairingPsk, allowSentinelFallback = true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Noise 握手失败", e)
+            return
+        }
+
+        // 发送 noise/handshake msg2
+        val msg2Json = JSONObject().apply {
+            put("type", "noise/handshake")
+            put("payload", JSONObject().apply {
+                put("data", SendspinCrypto.base64UrlEncode(msg2Bytes))
+            })
+        }
+        SendspinWsFrameCodec.writeFrame(
+            output,
+            SendspinWsFrameCodec.OPCODE_TEXT,
+            msg2Json.toString().toByteArray(Charsets.UTF_8),
+            maskClientToServer = isOutbound
+        )
+
+        // 切换至传输模式：设置双向加密发送器
+        val lock = Any()
+        frameSender = { opcode, plainBytes ->
+            synchronized(lock) {
+                try {
+                    val cipher = transport.encryptClientToServer(plainBytes)
+                    SendspinWsFrameCodec.writeFrame(output, SendspinWsFrameCodec.OPCODE_BINARY, cipher, maskClientToServer = isOutbound)
+                } catch (e: Exception) {
+                    Log.w(TAG, "发送加密帧异常", e)
+                }
+            }
+        }
+
+        // 建立周期时间同步任务
+        startTimeSyncLoop()
+
+        // 接收服务端加密帧循环
+        val fragReassembler = SendspinWsFrameCodec.FragmentReassembler()
+        val artworkAssembler = SendspinWsFrameCodec.ArtworkAssembler()
+
+        isConnected = true
+        notifyListeners()
+
+        while (running && !socket.isClosed) {
+            val rawMsg = SendspinWsFrameCodec.readMessage(input) { pingData ->
+                SendspinWsFrameCodec.writeFrame(output, SendspinWsFrameCodec.OPCODE_PONG, pingData, maskClientToServer = isOutbound)
+            } ?: break
+
+            val plain = try {
+                transport.decryptServerToClient(rawMsg.payload)
+            } catch (e: Exception) {
+                Log.w(TAG, "解密传输帧失败", e)
+                break
+            }
+
+            dispatchSendspinPacket(plain, clientName, fragReassembler, artworkAssembler)
+        }
+
+        closeActiveConnection()
+    }
+
+    private fun handleCleartextSession(
+        socket: Socket,
+        input: InputStream,
+        output: OutputStream,
+        serverHelloJson: JSONObject,
+        clientName: String,
+        isOutbound: Boolean
+    ) {
+        val serverPayload = serverHelloJson.optJSONObject("payload")
+        serverName = serverPayload?.optString("name", "") ?: ""
+
+        val lock = Any()
+        frameSender = { opcode, payloadBytes ->
+            synchronized(lock) {
+                try {
+                    SendspinWsFrameCodec.writeFrame(output, opcode, payloadBytes, maskClientToServer = isOutbound)
+                } catch (e: Exception) {
+                    Log.w(TAG, "发送明文帧异常", e)
+                }
+            }
+        }
+
+        // 发送 client/hello
+        sendClientHello(clientName)
+        startTimeSyncLoop()
+
+        isConnected = true
+        notifyListeners()
+
+        val fragReassembler = SendspinWsFrameCodec.FragmentReassembler()
+        val artworkAssembler = SendspinWsFrameCodec.ArtworkAssembler()
+
+        while (running && !socket.isClosed) {
+            val msg = SendspinWsFrameCodec.readMessage(input) { pingData ->
+                SendspinWsFrameCodec.writeFrame(output, SendspinWsFrameCodec.OPCODE_PONG, pingData, maskClientToServer = isOutbound)
+            } ?: break
+
+            if (msg.opcode == SendspinWsFrameCodec.OPCODE_TEXT) {
+                handleJsonPayload(JSONObject(String(msg.payload, Charsets.UTF_8)), clientName)
+            } else if (msg.opcode == SendspinWsFrameCodec.OPCODE_BINARY) {
+                dispatchSendspinPacket(msg.payload, clientName, fragReassembler, artworkAssembler)
+            }
+        }
+
+        closeActiveConnection()
+    }
+
+    private fun sendClientHello(clientName: String) {
+        val hello = JSONObject().apply {
+            put("type", "client/hello")
+            put("payload", JSONObject().apply {
+                put("name", clientName)
+                put("unpaired_access", JSONObject().apply { put("enabled", true) })
+                put("supported_pair_methods", JSONObject().apply {
+                    put("pairing_psk", JSONObject().apply {
+                        put("locations", JSONArray().apply { put("device") })
+                    })
+                })
+                put("supported_roles", JSONArray().apply {
+                    put("player@v1")
+                    put("metadata@v1")
+                    put("artwork@v1")
+                    put("controller@v1")
+                })
+                put("player@v1_support", JSONObject().apply {
+                    put("supported_formats", JSONArray().apply {
+                        put(JSONObject().apply { put("codec", "pcm"); put("channels", 2); put("sample_rate", 48000); put("bit_depth", 16) })
+                        put(JSONObject().apply { put("codec", "pcm"); put("channels", 2); put("sample_rate", 44100); put("bit_depth", 16) })
+                        put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 48000); put("bit_depth", 16) })
+                        put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 44100); put("bit_depth", 16) })
+                    })
+                    put("buffer_capacity", 1048576)
+                    put("supported_commands", JSONArray().apply { put("volume"); put("mute") })
+                })
+                put("artwork@v1_support", JSONObject().apply {
+                    put("channels", JSONArray().apply { put(0) })
+                })
+            })
+        }
+        val bytes = hello.toString().toByteArray(Charsets.UTF_8)
+        frameSender?.invoke(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + bytes)
+    }
+
+    private fun sendClientState() {
+        val state = JSONObject().apply {
+            put("type", "client/state")
+            put("payload", JSONObject().apply {
+                put("state", "synchronized")
+                put("player", JSONObject().apply {
+                    put("volume", playerVolume)
+                    put("muted", playerMuted)
+                })
+                put("artwork", JSONObject().apply {
+                    put("channels", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("source", "album")
+                            put("format", "jpeg")
+                            put("width", 500)
+                            put("height", 500)
+                        })
+                    })
+                })
+            })
+        }
+        val bytes = state.toString().toByteArray(Charsets.UTF_8)
+        frameSender?.invoke(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + bytes)
+    }
+
+    private fun startTimeSyncLoop() {
+        timeSyncThread?.interrupt()
+        val thread = Thread({
+            var samplesSent = 0
+            while (running && isConnected) {
+                val t1 = System.nanoTime() / 1000L
+                val timeMsg = JSONObject().apply {
+                    put("type", "client/time")
+                    put("payload", JSONObject().apply {
+                        put("client_transmitted", t1)
+                    })
+                }
+                val bytes = timeMsg.toString().toByteArray(Charsets.UTF_8)
+                frameSender?.invoke(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + bytes)
+
+                samplesSent++
+                val sleepMs = if (samplesSent < 8) SYNC_INITIAL_INTERVAL_MS else SYNC_STEADY_INTERVAL_MS
+                try { Thread.sleep(sleepMs) } catch (e: InterruptedException) { break }
+            }
+        }, "sendspin-time-sync")
+        thread.isDaemon = true
+        timeSyncThread = thread
+        thread.start()
+    }
+
+    private fun dispatchSendspinPacket(
+        packet: ByteArray,
+        clientName: String,
+        fragReassembler: SendspinWsFrameCodec.FragmentReassembler,
+        artworkAssembler: SendspinWsFrameCodec.ArtworkAssembler
+    ) {
+        if (packet.isEmpty()) return
+        val msgId = packet[0].toInt() and 0xFF
+
+        when (msgId) {
+            0 -> {
+                // UTF-8 JSON 消息
+                val jsonStr = String(packet, 1, packet.size - 1, Charsets.UTF_8)
+                val json = try { JSONObject(jsonStr) } catch (_: Exception) { return }
+                handleJsonPayload(json, clientName)
+            }
+            1 -> {
+                // 分片重组
+                val assembled = fragReassembler.pushFragment(packet)
+                if (assembled != null) {
+                    val (innerId, data) = assembled
+                    val merged = ByteArray(1 + data.size)
+                    merged[0] = innerId.toByte()
+                    System.arraycopy(data, 0, merged, 1, data.size)
+                    dispatchSendspinPacket(merged, clientName, fragReassembler, artworkAssembler)
+                }
+            }
+            4 -> {
+                // PCM 音频帧 [4][timestamp:8B BE][pcm...]
+                if (packet.size >= 9) {
+                    val ts = readLongBE(packet, 1)
+                    val pcm = packet.copyOfRange(9, packet.size)
+                    audioPlayer?.enqueueAudioChunk(ts, pcm)
+                }
+            }
+            in 8..11 -> {
+                // 专辑封面流
+                when (val ev = artworkAssembler.onBinaryArtwork(packet)) {
+                    is SendspinWsFrameCodec.ArtworkEvent.Completed -> {
+                        val bmp = decodeSampledBitmap(ev.imageBytes, 600, 600)
+                        activeArtwork = bmp
+                        notifyListeners()
+                    }
+                    is SendspinWsFrameCodec.ArtworkEvent.Clear -> {
+                        activeArtwork = null
+                        notifyListeners()
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+
+    private fun handleJsonPayload(json: JSONObject, clientName: String) {
+        val type = json.optString("type")
+        val payload = json.optJSONObject("payload") ?: JSONObject()
+
+        when (type) {
+            "server/hello" -> {
+                serverName = payload.optString("name", "")
+                sendClientHello(clientName)
+                notifyListeners()
+            }
+            "server/activate" -> {
+                sendClientState()
+            }
+            "server/time" -> {
+                val t1 = payload.optLong("client_transmitted")
+                val t2 = payload.optLong("server_received")
+                val t3 = payload.optLong("server_transmitted")
+                val t4 = System.nanoTime() / 1000L
+                clockFilter.onTimeExchange(t1, t2, t3, t4)
+                notifyListeners()
+            }
+            "stream/start" -> {
+                val playerObj = payload.optJSONObject("player")
+                if (playerObj != null) {
+                    val sampleRate = playerObj.optInt("sample_rate", 48000)
+                    val channels = playerObj.optInt("channels", 2)
+                    val bitDepth = playerObj.optInt("bit_depth", 16)
+                    val format = SendspinPlayerFormat("pcm", sampleRate, channels, bitDepth)
+                    currentFormat = format
+                    audioPlayer?.configureStream(format)
+                }
+                notifyListeners()
+            }
+            "stream/clear" -> {
+                val playerObj = payload.optJSONObject("player")
+                val fromTs = if (playerObj?.has("from_timestamp") == true) playerObj.optLong("from_timestamp") else null
+                audioPlayer?.clearBuffer(fromTs)
+            }
+            "stream/end" -> {
+                val roles = payload.optJSONArray("roles")
+                var hasPlayer = true
+                if (roles != null) {
+                    hasPlayer = false
+                    for (i in 0 until roles.length()) {
+                        if (roles.optString(i) == "player@v1") hasPlayer = true
+                    }
+                }
+                if (hasPlayer) {
+                    audioPlayer?.stopStream()
+                }
+            }
+            "server/state" -> {
+                // 1. Metadata
+                val metaObj = payload.optJSONObject("metadata")
+                if (metaObj != null) {
+                    val wasPlaying = currentMetadata.playbackSpeed > 0
+                    val oldTitle = currentMetadata.title
+                    val oldArtist = currentMetadata.artist
+
+                    val ts = metaObj.optLong("timestamp")
+                    val title = metaObj.optString("title", "")
+                    val artist = metaObj.optString("artist", "")
+                    val albumArtist = metaObj.optString("album_artist", "")
+                    val album = metaObj.optString("album", "")
+                    val artworkUrl = metaObj.optString("artwork_url", "")
+                    val year = metaObj.optInt("year", 0)
+                    val track = metaObj.optInt("track", 0)
+                    val progObj = metaObj.optJSONObject("progress")
+                    val hasProg = progObj != null
+                    val progMs = progObj?.optLong("track_progress", 0L) ?: 0L
+                    val durMs = progObj?.optLong("track_duration", 0L) ?: 0L
+                    val speed = progObj?.optInt("playback_speed", 0) ?: 0
+                    val embeddedLrc = metaObj.optString("lyrics", metaObj.optString("lrc", ""))
+
+                    currentMetadata = SendspinTrackMetadata(
+                        timestampUs = ts,
+                        title = title,
+                        artist = artist,
+                        albumArtist = albumArtist,
+                        album = album,
+                        artworkUrl = artworkUrl,
+                        year = year,
+                        track = track,
+                        hasProgress = hasProg,
+                        trackProgressMs = progMs,
+                        trackDurationMs = durMs,
+                        playbackSpeed = speed,
+                        embeddedLyrics = embeddedLrc
+                    )
+
+                    // 曲目变更时异步检索歌词
+                    if (title != oldTitle || artist != oldArtist) {
+                        activeLyrics = null
+                        val ctx = appContext
+                        if (ctx != null && title.isNotBlank()) {
+                            LyricsFetcher.fetchAsync(ctx, title, artist, album, durMs, embeddedLrc) { lyrics ->
+                                if (currentMetadata.title == title && currentMetadata.artist == artist) {
+                                    activeLyrics = lyrics
+                                    notifyListeners()
+                                }
+                            }
+                        }
+                    }
+
+                    // 自动拉起全屏歌词大屏
+                    if (!wasPlaying && speed > 0) {
+                        val ctx = appContext
+                        if (ctx != null && Prefs.isSendspinAutoPopup(ctx)) {
+                            autoPopupCallback?.invoke()
+                        }
+                    }
+                }
+
+                // 2. Controller
+                val ctrlObj = payload.optJSONObject("controller")
+                if (ctrlObj != null) {
+                    val cmds = HashSet<String>()
+                    val cmdArr = ctrlObj.optJSONArray("supported_commands")
+                    if (cmdArr != null) {
+                        for (i in 0 until cmdArr.length()) cmds.add(cmdArr.optString(i))
+                    }
+                    val vol = ctrlObj.optInt("volume", 100)
+                    val muted = ctrlObj.optBoolean("muted", false)
+                    val rep = ctrlObj.optString("repeat", "off")
+                    val shuf = ctrlObj.optBoolean("shuffle", false)
+                    val seekMax = ctrlObj.optLong("seek_max_ms", 0L)
+
+                    currentController = SendspinControllerState(cmds, vol, muted, rep, shuf, seekMax)
+                    playerVolume = vol
+                    playerMuted = muted
+                    audioPlayer?.setVolumeAndMute(vol, muted)
+                }
+
+                // 3. Color
+                val colorObj = payload.optJSONObject("color")
+                if (colorObj != null) {
+                    val ts = colorObj.optLong("timestamp")
+                    val bgRgb = parseRgbArray(colorObj.optJSONArray("background_dark"))
+                    val priRgb = parseRgbArray(colorObj.optJSONArray("primary"))
+                    val accRgb = parseRgbArray(colorObj.optJSONArray("accent"))
+                    currentColorPalette = SendspinColorPalette(ts, bgRgb, priRgb, accRgb)
+                }
+
+                notifyListeners()
+            }
+            "server/command" -> {
+                val cmdObj = payload.optJSONObject("controller")
+                val cmd = cmdObj?.optString("command")
+                if (cmd == "volume") {
+                    val vol = cmdObj.optInt("volume", playerVolume)
+                    playerVolume = vol
+                    audioPlayer?.setVolumeAndMute(vol, playerMuted)
+                    notifyListeners()
+                } else if (cmd == "mute") {
+                    val muted = cmdObj.optBoolean("mute", playerMuted)
+                    playerMuted = muted
+                    audioPlayer?.setVolumeAndMute(playerVolume, muted)
+                    notifyListeners()
+                }
+            }
+            "server/pair-finalize" -> {
+                val sId = payload.optString("server_id")
+                val pskBase64 = payload.optString("psk")
+                if (sId.isNotEmpty() && pskBase64.isNotEmpty()) {
+                    savePairingRecord(sId, SendspinCrypto.base64UrlDecode(pskBase64))
+                }
+            }
+        }
+    }
+
+    private fun readLongBE(b: ByteArray, offset: Int): Long {
+        return ((b[offset].toLong() and 0xFF shl 56) or
+                (b[offset + 1].toLong() and 0xFF shl 48) or
+                (b[offset + 2].toLong() and 0xFF shl 40) or
+                (b[offset + 3].toLong() and 0xFF shl 32) or
+                (b[offset + 4].toLong() and 0xFF shl 24) or
+                (b[offset + 5].toLong() and 0xFF shl 16) or
+                (b[offset + 6].toLong() and 0xFF shl 8) or
+                (b[offset + 7].toLong() and 0xFF))
+    }
+
+    private fun parseRgbArray(arr: JSONArray?): Int? {
+        if (arr == null || arr.length() < 3) return null
+        val r = arr.optInt(0, 0).coerceIn(0, 255)
+        val g = arr.optInt(1, 0).coerceIn(0, 255)
+        val b = arr.optInt(2, 0).coerceIn(0, 255)
+        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    private fun decodeSampledBitmap(data: ByteArray, reqWidth: Int, reqHeight: Int): Bitmap? {
+        return try {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(data, 0, data.size, options)
+            var inSampleSize = 1
+            if (options.outHeight > reqHeight || options.outWidth > reqWidth) {
+                val halfHeight = options.outHeight / 2
+                val halfWidth = options.outWidth / 2
+                while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
+                    inSampleSize *= 2
+                }
+            }
+            options.inJustDecodeBounds = false
+            options.inSampleSize = inSampleSize
+            BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun loadPairingRecords(): List<SendspinCrypto.PairingRecord> {
+        val ctx = appContext ?: return emptyList()
+        val raw = Prefs.getSendspinPairingsJson(ctx) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            val list = ArrayList<SendspinCrypto.PairingRecord>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val sId = obj.getString("server_id")
+                val psk = SendspinCrypto.base64UrlDecode(obj.getString("psk"))
+                list.add(SendspinCrypto.PairingRecord(sId, psk))
+            }
+            list
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun savePairingRecord(serverId: String, psk: ByteArray) {
+        val ctx = appContext ?: return
+        val records = loadPairingRecords().filter { it.serverId != serverId }.toMutableList()
+        records.add(SendspinCrypto.PairingRecord(serverId, psk))
+        val arr = JSONArray()
+        for (r in records) {
+            arr.put(JSONObject().apply {
+                put("server_id", r.serverId)
+                put("psk", SendspinCrypto.base64UrlEncode(r.psk))
+            })
+        }
+        Prefs.setSendspinPairingsJson(ctx, arr.toString())
+    }
+}
