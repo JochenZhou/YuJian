@@ -24,3 +24,4 @@
 -keep class com.zqc.tvnotify.NotifyService { *; }
 -keep class com.zqc.tvnotify.BootReceiver { *; }
 -keep class com.zqc.tvnotify.MainActivity { *; }
+-keep class com.zqc.tvnotify.SendspinActivity { *; }

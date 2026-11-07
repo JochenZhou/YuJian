@@ -69,6 +69,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SendspinActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape" />
+
         <!-- exported=true：保证 adb shell am startservice -n com.zqc.tvnotify/.NotifyService 可拉起 -->
         <service
             android:name=".NotifyService"
