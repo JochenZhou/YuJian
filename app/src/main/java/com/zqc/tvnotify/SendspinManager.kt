@@ -97,6 +97,10 @@ object SendspinManager {
     private var timeSyncThread: Thread? = null
     private var outboundJobThread: Thread? = null
 
+    /** 入站连接处理线程（server-initiated 拨入，每连接一个，避免阻塞 accept 循环）。 */
+    @Volatile
+    private var inboundWorkerThread: Thread? = null
+
     @Volatile
     private var nsdHelper: SendspinNsdHelper? = null
 
@@ -342,9 +346,34 @@ object SendspinManager {
             try {
                 val clientSocket = ssocket.accept()
                 clientSocket.tcpNoDelay = true
-                closeActiveConnection()
+                // 读写超时：升级阶段与异常连接必须能超时退出，否则会话线程永久阻塞、
+                // accept 循环卡死，后续 MA 的所有拨入都进 backlog 永不被处理。
+                clientSocket.soTimeout = 45_000
+                // 会话期间对端会周期性 ping/发流，每帧读都会重置超时，45s 足够宽容。
+                val previousWorker = inboundWorkerThread
+                if (previousWorker != null && previousWorker.isAlive) {
+                    // 新拨入优先：打断并关闭旧会话（其线程会因 socket 关闭/中断退出）
+                    closeActiveConnection()
+                    previousWorker.interrupt()
+                }
                 activeSocket = clientSocket
-                handleConnectedSocket(clientSocket, isOutbound = false, manualUrl = "")
+                val worker = Thread({
+                    try {
+                        handleConnectedSocket(clientSocket, isOutbound = false, manualUrl = "")
+                    } catch (e: java.net.SocketTimeoutException) {
+                        Log.i(TAG, "入站连接空闲超时，关闭")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "入站会话异常结束: ${e.message}")
+                    } finally {
+                        try { clientSocket.close() } catch (_: Exception) {}
+                        if (inboundWorkerThread === Thread.currentThread()) {
+                            inboundWorkerThread = null
+                        }
+                    }
+                }, "sendspin-inbound")
+                worker.isDaemon = true
+                inboundWorkerThread = worker
+                worker.start()
             } catch (e: Exception) {
                 if (!running) break
             }
@@ -363,7 +392,7 @@ object SendspinManager {
                 val path = if (!uri.path.isNullOrEmpty()) uri.path else "/sendspin"
 
                 Log.i(TAG, "正在主动连接 Sendspin 服务端 $host:$port$path")
-                val socket = Socket(host, port).apply { tcpNoDelay = true }
+                val socket = Socket(host, port).apply { tcpNoDelay = true; soTimeout = 45_000 }
                 closeActiveConnection()
                 activeSocket = socket
                 activeServerUrl = normalized
@@ -396,7 +425,7 @@ object SendspinManager {
                 val path = if (!uri.path.isNullOrEmpty()) uri.path else "/sendspin"
 
                 Log.i(TAG, "尝试连接 Sendspin 服务端 $host:$port$path")
-                val socket = Socket(host, port).apply { tcpNoDelay = true }
+                val socket = Socket(host, port).apply { tcpNoDelay = true; soTimeout = 45_000 }
                 closeActiveConnection()
                 activeSocket = socket
                 activeServerUrl = normalized
