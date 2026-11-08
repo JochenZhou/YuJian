@@ -25,12 +25,14 @@ class SendspinAudioPlayer(
     companion object {
         private const val TAG = "SendspinAudio"
         private const val MAX_QUEUE_BYTES = 1048576 // 1MB 规范上限
-        /** AudioTrack 硬件缓冲时长：留足余量吸收服务端发送抖动，防欠载爆音 */
-        private const val TRACK_BUFFER_US = 800_000L
-        /** 播放线程维持的目标缓冲水位：高于它就节流等待，低于就立刻补齐 */
-        private const val TARGET_BUFFER_US = 300_000L
-        /** 单次节流最多等待多久，防止异常时间戳把播放线程挂死 */
-        private const val MAX_PACING_WAIT_US = 500_000L
+        /** AudioTrack 硬件缓冲时长：只留少量，缓冲深度由输出延迟补偿决定 */
+        private const val TRACK_BUFFER_US = 400_000L
+        /** 本机输出延迟默认值（写进 AudioTrack 到真正出声的补偿量） */
+        private const val DEFAULT_OUTPUT_DELAY_US = 100_000L
+        /** 超过该值的滞后视为过期数据，直接丢弃以免延迟累积 */
+        private const val LATE_DROP_US = 1_000_000L
+        /** 时钟未同步时最多等这么久再退化顺序播放 */
+        private const val UNSYNCED_WAIT_US = 2_000_000L
     }
 
     private data class AudioChunk(
@@ -66,12 +68,33 @@ class SendspinAudioPlayer(
     private var wakeLock: PowerManager.WakeLock? = null
     private var queueBytesCount = 0
 
+    /**
+     * 输出延迟补偿（微秒）：写进 AudioTrack 到真正出声之间的滞后。
+     * 调度时提前这么多写入，使声音在服务端时间戳那一刻播出。
+     */
+    @Volatile
+    private var outputDelayUs: Long = DEFAULT_OUTPUT_DELAY_US
+
+    @Volatile
+    private var chunksReceived = 0L
+
     /** 自 startStream 起累计写入 AudioTrack 的帧数（立体声 16bit = 4 字节/帧） */
     @Volatile
     private var framesWritten = 0L
 
     @Volatile
-    private var chunksReceived = 0L
+    private var droppedLate = 0L
+
+    /** 时钟未同步累计等待起点（0 表示未在等待） */
+    @Volatile
+    private var unsyncedWaitSinceUs = 0L
+
+    fun outputDelayMs(): Int = (outputDelayUs / 1000L).toInt()
+
+    /** 服务端可通过 set_output_delay 调整补偿量 */
+    fun setOutputDelayMs(ms: Int) {
+        outputDelayUs = (ms.coerceIn(0, 5000).toLong() * 1000L)
+    }
 
     init {
         try {
@@ -175,7 +198,8 @@ class SendspinAudioPlayer(
         val sr = activeFormat?.sampleRate ?: 48000
         put("queued_ms", if (track != null) queuedPlaybackUs(track, sr) / 1000L else 0L)
         put("chunks", chunksReceived)
-        put("target_ms", TARGET_BUFFER_US / 1000L)
+        put("dropped_late", droppedLate)
+        put("output_delay_ms", outputDelayUs / 1000L)
     }
 
     fun release() {
@@ -247,6 +271,7 @@ class SendspinAudioPlayer(
         }
         queue.clear()
         queueBytesCount = 0
+        unsyncedWaitSinceUs = 0L
         releaseWakeLock()
     }
 
@@ -254,29 +279,63 @@ class SendspinAudioPlayer(
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
 
         while (running) {
-            val chunk = try {
-                queue.take()
-            } catch (e: InterruptedException) {
-                break
-            }
-
-            synchronized(lock) {
-                queueBytesCount -= chunk.pcmData.size
-            }
-
             val track = audioTrack ?: break
+            val head = queue.peek()
 
-            // 以"AudioTrack 里常驻多少毫秒音频"作为唯一节流依据：
-            // 缓冲高于目标就等它排空到目标再写，低于目标则立即补齐。
-            // 绝不往音乐中间插静音（旧实现每块都插，造成规律性脉冲卡顿）。
-            val queuedUs = queuedPlaybackUs(track, sampleRate)
-            if (queuedUs > TARGET_BUFFER_US) {
-                val waitUs = minOf(queuedUs - TARGET_BUFFER_US, MAX_PACING_WAIT_US)
+            if (head == null) {
+                // 队列空：等新数据
                 try {
-                    Thread.sleep(waitUs / 1000L, ((waitUs % 1000L) * 1000L).toInt())
+                    Thread.sleep(10)
                 } catch (e: InterruptedException) {
                     break
                 }
+                continue
+            }
+
+            if (!clockFilter.isSynced) {
+                // 时钟尚未同步：短暂等待（对齐后播放更准），超过 2s 仍未同步则退化为顺序播放
+                if (unsyncedWaitSinceUs == 0L) unsyncedWaitSinceUs = System.nanoTime() / 1000L
+                val waitedUs = System.nanoTime() / 1000L - unsyncedWaitSinceUs
+                if (waitedUs < UNSYNCED_WAIT_US) {
+                    try {
+                        Thread.sleep(10)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
+                    continue
+                }
+                val chunk = queue.poll() ?: continue
+                synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
+                writeToTrack(track, chunk.pcmData)
+                continue
+            }
+            unsyncedWaitSinceUs = 0L
+
+            // 按服务端时间戳调度：只有到了该播的时刻才写进 AudioTrack。
+            // 提前 outputDelay 写入，让 AudioTrack 内常驻约 outputDelay 的音频，
+            // 既补偿硬件输出延迟，又给网络抖动留余量；绝不插静音。
+            val scheduledUs = clockFilter.serverToLocalUs(head.timestampUs) - outputDelayUs
+            val nowUs = System.nanoTime() / 1000L
+            val diffUs = scheduledUs - nowUs
+
+            if (diffUs > 0) {
+                // 还没到播出时刻：小步等待，保持对 stop/flush 的响应
+                val sleepUs = minOf(diffUs, 10_000L)
+                try {
+                    Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt())
+                } catch (e: InterruptedException) {
+                    break
+                }
+                continue
+            }
+
+            val chunk = queue.poll() ?: continue
+            synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
+
+            if (-diffUs > LATE_DROP_US) {
+                // 落后太多（seek/断流后的陈旧数据）：丢弃追赶
+                droppedLate++
+                continue
             }
 
             writeToTrack(track, chunk.pcmData)
@@ -287,7 +346,6 @@ class SendspinAudioPlayer(
     private fun queuedPlaybackUs(track: AudioTrack, sampleRate: Int): Long {
         val playedFrames = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
         val queuedFrames = framesWritten - playedFrames
-        // 正常值应在缓冲容量以内；越界说明 32 位计数回绕，按 0 处理
         if (queuedFrames <= 0L || queuedFrames > sampleRate.toLong() * 60L) return 0L
         return queuedFrames * 1_000_000L / sampleRate
     }

@@ -761,9 +761,9 @@ object SendspinManager {
                         put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 48000); put("bit_depth", 16) })
                         put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 44100); put("bit_depth", 16) })
                     })
-                    // 声明 256KB ≈ 1.36s (48k/16bit/立体声)：服务端按此控制预推量，
-                    // 报 1MB 会让它提前推 5s 以上，队列堆压反而引入抖动
-                    put("buffer_capacity", 262144)
+                    // 声明 128KB ≈ 0.68s (48k/16bit/立体声)：服务端按此控制预推量。
+                    // 按时间戳调度后延迟只取决于预推量，预推越少暂停/播放响应越快
+                    put("buffer_capacity", 131072)
                     put("supported_commands", JSONArray().apply { put("volume"); put("mute") })
                 })
                 put("artwork@v1_support", JSONObject().apply {
@@ -802,10 +802,20 @@ object SendspinManager {
         val state = JSONObject().apply {
             put("type", "client/state")
             put("payload", JSONObject().apply {
-                put("state", "synchronized")
+                // 规范：可用性写在 client/state 顶层 available；旧的 player.state 已废弃
+                put("available", true)
                 put("player", JSONObject().apply {
                     put("volume", playerVolume)
                     put("muted", playerMuted)
+                    // 必填时序字段：服务端据此在时间戳里预留启动/持续缓冲
+                    put("output_delay_ms", audioPlayer?.outputDelayMs() ?: 100)
+                    put("required_lead_time_ms", 250)
+                    put("min_buffer_ms", 250)
+                    put("supported_commands", JSONArray().apply {
+                        put("volume")
+                        put("mute")
+                        put("set_output_delay")
+                    })
                 })
                 put("artwork", JSONObject().apply {
                     put("channels", JSONArray().apply {
@@ -963,6 +973,8 @@ object SendspinManager {
                     val bitDepth = playerObj.optInt("bit_depth", 16)
                     val format = SendspinPlayerFormat("pcm", sampleRate, channels, bitDepth)
                     currentFormat = format
+                    // 新流开始：丢掉上一条流可能残留的音频，避免陈旧数据延后播放
+                    audioPlayer?.clearBuffer()
                     audioPlayer?.configureStream(format)
                 }
                 notifyListeners()
@@ -1080,7 +1092,8 @@ object SendspinManager {
                 notifyListeners()
             }
             "server/command" -> {
-                val cmdObj = payload.optJSONObject("controller")
+                // 规范：播放器命令在 payload.player 里；旧实现读 payload.controller 是错的
+                val cmdObj = payload.optJSONObject("player") ?: payload.optJSONObject("controller")
                 val cmd = cmdObj?.optString("command")
                 if (cmd == "volume") {
                     val vol = cmdObj.optInt("volume", playerVolume)
@@ -1092,6 +1105,12 @@ object SendspinManager {
                     playerMuted = muted
                     audioPlayer?.setVolumeAndMute(playerVolume, muted)
                     notifyListeners()
+                } else if (cmd == "set_output_delay") {
+                    val delayMs = cmdObj.optInt("output_delay_ms", -1)
+                    if (delayMs >= 0) {
+                        audioPlayer?.setOutputDelayMs(delayMs)
+                        Log.i(TAG, "服务端设置输出延迟补偿: ${delayMs}ms")
+                    }
                 }
             }
             "server/pair-finalize" -> {
