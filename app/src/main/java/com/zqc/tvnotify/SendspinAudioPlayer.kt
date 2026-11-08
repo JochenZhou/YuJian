@@ -291,9 +291,9 @@ class SendspinAudioPlayer(
             var playedFrames = -1L
             var tsNanos = 0L
             val haveTs = try { track.getTimestamp(ts) } catch (_: Exception) { false }
-            if (haveTs && ts.timeNs > 0) {
+            if (haveTs && ts.timeNanos > 0) {
                 playedFrames = ts.framePosition.toLong() and 0xFFFFFFFFL
-                tsNanos = ts.timeNs
+                tsNanos = ts.timeNanos
             }
 
             // 播出时钟：把"tsNanos 时刻已播出 playedFrames"外推到当前时刻。
