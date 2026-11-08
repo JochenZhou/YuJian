@@ -140,7 +140,10 @@ class SendspinAudioPlayer(
                 // 千万不能 poll()——那是最先要播的队首，丢它会让播放线程
                 // 的"首块等待"永远等不到目标时刻（死锁：无声+队列永不消化）。
                 val newest = java.util.Collections.max(queue, compareBy { it.timestampUs })
-                queue.removeFirstOccurrence(newest)
+                val it2 = queue.iterator()
+                while (it2.hasNext()) {
+                    if (it2.next() === newest) { it2.remove(); break }
+                }
                 queueBytesCount -= newest.pcmData.size
             }
             queue.offer(AudioChunk(serverTimestampUs, stereoPcm))
