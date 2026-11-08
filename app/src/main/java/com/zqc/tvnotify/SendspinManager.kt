@@ -762,7 +762,16 @@ object SendspinManager {
                     put("supported_commands", JSONArray().apply { put("volume"); put("mute") })
                 })
                 put("artwork@v1_support", JSONObject().apply {
-                    put("channels", JSONArray().apply { put(0) })
+                    // 规范: channels 是 ArtworkChannel 对象列表 {source, format, width, height}，
+                    // source=none 之外的值必须带尺寸；album 封面按玉简实际发送的 JPEG 640 声明
+                    put("channels", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("source", "album")
+                            put("format", "jpeg")
+                            put("width", 640)
+                            put("height", 640)
+                        })
+                    })
                 })
             })
         }

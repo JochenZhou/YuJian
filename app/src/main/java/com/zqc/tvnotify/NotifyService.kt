@@ -35,8 +35,8 @@ class NotifyService : Service() {
         private const val OLD_CHANNEL_ID = "tvnotify_svc"
         private const val NOTIFICATION_ID = 8791
 
-        /** 与 app/build.gradle.kts 的 versionName 保持一致；/health 与 mDNS TXT 都用它 */
-        const val VERSION_NAME = "1.5.0"
+        /** 取自 build.gradle.kts 的 versionName；/health 与 mDNS TXT 都用它 */
+        const val VERSION_NAME = BuildConfig.VERSION_NAME
 
         /**
          * 供设置界面显示「是否正在监听」。
