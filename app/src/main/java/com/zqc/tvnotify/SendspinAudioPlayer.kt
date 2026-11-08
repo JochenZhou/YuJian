@@ -380,6 +380,11 @@ class SendspinAudioPlayer(
     var writeFailures = 0L
         private set
 
+    /** AudioTrack 销毁重建次数（watchdog 自愈） */
+    @Volatile
+    var rebuildCount = 0L
+        private set
+
     private fun writeToTrack(track: AudioTrack, data: ByteArray) {
         var offset = 0
         // 非阻塞写：AudioTrack 卡死/路由失效时 write 可能永久阻塞，
