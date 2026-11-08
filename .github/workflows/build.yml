@@ -54,14 +54,23 @@ jobs:
           "$SDKMGR" --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null
           echo "platform 34 就绪"
 
-      # 仓库不含 gradle-wrapper.jar（二进制不入库），因此用 setup-gradle 提供 Gradle 8.7 并直接调用 gradle。
-      # cache: false —— GitHub 缓存服务 504/400 抖动曾让"下载发行版"也跟着失败（attempt2/3）；
-      # 关掉缓存后 setup-gradle 直接走 services.gradle.org 下载，稳定。
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.7'
-          cache-disabled: true
+      # 仓库不含 gradle-wrapper.jar（二进制不入库）。setup-gradle 在 2026-11 连续遭遇
+      # 下载 504（cache 关闭也一样），改为手动下载发行版（官方源 + 腾讯镜像双通道重试）。
+      - name: Install Gradle 8.7
+        run: |
+          set -euo pipefail
+          GRADLE_DIR="$RUNNER_TEMP/gradle-8.7"
+          for URL in \
+            https://services.gradle.org/distributions/gradle-8.7-bin.zip \
+            https://mirrors.cloud.tencent.com/gradle/gradle-8.7-bin.zip; do
+            echo "尝试 $URL"
+            if curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$RUNNER_TEMP/gradle.zip" "$URL"; then
+              echo "下载成功: $URL"; break
+            fi
+          done
+          test -s "$RUNNER_TEMP/gradle.zip" || { echo "所有源都下载失败"; exit 1; }
+          unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP/gradle-dist"
+          echo "$RUNNER_TEMP/gradle-dist/gradle-8.7/bin" >> "$GITHUB_PATH"
 
       - name: Decode keystore (optional)
         if: ${{ env.KEYSTORE_BASE64 != '' }}
