@@ -25,9 +25,12 @@ class SendspinAudioPlayer(
     companion object {
         private const val TAG = "SendspinAudio"
         private const val MAX_QUEUE_BYTES = 1048576 // 1MB 规范上限
-        private const val JITTER_EARLY_THRESHOLD_US = 20_000L // 20ms
-        private const val JITTER_LATE_THRESHOLD_US = 45_000L  // 45ms
-        private const val MAX_SILENCE_INSERT_US = 250_000L    // 250ms
+        /** AudioTrack 硬件缓冲时长：留足余量吸收服务端发送抖动，防欠载爆音 */
+        private const val TRACK_BUFFER_US = 800_000L
+        /** 播放线程维持的目标缓冲水位：高于它就节流等待，低于就立刻补齐 */
+        private const val TARGET_BUFFER_US = 300_000L
+        /** 单次节流最多等待多久，防止异常时间戳把播放线程挂死 */
+        private const val MAX_PACING_WAIT_US = 500_000L
     }
 
     private data class AudioChunk(
@@ -63,6 +66,13 @@ class SendspinAudioPlayer(
     private var wakeLock: PowerManager.WakeLock? = null
     private var queueBytesCount = 0
 
+    /** 自 startStream 起累计写入 AudioTrack 的帧数（立体声 16bit = 4 字节/帧） */
+    @Volatile
+    private var framesWritten = 0L
+
+    @Volatile
+    private var chunksReceived = 0L
+
     init {
         try {
             val pm = context.applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -87,6 +97,7 @@ class SendspinAudioPlayer(
 
     fun enqueueAudioChunk(serverTimestampUs: Long, pcmBytes: ByteArray) {
         val format = activeFormat ?: return
+        chunksReceived++
         val stereoPcm = if (format.channels == 1) {
             convertMonoToStereo(pcmBytes)
         } else {
@@ -111,6 +122,8 @@ class SendspinAudioPlayer(
             if (fromServerTimestampUs == null) {
                 queue.clear()
                 queueBytesCount = 0
+                // 清空硬件缓冲，否则 seek 之后还会先播完旧的 800ms 音频
+                flushTrack()
             } else {
                 val toKeep = ArrayList<AudioChunk>()
                 var newBytes = 0
@@ -128,6 +141,22 @@ class SendspinAudioPlayer(
         }
     }
 
+    /**
+     * 丢弃 AudioTrack 里尚未播出的音频。
+     * MODE_STREAM 下必须先 pause 再 flush，否则部分设备会抛 IllegalStateException。
+     */
+    private fun flushTrack() {
+        val track = audioTrack ?: return
+        try {
+            track.pause()
+            track.flush()
+            framesWritten = 0L
+            track.play()
+        } catch (e: Exception) {
+            Log.w(TAG, "flush AudioTrack 失败", e)
+        }
+    }
+
     fun stopStream() {
         synchronized(lock) {
             stopStreamInternal()
@@ -138,6 +167,15 @@ class SendspinAudioPlayer(
         this.volumePercent = volumePercent.coerceIn(0, 100)
         this.isMuted = muted
         applyVolumeToTrack()
+    }
+
+    /** 播放健康度快照，用于 /health 远程诊断（无需 adb） */
+    fun debugStats(): org.json.JSONObject = org.json.JSONObject().apply {
+        val track = audioTrack
+        val sr = activeFormat?.sampleRate ?: 48000
+        put("queued_ms", if (track != null) queuedPlaybackUs(track, sr) / 1000L else 0L)
+        put("chunks", chunksReceived)
+        put("target_ms", TARGET_BUFFER_US / 1000L)
     }
 
     fun release() {
@@ -154,7 +192,9 @@ class SendspinAudioPlayer(
         val channelConfig = AudioFormat.CHANNEL_OUT_STEREO
         val audioEncoding = AudioFormat.ENCODING_PCM_16BIT
         val minBufSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioEncoding)
-        val bufSize = maxOf(minBufSize * 4, 32768)
+        // 缓冲给足 ~800ms：太小的缓冲会被服务端发送节奏牵着走，造成周期性欠载卡顿
+        val targetBytes = (TRACK_BUFFER_US * sampleRate * 4L / 1_000_000L).toInt() and -4
+        val bufSize = maxOf(minBufSize * 4, targetBytes, 32768)
 
         val track = try {
             AudioTrack(
@@ -171,6 +211,7 @@ class SendspinAudioPlayer(
         }
 
         audioTrack = track
+        framesWritten = 0L
         applyVolumeToTrack()
 
         try {
@@ -224,26 +265,41 @@ class SendspinAudioPlayer(
             }
 
             val track = audioTrack ?: break
-            val targetLocalUs = clockFilter.serverToLocalUs(chunk.timestampUs)
-            val nowLocalUs = System.nanoTime() / 1000L
-            val diffUs = targetLocalUs - nowLocalUs
 
-            if (clockFilter.isSynced) {
-                if (diffUs > JITTER_EARLY_THRESHOLD_US) {
-                    // 超前到达：填补静音帧以保持硬件音频头绝对对齐
-                    val silenceUs = minOf(diffUs, MAX_SILENCE_INSERT_US)
-                    val silenceBytesCount = ((silenceUs * sampleRate * 4L) / 1_000_000L).toInt() and -4
-                    if (silenceBytesCount > 0) {
-                        val silence = ByteArray(silenceBytesCount)
-                        track.write(silence, 0, silence.size)
-                    }
-                } else if (diffUs < -JITTER_LATE_THRESHOLD_US) {
-                    // 滞后超过阈值：丢帧追赶
-                    continue
+            // 以"AudioTrack 里常驻多少毫秒音频"作为唯一节流依据：
+            // 缓冲高于目标就等它排空到目标再写，低于目标则立即补齐。
+            // 绝不往音乐中间插静音（旧实现每块都插，造成规律性脉冲卡顿）。
+            val queuedUs = queuedPlaybackUs(track, sampleRate)
+            if (queuedUs > TARGET_BUFFER_US) {
+                val waitUs = minOf(queuedUs - TARGET_BUFFER_US, MAX_PACING_WAIT_US)
+                try {
+                    Thread.sleep(waitUs / 1000L, ((waitUs % 1000L) * 1000L).toInt())
+                } catch (e: InterruptedException) {
+                    break
                 }
             }
 
-            track.write(chunk.pcmData, 0, chunk.pcmData.size)
+            writeToTrack(track, chunk.pcmData)
+        }
+    }
+
+    /** AudioTrack 内已写入但尚未播出的音频时长（微秒） */
+    private fun queuedPlaybackUs(track: AudioTrack, sampleRate: Int): Long {
+        val playedFrames = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        val queuedFrames = framesWritten - playedFrames
+        // 正常值应在缓冲容量以内；越界说明 32 位计数回绕，按 0 处理
+        if (queuedFrames <= 0L || queuedFrames > sampleRate.toLong() * 60L) return 0L
+        return queuedFrames * 1_000_000L / sampleRate
+    }
+
+    /** 完整写入一块 PCM（AudioTrack.write 可能短写） */
+    private fun writeToTrack(track: AudioTrack, data: ByteArray) {
+        var offset = 0
+        while (offset < data.size && running) {
+            val written = track.write(data, offset, data.size - offset)
+            if (written <= 0) break
+            offset += written
+            framesWritten += written / 4L // 立体声 16bit → 4 字节/帧
         }
     }
 

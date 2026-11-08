@@ -216,6 +216,9 @@ object SendspinManager {
 
     fun currentArtwork(): Bitmap? = activeArtwork
 
+    /** 音频播放健康度，供 /health 远程诊断 */
+    fun audioDebugStats(): org.json.JSONObject? = audioPlayer?.debugStats()
+
     fun currentLyrics(): ParsedLyrics? = activeLyrics
 
     fun currentPositionMs(): Long {
@@ -758,7 +761,9 @@ object SendspinManager {
                         put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 48000); put("bit_depth", 16) })
                         put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 44100); put("bit_depth", 16) })
                     })
-                    put("buffer_capacity", 1048576)
+                    // 声明 256KB ≈ 1.36s (48k/16bit/立体声)：服务端按此控制预推量，
+                    // 报 1MB 会让它提前推 5s 以上，队列堆压反而引入抖动
+                    put("buffer_capacity", 262144)
                     put("supported_commands", JSONArray().apply { put("volume"); put("mute") })
                 })
                 put("artwork@v1_support", JSONObject().apply {

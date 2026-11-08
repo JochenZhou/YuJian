@@ -491,6 +491,7 @@ class NotifyHttpServer(
             put("volume", snap.playerVolume)
             put("muted", snap.playerMuted)
             put("discovered_servers", org.json.JSONArray(snap.discoveredServers))
+            put("audio", SendspinManager.audioDebugStats() ?: org.json.JSONObject.NULL)
         }
     }
 
