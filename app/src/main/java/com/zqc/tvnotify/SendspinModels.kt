@@ -115,20 +115,26 @@ class SendspinClockFilter {
                 // 忽略非对称 Wi-Fi 延迟抖动尖峰
                 return
             }
-            if (samples.size >= 16) {
+            samples.add(TimeSample(rtt, sampleOffset))
+            if (samples.size > 16) {
                 samples.removeAt(0)
             }
-            samples.add(TimeSample(rtt, sampleOffset))
 
             if (!isSynced) {
-                offsetUs = sampleOffset
+                // 冷启动阶段（样本不足）：取窗口内最小 RTT 样本的 offset。
+                // 首样本可能被 WiFi 不对称延迟毒化（偏差可达上百 ms）；
+                // 最小 RTT 样本的不对称成分最小，是冷启动阶段最优估计。
                 minRttUs = rtt
-                isSynced = true
+                val best = samples.minByOrNull { it.rttUs } ?: samples.last()
+                offsetUs = best.offsetUs
+                if (samples.size >= 4) {
+                    isSynced = true
+                }
             } else {
                 if (rtt < minRttUs) {
                     minRttUs = rtt
                 }
-                // 指数移动加权平滑 (alpha = 0.25)
+                // 稳态：指数移动加权平滑 (alpha = 0.25)
                 offsetUs = (offsetUs * 3L + sampleOffset) / 4L
             }
         }
@@ -138,6 +144,9 @@ class SendspinClockFilter {
     fun serverToLocalUs(serverTimeUs: Long): Long {
         return serverTimeUs - offsetUs
     }
+
+    /** 当前时钟偏移估计（server - local），诊断用 */
+    fun currentOffsetUs(): Long = synchronized(lock) { offsetUs }
 
     /** 将本地微秒单调时钟反解为服务端微秒时钟 */
     fun localToServerUs(localTimeUs: Long): Long {

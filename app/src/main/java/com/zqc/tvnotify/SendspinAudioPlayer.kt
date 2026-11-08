@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.net.wifi.WifiManager
 import android.os.PowerManager
 import android.os.Process
 import android.util.Log
@@ -66,6 +67,7 @@ class SendspinAudioPlayer(
     private var audioTrack: AudioTrack? = null
     private var workerThread: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var queueBytesCount = 0
 
     /**
@@ -311,10 +313,14 @@ class SendspinAudioPlayer(
             }
             unsyncedWaitSinceUs = 0L
 
-            // 按服务端时间戳调度：只有到了该播的时刻才写进 AudioTrack。
-            // 提前 outputDelay 写入，让 AudioTrack 内常驻约 outputDelay 的音频，
-            // 既补偿硬件输出延迟，又给网络抖动留余量；绝不插静音。
-            val scheduledUs = clockFilter.serverToLocalUs(head.timestampUs) - outputDelayUs
+            // 时间戳调度 + 实测积压反馈：
+            // 声音出扬声器时刻 = 写入时刻 + AudioTrack 当前积压 Q。
+            // 目标：写入时刻 + Q == 时间戳时刻 → 写入时机 = 时间戳时刻 - Q。
+            // Q 用 playbackHead 实时测量（历史积压、HAL 延迟都被动态吸收），
+            // outputDelay 作为下限：积压不足时宁可等久一点也不让缓冲见底。
+            val queuedUs = queuedPlaybackUs(track, sampleRate)
+            val writeDelayUs = maxOf(queuedUs, outputDelayUs)
+            val scheduledUs = clockFilter.serverToLocalUs(head.timestampUs) - writeDelayUs
             val nowUs = System.nanoTime() / 1000L
             val diffUs = scheduledUs - nowUs
 
@@ -341,7 +347,6 @@ class SendspinAudioPlayer(
             writeToTrack(track, chunk.pcmData)
         }
     }
-
     /** AudioTrack 内已写入但尚未播出的音频时长（微秒） */
     private fun queuedPlaybackUs(track: AudioTrack, sampleRate: Int): Long {
         val playedFrames = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
@@ -393,6 +398,14 @@ class SendspinAudioPlayer(
         try {
             wakeLock?.acquire(3 * 3600 * 1000L) // 最多持有 3 小时兜底
         } catch (_: Exception) {}
+        try {
+            // WiFi 高性能模式：防止省电策略把下行音频挤成突发簇（时间戳调度的大敌）
+            val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            wifiLock = wifi?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "YuJian:SendspinAudio")?.apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (_: Exception) {}
     }
 
     private fun releaseWakeLock() {
@@ -401,5 +414,11 @@ class SendspinAudioPlayer(
                 wakeLock?.release()
             }
         } catch (_: Exception) {}
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+            }
+        } catch (_: Exception) {}
+        wifiLock = null
     }
 }

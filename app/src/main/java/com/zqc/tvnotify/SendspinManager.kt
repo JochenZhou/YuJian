@@ -219,6 +219,11 @@ object SendspinManager {
     /** 音频播放健康度，供 /health 远程诊断 */
     fun audioDebugStats(): org.json.JSONObject? = audioPlayer?.debugStats()
 
+    /** 时钟同步诊断（/health） */
+    fun clockSynced(): Boolean = clockFilter.isSynced
+    fun clockRttMs(): Long = clockFilter.minRttUs / 1000L
+    fun clockOffsetMs(): Long = clockFilter.currentOffsetUs() / 1000L
+
     fun currentLyrics(): ParsedLyrics? = activeLyrics
 
     fun currentPositionMs(): Long {
@@ -761,22 +766,9 @@ object SendspinManager {
                         put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 48000); put("bit_depth", 16) })
                         put(JSONObject().apply { put("codec", "pcm"); put("channels", 1); put("sample_rate", 44100); put("bit_depth", 16) })
                     })
-                    // 声明 128KB ≈ 0.68s (48k/16bit/立体声)：服务端按此控制预推量。
-                    // 按时间戳调度后延迟只取决于预推量，预推越少暂停/播放响应越快
-                    put("buffer_capacity", 131072)
-                    put("supported_commands", JSONArray().apply { put("volume"); put("mute") })
-                })
-                put("artwork@v1_support", JSONObject().apply {
-                    // 规范: channels 是 ArtworkChannel 对象列表 {source, format, width, height}，
-                    // source=none 之外的值必须带尺寸；album 封面按玉简实际发送的 JPEG 640 声明
-                    put("channels", JSONArray().apply {
-                        put(JSONObject().apply {
-                            put("source", "album")
-                            put("format", "jpeg")
-                            put("width", 640)
-                            put("height", 640)
-                        })
-                    })
+                    // 声明 512KB ≈ 2.7s (48k/16bit/立体声)：仅作防断流上限。
+                    // 播放时机由客户端按时间戳调度，预推多少不影响延迟
+                    put("buffer_capacity", 524288)
                 })
             })
         }

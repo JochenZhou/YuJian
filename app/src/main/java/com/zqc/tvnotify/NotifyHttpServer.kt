@@ -491,6 +491,11 @@ class NotifyHttpServer(
             put("volume", snap.playerVolume)
             put("muted", snap.playerMuted)
             put("discovered_servers", org.json.JSONArray(snap.discoveredServers))
+            put("clock", org.json.JSONObject().apply {
+                put("synced", SendspinManager.clockSynced())
+                put("rtt_ms", SendspinManager.clockRttMs())
+                put("offset_ms", SendspinManager.clockOffsetMs())
+            })
             put("audio", SendspinManager.audioDebugStats() ?: org.json.JSONObject.NULL)
         }
     }
