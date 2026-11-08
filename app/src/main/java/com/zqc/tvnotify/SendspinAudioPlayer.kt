@@ -211,6 +211,8 @@ class SendspinAudioPlayer(
         put("playing", isTrackPlaying())
         put("head_frames", track?.playbackHeadPosition?.toLong()?.and(0xFFFFFFFFL) ?: 0L)
         put("written_frames", framesWritten)
+        put("write_failures", writeFailures)
+        put("rebuilds", rebuildCount)
     }
 
     private fun isTrackPlaying(): Boolean = try {
@@ -373,6 +375,11 @@ class SendspinAudioPlayer(
     }
 
     /** 完整写入一块 PCM（AudioTrack.write 可能短写） */
+    /** write() 失败/零写入计数（>0 说明 AudioTrack 拒收数据） */
+    @Volatile
+    var writeFailures = 0L
+        private set
+
     private fun writeToTrack(track: AudioTrack, data: ByteArray) {
         var offset = 0
         // 非阻塞写：AudioTrack 卡死/路由失效时 write 可能永久阻塞，
@@ -380,8 +387,14 @@ class SendspinAudioPlayer(
         while (offset < data.size && running) {
             val written = try {
                 track.write(data, offset, data.size - offset, AudioTrack.WRITE_NON_BLOCKING)
-            } catch (e: Exception) { break }
-            if (written <= 0) break
+            } catch (e: Exception) {
+                writeFailures++
+                break
+            }
+            if (written <= 0) {
+                writeFailures++
+                break
+            }
             offset += written
             framesWritten += written / 4L // 立体声 16bit → 4 字节/帧
         }
@@ -400,6 +413,7 @@ class SendspinAudioPlayer(
         val t = Thread({
             var lastProgress = -1L
             var stuckRounds = 0
+            var lastWriteFailures = 0L
             while (running) {
                 try { Thread.sleep(2000) } catch (e: InterruptedException) { break }
                 val track = audioTrack ?: continue
@@ -410,18 +424,20 @@ class SendspinAudioPlayer(
                 val consumed = (try { track.getTimestamp(ts) && ts.nanoTime > 0 } catch (_: Exception) { false })
                     .let { ok -> if (ok) ts.framePosition.toLong() and 0xFFFFFFFFL
                                  else track.playbackHeadPosition.toLong() and 0xFFFFFFFFL }
-                if (consumed > lastProgress) {
+                val writeFailing = writeFailures > lastWriteFailures
+                lastWriteFailures = writeFailures
+                if (consumed > lastProgress && !writeFailing) {
                     lastProgress = consumed
                     stuckRounds = 0
-                } else {
-                    stuckRounds++
-                    Log.w(TAG, "watchdog: 消费停滞 ${stuckRounds}x2s（consumed=$consumed written=$framesWritten）")
-                    if (stuckRounds >= 3) {
-                        stuckRounds = 0
-                        lastProgress = -1L
-                        Log.w(TAG, "watchdog: AudioTrack 卡死，销毁重建")
-                        rebuildAudioTrack(sampleRate)
-                    }
+                    continue
+                }
+                stuckRounds++
+                Log.w(TAG, "watchdog: 停滞 ${stuckRounds}x2s（consumed=$consumed written=$framesWritten writeFail=$writeFailures）")
+                if (stuckRounds >= 3) {
+                    stuckRounds = 0
+                    lastProgress = -1L
+                    Log.w(TAG, "watchdog: AudioTrack 异常，销毁重建")
+                    rebuildAudioTrack(sampleRate)
                 }
             }
         }, "sendspin-audio-watchdog")
@@ -455,9 +471,11 @@ class SendspinAudioPlayer(
                 return
             }
             audioTrack = track
+            writeFailures = 0L
+            rebuildCount++
             applyVolumeToTrack()
             try { track.play() } catch (e: Exception) { Log.e(TAG, "watchdog: play 失败", e) }
-            Log.w(TAG, "watchdog: AudioTrack 已重建")
+            Log.w(TAG, "watchdog: AudioTrack 已重建（第 $rebuildCount 次）")
         }
     }
 
