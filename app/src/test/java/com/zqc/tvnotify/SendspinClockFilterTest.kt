@@ -12,12 +12,15 @@ class SendspinClockFilterTest {
         val localBase = 120_000_000L // 120s uptime in us
         val serverBase = 1_762_531_200_000_000L // Unix epoch 2025+ in us
         // True offset = serverBase - localBase, symmetric 2ms one-way delay (4000us RTT)
-        filter.onTimeExchange(
-            clientTxUs = localBase,
-            serverRxUs = serverBase + 2_000L,
-            serverTxUs = serverBase + 2_100L,
-            clientRxUs = localBase + 4_100L
-        )
+        // 冷启动需 4 个样本才标记 isSynced（窗口内取最小 RTT 样本，防首样本毒化）
+        repeat(4) { i ->
+            filter.onTimeExchange(
+                clientTxUs = localBase + i * 1_000_000L,
+                serverRxUs = serverBase + 2_000L,
+                serverTxUs = serverBase + 2_100L,
+                clientRxUs = localBase + i * 1_000_000L + 4_100L
+            )
+        }
         assertTrue(filter.isSynced)
         assertEquals(4_000L, filter.minRttUs)
         assertTrue(abs(filter.localToServerUs(localBase + 1_000_000L) - (serverBase + 1_000_000L)) <= 50L)
