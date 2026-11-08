@@ -266,10 +266,12 @@ class SendspinAudioPlayer(
         worker.priority = Thread.MAX_PRIORITY
         workerThread = worker
         worker.start()
+        startWatchdog(sampleRate)
     }
 
     private fun stopStreamInternal() {
         running = false
+        stopWatchdog()
         val worker = workerThread
         workerThread = null
         worker?.interrupt()
@@ -373,11 +375,89 @@ class SendspinAudioPlayer(
     /** 完整写入一块 PCM（AudioTrack.write 可能短写） */
     private fun writeToTrack(track: AudioTrack, data: ByteArray) {
         var offset = 0
+        // 非阻塞写：AudioTrack 卡死/路由失效时 write 可能永久阻塞，
+        // 会把播放线程一起冻死。这里最多试一次，写不下就留给下轮。
         while (offset < data.size && running) {
-            val written = track.write(data, offset, data.size - offset)
+            val written = try {
+                track.write(data, offset, data.size - offset, AudioTrack.WRITE_NON_BLOCKING)
+            } catch (e: Exception) { break }
             if (written <= 0) break
             offset += written
             framesWritten += written / 4L // 立体声 16bit → 4 字节/帧
+        }
+    }
+
+    /**
+     * 播出 watchdog：AudioTrack 声称 PLAYING 但硬件帧计数长时间不动 = 卡死
+     * （已写满的缓冲不再被消费，head 恒 0）。唯一可靠的恢复是销毁重建。
+     * 独立线程 + AudioTimestamp 硬件帧计数（playbackHead 在该设备上冻结时
+     * AudioTimestamp 仍可能推进，二者都看）。
+     */
+    private var watchdogThread: Thread? = null
+
+    private fun startWatchdog(sampleRate: Int) {
+        stopWatchdog()
+        val t = Thread({
+            var lastProgress = -1L
+            var stuckRounds = 0
+            while (running) {
+                try { Thread.sleep(2000) } catch (e: InterruptedException) { break }
+                val track = audioTrack ?: continue
+                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) { stuckRounds = 0; continue }
+                if (framesWritten == 0L) { stuckRounds = 0; continue }   // 还没数据
+                // 消费进度 = 已播出帧数（优先 AudioTimestamp，退化为 playbackHead）
+                val ts = AudioTimestamp()
+                val consumed = (try { track.getTimestamp(ts) && ts.nanoTime > 0 } catch (_: Exception) { false })
+                    .let { ok -> if (ok) ts.framePosition.toLong() and 0xFFFFFFFFL
+                                 else track.playbackHeadPosition.toLong() and 0xFFFFFFFFL }
+                if (consumed > lastProgress) {
+                    lastProgress = consumed
+                    stuckRounds = 0
+                } else {
+                    stuckRounds++
+                    Log.w(TAG, "watchdog: 消费停滞 ${stuckRounds}x2s（consumed=$consumed written=$framesWritten）")
+                    if (stuckRounds >= 3) {
+                        stuckRounds = 0
+                        lastProgress = -1L
+                        Log.w(TAG, "watchdog: AudioTrack 卡死，销毁重建")
+                        rebuildAudioTrack(sampleRate)
+                    }
+                }
+            }
+        }, "sendspin-audio-watchdog")
+        t.isDaemon = true
+        watchdogThread = t
+        t.start()
+    }
+
+    private fun stopWatchdog() {
+        watchdogThread?.interrupt()
+        watchdogThread = null
+    }
+
+    /** 卡死自愈：丢弃当前 AudioTrack，立即重建并恢复播放（缓冲内数据作废，重新写入） */
+    private fun rebuildAudioTrack(sampleRate: Int) {
+        synchronized(lock) {
+            val old = audioTrack
+            audioTrack = null
+            try { old?.pause() } catch (_: Exception) {}
+            try { old?.flush() } catch (_: Exception) {}
+            try { old?.release() } catch (_: Exception) {}
+            framesWritten = 0L
+            val minBufSize = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT)
+            val targetBytes = (TRACK_BUFFER_US * sampleRate * 4L / 1_000_000L).toInt() and -4
+            val bufSize = maxOf(minBufSize * 4, targetBytes, 32768)
+            val track = try {
+                AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, AudioFormat.CHANNEL_OUT_STEREO,
+                    AudioFormat.ENCODING_PCM_16BIT, bufSize, AudioTrack.MODE_STREAM)
+            } catch (e: Exception) {
+                Log.e(TAG, "watchdog: 重建 AudioTrack 失败", e)
+                return
+            }
+            audioTrack = track
+            applyVolumeToTrack()
+            try { track.play() } catch (e: Exception) { Log.e(TAG, "watchdog: play 失败", e) }
+            Log.w(TAG, "watchdog: AudioTrack 已重建")
         }
     }
 
