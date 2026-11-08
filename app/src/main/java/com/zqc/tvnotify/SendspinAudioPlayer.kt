@@ -3,6 +3,7 @@ package com.zqc.tvnotify
 import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTimestamp
 import android.media.AudioTrack
 import android.net.wifi.WifiManager
 import android.os.PowerManager
@@ -26,8 +27,8 @@ class SendspinAudioPlayer(
     companion object {
         private const val TAG = "SendspinAudio"
         private const val MAX_QUEUE_BYTES = 1048576 // 1MB 规范上限
-        /** AudioTrack 硬件缓冲时长：只留少量，缓冲深度由输出延迟补偿决定 */
-        private const val TRACK_BUFFER_US = 400_000L
+        /** AudioTrack 硬件缓冲时长：留足余量吸收 MA 的预推突发（~1s 周期） */
+        private const val TRACK_BUFFER_US = 600_000L
         /** 本机输出延迟默认值（写进 AudioTrack 到真正出声的补偿量） */
         private const val DEFAULT_OUTPUT_DELAY_US = 100_000L
         /** 超过该值的滞后视为过期数据，直接丢弃以免延迟累积 */
@@ -202,6 +203,7 @@ class SendspinAudioPlayer(
         put("chunks", chunksReceived)
         put("dropped_late", droppedLate)
         put("output_delay_ms", outputDelayUs / 1000L)
+        put("err_ms", lastErrUs / 1000L)
     }
 
     fun release() {
@@ -279,31 +281,45 @@ class SendspinAudioPlayer(
 
     private fun playbackLoop(sampleRate: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
+        val ts = AudioTimestamp()
 
         while (running) {
             val track = audioTrack ?: break
             val head = queue.peek()
 
+            // ---- 读播出时钟（AudioTimestamp：帧计数 + 采集时刻，硬件级精度）----
+            var playedFrames = -1L
+            var tsNanos = 0L
+            val haveTs = try { track.getTimestamp(ts) } catch (_: Exception) { false }
+            if (haveTs && ts.timeNs > 0) {
+                playedFrames = ts.framePosition.toLong() and 0xFFFFFFFFL
+                tsNanos = ts.timeNs
+            }
+
+            // 播出时钟：把"tsNanos 时刻已播出 playedFrames"外推到当前时刻。
+            // 这是真实出声位置（含 DSP/HAL 延迟），比 playbackHeadPosition 的大步长
+            // 更新精确得多——后者是脉冲抖动的根源。
+            val nowNanos = System.nanoTime()
+            var playClockUs = -1L
+            if (playedFrames >= 0) {
+                val elapsedUs = (nowNanos - tsNanos) / 1000L
+                playClockUs = playedFrames * 1_000_000L / sampleRate +
+                    (if (elapsedUs in 0..500_000) elapsedUs else 0L)
+            }
+            val framesWrittenUs = framesWritten * 1_000_000L / sampleRate
+
             if (head == null) {
-                // 队列空：等新数据
-                try {
-                    Thread.sleep(10)
-                } catch (e: InterruptedException) {
-                    break
-                }
+                // 缓冲空：等新数据（欠载会自然表现为静音间隙）
+                try { Thread.sleep(10) } catch (e: InterruptedException) { break }
                 continue
             }
 
             if (!clockFilter.isSynced) {
-                // 时钟尚未同步：短暂等待（对齐后播放更准），超过 2s 仍未同步则退化为顺序播放
+                // 时钟尚未同步：等待，超过 2s 退化顺序播放
                 if (unsyncedWaitSinceUs == 0L) unsyncedWaitSinceUs = System.nanoTime() / 1000L
                 val waitedUs = System.nanoTime() / 1000L - unsyncedWaitSinceUs
                 if (waitedUs < UNSYNCED_WAIT_US) {
-                    try {
-                        Thread.sleep(10)
-                    } catch (e: InterruptedException) {
-                        break
-                    }
+                    try { Thread.sleep(10) } catch (e: InterruptedException) { break }
                     continue
                 }
                 val chunk = queue.poll() ?: continue
@@ -313,41 +329,74 @@ class SendspinAudioPlayer(
             }
             unsyncedWaitSinceUs = 0L
 
-            // 时间戳调度 + 实测积压反馈：
-            // 声音出扬声器时刻 = 写入时刻 + AudioTrack 当前积压 Q。
-            // 目标：写入时刻 + Q == 时间戳时刻 → 写入时机 = 时间戳时刻 - Q。
-            // Q 用 playbackHead 实时测量（历史积压、HAL 延迟都被动态吸收），
-            // outputDelay 作为下限：积压不足时宁可等久一点也不让缓冲见底。
-            val queuedUs = queuedPlaybackUs(track, sampleRate)
-            val writeDelayUs = maxOf(queuedUs, outputDelayUs)
-            val scheduledUs = clockFilter.serverToLocalUs(head.timestampUs) - writeDelayUs
-            val nowUs = System.nanoTime() / 1000L
-            val diffUs = scheduledUs - nowUs
+            // ---- 锚定+骑行调度（官方架构）----
+            // 播出时刻 = 缓冲末端 E（在飞内容播完的本地时刻）。
+            // 目标：写完这块后 E ≥ 时间戳对应时刻 → 声音严格不早于时间戳出声；
+            // 且差距小于一块（25ms）→ 不引入多余延迟。输出延迟由外推时钟天然包含。
+            val chunk = head
+            val scheduledLocalUs = clockFilter.serverToLocalUs(chunk.timestampUs)
+            val durationUs = chunk.pcmData.size * 1_000_000L / (sampleRate * 4L)
 
-            if (diffUs > 0) {
-                // 还没到播出时刻：小步等待，保持对 stop/flush 的响应
-                val sleepUs = minOf(diffUs, 10_000L)
-                try {
-                    Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt())
-                } catch (e: InterruptedException) {
-                    break
-                }
+            // 缓冲末端（本地钟）：已写内容播完的时刻
+            val endUs = if (playClockUs >= 0 && (playedFrames > 0 || framesWritten == 0L)) {
+                nowNanos / 1000L + (framesWrittenUs - playClockUs).coerceAtLeast(0L)
+            } else if (playClockUs >= 0) {
+                // AudioTimestamp 正常但首帧未出声：末端 = now + 已写入时长（保守估计）
+                nowNanos / 1000L + framesWrittenUs
+            } else {
+                // AudioTimestamp 不可用（少数设备）：退化为 playbackHead 估计
+                nowNanos / 1000L + queuedPlaybackUs(track, sampleRate)
+            }
+
+            // 写这块能让末端推进多少（受 AudioTrack 硬件缓冲余量限制）
+            val inFlightUs = if (playClockUs >= 0) (framesWrittenUs - playClockUs).coerceAtLeast(0L)
+                             else queuedPlaybackUs(track, sampleRate)
+            val trackRoomUs = (TRACK_BUFFER_US - inFlightUs).coerceAtLeast(0L)
+            val canAppendUs = minOf(durationUs, trackRoomUs)
+
+            if (canAppendUs <= 0) {
+                // 硬件缓冲满：等一块的时间再试（不参与调度决策）
+                try { Thread.sleep(durationUs.coerceIn(5_000L, 30_000L) / 1000L) }
+                catch (e: InterruptedException) { break }
                 continue
             }
 
-            val chunk = queue.poll() ?: continue
+            val projectedEndUs = endUs + canAppendUs
+            val diffUs = projectedEndUs - scheduledLocalUs
+
+            if (diffUs < 0) {
+                // 写完这块末端仍早于时间戳：需要"骑行"——让这块等一等再写。
+                // 等待时间 = 差距，但留 5ms 步长响应停止/清空。
+                val sleepUs = minOf(-diffUs, 10_000L)
+                try { Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt()) }
+                catch (e: InterruptedException) { break }
+                continue
+            }
+
+            queue.poll()
             synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
 
-            if (-diffUs > LATE_DROP_US) {
+            if (scheduledLocalUs < nowNanos / 1000L - LATE_DROP_US) {
                 // 落后太多（seek/断流后的陈旧数据）：丢弃追赶
                 droppedLate++
                 continue
             }
 
+            // 播出误差诊断：这块实际会播出 vs 时间戳
+            val errUs = projectedEndUs - scheduledLocalUs
+            lastErrUs = errUs
+
             writeToTrack(track, chunk.pcmData)
         }
     }
-    /** AudioTrack 内已写入但尚未播出的音频时长（微秒） */
+
+    /** 最近一块的播出误差（微秒，>0 = 比时间戳晚出声），诊断与 MA 上报用 */
+    @Volatile
+    private var lastErrUs = 0L
+
+    fun measuredErrMs(): Int = (lastErrUs / 1000L).toInt()
+
+    /** AudioTrack 内已写入但尚未播出的音频时长（微秒）—— AudioTimestamp 不可用时的退化估计 */
     private fun queuedPlaybackUs(track: AudioTrack, sampleRate: Int): Long {
         val playedFrames = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
         val queuedFrames = framesWritten - playedFrames

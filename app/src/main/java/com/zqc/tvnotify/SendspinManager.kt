@@ -799,8 +799,9 @@ object SendspinManager {
                 put("player", JSONObject().apply {
                     put("volume", playerVolume)
                     put("muted", playerMuted)
-                    // 必填时序字段：服务端据此在时间戳里预留启动/持续缓冲
-                    put("output_delay_ms", audioPlayer?.outputDelayMs() ?: 100)
+                    // 必填时序字段：服务端据此在时间戳里预留启动/持续缓冲。
+                    // output_delay_ms 上报实测播出误差（err），MA 据此平移本设备时间戳
+                    put("output_delay_ms", reportedOutputDelayMs())
                     put("required_lead_time_ms", 250)
                     put("min_buffer_ms", 250)
                     put("supported_commands", JSONArray().apply {
@@ -823,6 +824,20 @@ object SendspinManager {
         }
         val bytes = state.toString().toByteArray(Charsets.UTF_8)
         frameSender?.invoke(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + bytes)
+    }
+
+    /**
+     * 上报给 MA 的输出延迟：实测播出误差（写末端 vs 时间戳），EMA 平滑。
+     * 服务端用它计算本设备的缓冲完成时刻与迟到判定（发送节奏更贴合）；
+     * 时间戳本身不平移（所有客户端收到相同时间戳，同步靠客户端锚定调度）。
+     */
+    private var reportedErrEmaUs = 0L
+
+    private fun reportedOutputDelayMs(): Int {
+        val errMs = audioPlayer?.measuredErrMs() ?: return 100
+        reportedErrEmaUs = if (reportedErrEmaUs == 0L) errMs * 1000L
+                          else (reportedErrEmaUs * 3 + errMs * 1000L) / 4
+        return (reportedErrEmaUs / 1000L).toInt().coerceIn(0, 1000)
     }
 
     private fun startTimeSyncLoop() {
