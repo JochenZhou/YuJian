@@ -82,6 +82,13 @@ object SendspinManager {
     @Volatile
     private var activePairingPsk: ByteArray? = null
 
+    // 当前会话的 server_id（base64url 静态公钥）与 Noise 握手匹配到的 PSK 类别（lt/pr/sn）
+    @Volatile
+    private var currentServerId: String = ""
+
+    @Volatile
+    private var currentMatchedPskCategory: String = "sn"
+
     private val clockFilter = SendspinClockFilter()
     private var audioPlayer: SendspinAudioPlayer? = null
     private var serverSocket: ServerSocket? = null
@@ -235,6 +242,11 @@ object SendspinManager {
     }
 
     fun regeneratePairingToken(): String {
+        // 重置配对：作废旧 pairing PSK 与全部服务端配对记录，生成全新凭据（re-pairing 用）
+        val ctx = appContext
+        if (ctx != null) {
+            Prefs.resetSendspinPairing(ctx)
+        }
         regeneratePairingPsk()
         notifyListeners()
         return snapshot().pairingToken
@@ -257,9 +269,10 @@ object SendspinManager {
     }
 
     private fun regeneratePairingPsk() {
-        val psk = ByteArray(32)
-        SecureRandom().nextBytes(psk)
-        activePairingPsk = psk
+        // 配对 PSK 按 Sendspin 规范为 per-device 长期凭据：持久化后保持不变，
+        // 否则服务端 re-handshake 到 pairing PSK 时会因客户端不认识 psk_id 而失败。
+        activePairingPsk = appContext?.let { Prefs.getOrCreateSendspinPairingPsk(it) }
+            ?: ByteArray(32).also { SecureRandom().nextBytes(it) }
     }
 
     // ------------------------------------------------------------------
@@ -492,6 +505,7 @@ object SendspinManager {
         val serverId = serverPayload.optString("server_id")
         val serverPub = SendspinCrypto.base64UrlDecode(serverId)
         if (serverPub.size != 32) return
+        currentServerId = serverId
 
         // 读取 noise/handshake msg1
         val msg1Packet = SendspinWsFrameCodec.readMessage(input) {} ?: return
@@ -512,6 +526,7 @@ object SendspinManager {
             Log.e(TAG, "Noise 握手失败", e)
             return
         }
+        currentMatchedPskCategory = transport.matchedCategory
 
         // 发送 noise/handshake msg2
         val msg2Json = JSONObject().apply {
@@ -542,7 +557,14 @@ object SendspinManager {
 
         // 切换至传输模式后，严守 Sendspin 规范状态机：
         // 1. 等待服务端主动发送 server/hello，客户端才回复 client/hello；
-        // 2. 等待服务端发送 server/activate，客户端才发送 client/state 并启动 client/time 时钟同步。
+        // 2. 等待服务端发送 server/activate，客户端才发送 client/state 并启动 client/time 时钟同步；
+        // 3. 收到带 pairing 的 server/activate（配对 PSK 会话）时，发送 client/pair-init +
+        //    client/pair-finalize 完成配对，随后服务端会发起新 Noise 握手（re-handshake）；
+        // 4. 传输模式下收到 noise/handshake 即为 re-handshake msg1，以旧握手 hash 为 prologue 应答。
+        var noiseResponder = responder
+        var noiseTransport = transport
+        var priorHandshakeHash = transport.handshakeHash
+        var pairingIndex = 0
         val fragReassembler = SendspinWsFrameCodec.FragmentReassembler()
         val artworkAssembler = SendspinWsFrameCodec.ArtworkAssembler()
 
@@ -554,16 +576,82 @@ object SendspinManager {
             } ?: break
 
             val plain = try {
-                transport.decryptServerToClient(rawMsg.payload)
+                noiseTransport.decryptServerToClient(rawMsg.payload)
             } catch (e: Exception) {
                 Log.w(TAG, "解密传输帧失败", e)
                 break
             }
 
-            dispatchSendspinPacket(plain, clientName, fragReassembler, artworkAssembler)
+            // 传输模式下 re-handshake 走 type 0 JSON 消息（type "noise/handshake"）
+            if (plain.isNotEmpty() && plain[0].toInt() == 0) {
+                val jsonStr = String(plain, 1, plain.size - 1, Charsets.UTF_8)
+                val json = try { JSONObject(jsonStr) } catch (_: Exception) { null }
+                if (json?.optString("type") == "noise/handshake") {
+                    val result = handleRehandshake(
+                        json, priorHandshakeHash, noiseResponder, clientPriv, clientPub
+                    )
+                    if (result == null) {
+                        Log.e(TAG, "re-handshake 失败，断开连接")
+                        break
+                    }
+                    noiseResponder = result.first
+                    noiseTransport = result.second
+                    priorHandshakeHash = noiseTransport.handshakeHash
+                    currentMatchedPskCategory = noiseTransport.matchedCategory
+                    pairingIndex = 0
+                    Log.i(TAG, "re-handshake 完成，会话已切换至新密钥")
+                    notifyListeners()
+                    continue
+                }
+            }
+
+            if (dispatchSendspinPacket(plain, clientName, fragReassembler, artworkAssembler)) {
+                pairingIndex++
+            }
         }
 
         closeActiveConnection()
+    }
+
+    /**
+     * 处理传输模式下的 re-handshake：以旧握手 hash 为 prologue 建立新 Responder，
+     * 处理 msg1（PSK 按类别重新匹配），回 msg2，返回新的传输密钥对。
+     */
+    private fun handleRehandshake(
+        json: JSONObject,
+        priorHandshakeHash: ByteArray,
+        oldResponder: SendspinCrypto.NoiseResponder,
+        clientPriv: ByteArray,
+        clientPub: ByteArray
+    ): Pair<SendspinCrypto.NoiseResponder, SendspinCrypto.TransportCipherPair>? {
+        val dataB64 = json.optJSONObject("payload")?.optString("data") ?: return null
+        val msg1Bytes = try {
+            SendspinCrypto.base64UrlDecode(dataB64)
+        } catch (_: Exception) { return null }
+
+        // 服务端在 msg1 里指明新 PSK（升级为已配对会话时为配对记录的 lt PSK）
+        val newResponder = SendspinCrypto.NoiseResponder.forRehandshake(
+            priorHandshakeHash, clientPriv, clientPub, oldResponder.remoteStaticPub()
+        )
+        return try {
+            val (msg2Bytes, newTransport) = newResponder.processHandshakeMsg1AndBuildMsg2(
+                msg1Bytes, loadPairingRecords(), activePairingPsk, allowSentinelFallback = false
+            )
+            val sender = frameSender
+            if (sender != null) {
+                val msg2Json = JSONObject().apply {
+                    put("type", "noise/handshake")
+                    put("payload", JSONObject().apply {
+                        put("data", SendspinCrypto.base64UrlEncode(msg2Bytes))
+                    })
+                }
+                sender(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + msg2Json.toString().toByteArray(Charsets.UTF_8))
+            }
+            Pair(newResponder, newTransport)
+        } catch (e: Exception) {
+            Log.e(TAG, "re-handshake 握手失败", e)
+            null
+        }
     }
 
     private fun handleCleartextSession(
@@ -722,16 +810,16 @@ object SendspinManager {
         clientName: String,
         fragReassembler: SendspinWsFrameCodec.FragmentReassembler,
         artworkAssembler: SendspinWsFrameCodec.ArtworkAssembler
-    ) {
-        if (packet.isEmpty()) return
+    ): Boolean {
+        if (packet.isEmpty()) return false
         val msgId = packet[0].toInt() and 0xFF
 
         when (msgId) {
             0 -> {
                 // UTF-8 JSON 消息
                 val jsonStr = String(packet, 1, packet.size - 1, Charsets.UTF_8)
-                val json = try { JSONObject(jsonStr) } catch (_: Exception) { return }
-                handleJsonPayload(json, clientName)
+                val json = try { JSONObject(jsonStr) } catch (_: Exception) { return false }
+                return handleJsonPayload(json, clientName)
             }
             1 -> {
                 // 分片重组
@@ -741,8 +829,9 @@ object SendspinManager {
                     val merged = ByteArray(1 + data.size)
                     merged[0] = innerId.toByte()
                     System.arraycopy(data, 0, merged, 1, data.size)
-                    dispatchSendspinPacket(merged, clientName, fragReassembler, artworkAssembler)
+                    return dispatchSendspinPacket(merged, clientName, fragReassembler, artworkAssembler)
                 }
+                return false
             }
             4 -> {
                 // PCM 音频帧 [4][timestamp:8B BE][pcm...]
@@ -751,6 +840,7 @@ object SendspinManager {
                     val pcm = packet.copyOfRange(9, packet.size)
                     audioPlayer?.enqueueAudioChunk(ts, pcm)
                 }
+                return false
             }
             in 8..11 -> {
                 // 专辑封面流
@@ -766,11 +856,13 @@ object SendspinManager {
                     }
                     else -> {}
                 }
+                return false
             }
         }
+        return false
     }
 
-    private fun handleJsonPayload(json: JSONObject, clientName: String) {
+    private fun handleJsonPayload(json: JSONObject, clientName: String): Boolean {
         val type = json.optString("type")
         val payload = json.optJSONObject("payload") ?: JSONObject()
 
@@ -781,6 +873,24 @@ object SendspinManager {
                 notifyListeners()
             }
             "server/activate" -> {
+                val pairingObj = payload.optJSONObject("pairing")
+                val activities = payload.optJSONArray("activities")
+                val isPairingActivation = pairingObj != null ||
+                        (activities != null && hasString(activities, "pairing"))
+                if (isPairingActivation) {
+                    // 配对激活：按 Pairing PSK Flow，紧接发送 pair-init + pair-finalize（不等响应）。
+                    // 客户端只支持 pairing_psk 方法；连接 PSK 不是配对 PSK 时按规范中止。
+                    val method = pairingObj?.optString("method", "") ?: ""
+                    val matchedCategory = currentMatchedPskCategory
+                    if (method == "pairing_psk" && matchedCategory == "pr") {
+                        sendPairingExchange()
+                    } else {
+                        sendPairAbort(if (method != "pairing_psk") "method_not_supported" else "method_not_supported")
+                        Log.w(TAG, "配对激活被拒绝: method=$method matchedPsk=$matchedCategory")
+                    }
+                    notifyListeners()
+                    return true
+                }
                 isConnected = true
                 sendClientState()
                 startTimeSyncLoop()
@@ -942,13 +1052,65 @@ object SendspinManager {
                 }
             }
             "server/pair-finalize" -> {
-                val sId = payload.optString("server_id")
-                val pskBase64 = payload.optString("psk")
-                if (sId.isNotEmpty() && pskBase64.isNotEmpty()) {
-                    savePairingRecord(sId, SendspinCrypto.base64UrlDecode(pskBase64))
-                }
+                // 规范：payload 为空对象，仅表示服务端已持久化配对记录。
+                // 长期 PSK 由客户端在 client/pair-finalize 中生成并先于服务端保存（见 sendPairingExchange）。
+                Log.i(TAG, "服务端已确认配对记录（server/pair-finalize），等待 re-handshake 升级为已配对会话")
+                notifyListeners()
             }
         }
+        return false
+    }
+
+    private fun hasString(arr: JSONArray, value: String): Boolean {
+        for (i in 0 until arr.length()) {
+            if (arr.optString(i) == value) return true
+        }
+        return false
+    }
+
+    /**
+     * Pairing PSK Flow 的配对交换：生成 32 字节长期 PSK，本地先保存配对记录，
+     * 随后连续发送 client/pair-init 与 client/pair-finalize（不等服务端响应）。
+     * 服务端确认后会发起 re-handshake 切换到新长期 PSK。
+     */
+    private fun sendPairingExchange() {
+        val ctx = appContext ?: return
+        val serverId = currentServerId
+        if (serverId.isEmpty()) {
+            Log.w(TAG, "无法配对：未知 server_id")
+            return
+        }
+        val longTermPsk = ByteArray(32)
+        SecureRandom().nextBytes(longTermPsk)
+        savePairingRecord(serverId, longTermPsk)
+        Log.i(TAG, "开始 Pairing PSK 配对交换（server_id=${serverId.take(8)}…）")
+
+        val sender = frameSender ?: return
+        val pairInit = JSONObject().apply {
+            put("type", "client/pair-init")
+            put("payload", JSONObject().apply {
+                put("pairing_index", 0)
+            })
+        }
+        val pairFinalize = JSONObject().apply {
+            put("type", "client/pair-finalize")
+            put("payload", JSONObject().apply {
+                put("long_term_psk", SendspinCrypto.base64UrlEncode(longTermPsk))
+            })
+        }
+        sender(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + pairInit.toString().toByteArray(Charsets.UTF_8))
+        sender(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + pairFinalize.toString().toByteArray(Charsets.UTF_8))
+    }
+
+    private fun sendPairAbort(reason: String) {
+        val sender = frameSender ?: return
+        val abort = JSONObject().apply {
+            put("type", "pair/abort")
+            put("payload", JSONObject().apply {
+                put("reason", reason)
+            })
+        }
+        sender(SendspinWsFrameCodec.OPCODE_BINARY, byteArrayOf(0) + abort.toString().toByteArray(Charsets.UTF_8))
     }
 
     private fun readLongBE(b: ByteArray, offset: Int): Long {

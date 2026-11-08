@@ -27,6 +27,7 @@ object Prefs {
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
     private const val KEY_SENDSPIN_PRIV_KEY = "sendspin_priv_key"
     private const val KEY_SENDSPIN_PAIRINGS = "sendspin_pairings"
+    private const val KEY_SENDSPIN_PAIRING_PSK = "sendspin_pairing_psk"
 
     private const val TOKEN_LENGTH = 8
 
@@ -176,6 +177,43 @@ object Prefs {
     /** 保存已持久化的配对记录 JSON */
     fun setSendspinPairingsJson(context: Context, raw: String) {
         prefs(context).edit().putString(KEY_SENDSPIN_PAIRINGS, raw).apply()
+    }
+
+    /**
+     * 读取或生成 Sendspin 配对 PSK（32 字节 CSPRNG）。
+     * 规范要求 per-device 长期固定：配对 token（SP:0...）由它派生，
+     * 服务端 re-handshake 到 pairing PSK 时客户端必须仍认识它，因此必须持久化。
+     */
+    fun getOrCreateSendspinPairingPsk(context: Context): ByteArray {
+        val store = prefs(context)
+        val encoded = store.getString(KEY_SENDSPIN_PAIRING_PSK, null)
+        if (!encoded.isNullOrEmpty()) {
+            val decoded = SendspinCrypto.base64UrlDecode(encoded)
+            if (decoded.size == 32) {
+                return decoded
+            }
+        }
+        synchronized(this) {
+            val again = store.getString(KEY_SENDSPIN_PAIRING_PSK, null)
+            if (!again.isNullOrEmpty()) {
+                val decoded = SendspinCrypto.base64UrlDecode(again)
+                if (decoded.size == 32) {
+                    return decoded
+                }
+            }
+            val psk = ByteArray(32)
+            random.nextBytes(psk)
+            store.edit().putString(KEY_SENDSPIN_PAIRING_PSK, SendspinCrypto.base64UrlEncode(psk)).commit()
+            return psk
+        }
+    }
+
+    /** 重置配对：作废 pairing PSK 与全部已保存的服务端配对记录（re-pairing 前的恢复手段）。 */
+    fun resetSendspinPairing(context: Context) {
+        prefs(context).edit()
+            .remove(KEY_SENDSPIN_PAIRING_PSK)
+            .remove(KEY_SENDSPIN_PAIRINGS)
+            .commit()
     }
 
     private fun generateToken(): String {

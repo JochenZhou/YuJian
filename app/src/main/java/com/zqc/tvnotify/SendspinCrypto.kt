@@ -344,6 +344,26 @@ object SendspinCrypto {
             mixHash(clientPub)
         }
 
+        companion object {
+            /**
+             * 为带内 re-handshake（服务端换钥/升级为已配对会话）构造新的 Responder。
+             * 规范：client/init 与 server/init 不重发，新握手 prologue = 上次握手结束时的 hash h；
+             * KK 前置消息（双方静态公钥）照旧混入。
+             */
+            fun forRehandshake(
+                priorHandshakeHash: ByteArray,
+                clientPriv: ByteArray,
+                clientPub: ByteArray,
+                serverPub: ByteArray
+            ): NoiseResponder {
+                val responder = NoiseResponder(clientPriv, clientPub, serverPub, priorHandshakeHash)
+                return responder
+            }
+        }
+
+        /** 对端（服务端）静态公钥，供 re-handshake 重建 Responder 时复用。 */
+        fun remoteStaticPub(): ByteArray = serverPub
+
         private fun mixHash(data: ByteArray) {
             val md = MessageDigest.getInstance("SHA-256")
             md.update(h)
@@ -369,6 +389,8 @@ object SendspinCrypto {
             // 1. Token 'e': 读取前 32 字节服务端临时公钥 re
             val re = msg1Bytes.copyOfRange(0, 32)
             mixHash(re)
+            // psk 修饰符模式下，'e' token 除 MixHash 外还必须 MixKey(临时公钥)（Noise 规范 §5.1）
+            mixKey(re)
 
             // 2. Token 'es': es = X25519(clientPriv, re)
             val es = x25519SharedSecret(clientPriv, re)
@@ -434,6 +456,8 @@ object SendspinCrypto {
 
             // 1. Token 'e'
             mixHash(ePub)
+            // psk 修饰符模式下，'e' token 除 MixHash 外还必须 MixKey(临时公钥)（Noise 规范 §5.1）
+            mixKey(ePub)
 
             // 2. Token 'ee': ee = X25519(ePriv, re)
             val ee = x25519SharedSecret(ePriv, re)
@@ -521,6 +545,7 @@ object SendspinCrypto {
 
         fun buildMsg1(pskId: String, pskCategory: String): ByteArray {
             mixHash(ePub)
+            mixKey(ePub) // psk 模式 'e' token 的额外 MixKey
             val es = x25519SharedSecret(ePriv, clientPub)
             var k = mixKey(es)
             val ss = x25519SharedSecret(serverPriv, clientPub)
@@ -537,6 +562,7 @@ object SendspinCrypto {
         fun processMsg2(msg2Bytes: ByteArray, expectedPsk: ByteArray): ServerTransportForTest {
             val re = msg2Bytes.copyOfRange(0, 32)
             mixHash(re)
+            mixKey(re) // psk 模式 'e' token 的额外 MixKey
             val ee = x25519SharedSecret(ePriv, re)
             var k = mixKey(ee)
             val se = x25519SharedSecret(serverPriv, re)
@@ -548,6 +574,8 @@ object SendspinCrypto {
             val ciphertext = msg2Bytes.copyOfRange(32, msg2Bytes.size)
             aesGcmDecrypt(k, 0L, ciphertext, h)
             mixHash(ciphertext)
+
+            handshakeDoneHash = h.clone()
 
             val split = hkdf(ck, ByteArray(0), 2)
             val k1 = split[0]
@@ -569,6 +597,10 @@ object SendspinCrypto {
                 }
             )
         }
+
+        /** 握手完成后的 SymmetricState hash（re-handshake 时作为新 prologue）。 */
+        var handshakeDoneHash: ByteArray? = null
+            private set
     }
 
     class ServerTransportForTest(

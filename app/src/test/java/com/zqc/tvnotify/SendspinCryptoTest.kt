@@ -54,6 +54,41 @@ class SendspinCryptoTest {
     }
 
     @Test
+    fun rehandshakeWithPriorHandshakeHashAsPrologue() {
+        val clientPriv = ByteArray(32) { (it + 11).toByte() }
+        val clientPub = SendspinCrypto.x25519PublicFromPrivate(clientPriv)
+        val serverPriv = ByteArray(32) { (it + 41).toByte() }
+        val serverPub = SendspinCrypto.x25519PublicFromPrivate(serverPriv)
+        val prologue = """{"type":"client/init"}{"type":"server/init"}""".toByteArray(Charsets.UTF_8)
+        val longTermPsk = ByteArray(32) { (it + 91).toByte() }
+
+        // 第一场握手（Sentinel）
+        val initiator1 = SendspinCrypto.createInitiatorForTest(serverPriv, serverPub, clientPub, prologue)
+        val msg1 = initiator1.buildMsg1(SendspinCrypto.SENTINEL_PSK_ID, "sn")
+        val responder1 = SendspinCrypto.NoiseResponder(clientPriv, clientPub, serverPub, prologue)
+        val (msg2, _) = responder1.processHandshakeMsg1AndBuildMsg2(msg1, emptyList(), null)
+        initiator1.processMsg2(msg2, SendspinCrypto.SENTINEL_PSK)
+        val priorHash = initiator1.handshakeDoneHash!!
+
+        // re-handshake：prologue = 第一场握手的 hash h，配对记录的 lt PSK
+        val initiator2 = SendspinCrypto.createInitiatorForTest(serverPriv, serverPub, clientPub, priorHash)
+        val msg1b = initiator2.buildMsg1(SendspinCrypto.computePskId(longTermPsk), "lt")
+        val responder2 = SendspinCrypto.NoiseResponder.forRehandshake(priorHash, clientPriv, clientPub, serverPub)
+        val (msg2b, clientTransport2) = responder2.processHandshakeMsg1AndBuildMsg2(
+            msg1b,
+            listOf(SendspinCrypto.PairingRecord(SendspinCrypto.base64UrlEncode(serverPub), longTermPsk)),
+            null
+        )
+        assertEquals("lt", clientTransport2.matchedCategory)
+        val serverTransport2 = initiator2.processMsg2(msg2b, longTermPsk)
+
+        val s2c = serverTransport2.encryptInitiatorToResponder("paired".toByteArray())
+        assertEquals("paired", String(clientTransport2.decryptServerToClient(s2c)))
+        val c2s = clientTransport2.encryptClientToServer("ack".toByteArray())
+        assertEquals("ack", String(serverTransport2.decryptResponderToInitiator(c2s)))
+    }
+
+    @Test
     fun fallsBackToSentinelOnUnknownPskAndRejectsMisboundServerId() {
         val clientPriv = ByteArray(32) { (it + 3).toByte() }
         val clientPub = SendspinCrypto.x25519PublicFromPrivate(clientPriv)
