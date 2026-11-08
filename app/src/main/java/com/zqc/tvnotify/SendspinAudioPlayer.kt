@@ -136,11 +136,12 @@ class SendspinAudioPlayer(
 
         synchronized(lock) {
             if (queueBytesCount + stereoPcm.size > MAX_QUEUE_BYTES) {
-                // 队列超限时丢弃最旧包
-                val old = queue.poll()
-                if (old != null) {
-                    queueBytesCount -= old.pcmData.size
-                }
+                // 队列超限：丢"将要最后播"的那块（时间戳最大），
+                // 千万不能 poll()——那是最先要播的队首，丢它会让播放线程
+                // 的"首块等待"永远等不到目标时刻（死锁：无声+队列永不消化）。
+                val newest = java.util.Collections.max(queue, compareBy { it.timestampUs })
+                queue.removeFirstOccurrence(newest)
+                queueBytesCount -= newest.pcmData.size
             }
             queue.offer(AudioChunk(serverTimestampUs, stereoPcm))
             queueBytesCount += stereoPcm.size
@@ -204,6 +205,7 @@ class SendspinAudioPlayer(
         val track = audioTrack
         val sr = activeFormat?.sampleRate ?: 48000
         put("queued_ms", if (track != null) queuedPlaybackUs(track, sr) / 1000L else 0L)
+        put("app_queue_ms", queueBytesCount * 250_000L / sr)  // 4字节/帧: bytes*1e6/4/sr/1000
         put("chunks", chunksReceived)
         put("dropped_late", droppedLate)
         put("output_delay_ms", outputDelayUs / 1000L)
@@ -334,9 +336,16 @@ class SendspinAudioPlayer(
             val targetUs = clockFilter.serverToLocalUs(chunk.timestampUs) - outputDelayUs
             val nowUs = System.nanoTime() / 1000L
 
-            // 首块：等到它的时间戳时刻才写，避免整条流系统性提前
+            // 首块：等到它的时间戳时刻才写，避免整条流系统性提前。
+            // 但目标若在缓冲期之外（时钟异常/服务端预推过远）就放弃等待直接开播——
+            // 无限等待会让溢出逻辑和等待互相配合锁死整条流（v1.5.14 真机无声的根因）。
             if (!started) {
                 if (nowUs < targetUs) {
+                    if (targetUs - nowUs > TRACK_BUFFER_US) {
+                        Log.w(TAG, "首块目标时刻过远(${(targetUs - nowUs) / 1000}ms)，放弃等待直接开播")
+                        started = true
+                        continue
+                    }
                     val sleepUs = minOf(targetUs - nowUs, 10_000L)
                     try { Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt()) }
                     catch (e: InterruptedException) { break }
