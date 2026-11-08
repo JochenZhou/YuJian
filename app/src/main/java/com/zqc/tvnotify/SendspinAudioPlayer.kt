@@ -27,16 +27,12 @@ class SendspinAudioPlayer(
     companion object {
         private const val TAG = "SendspinAudio"
         private const val MAX_QUEUE_BYTES = 1048576 // 1MB 规范上限
-        /** AudioTrack 硬件缓冲上限：水位由调度判据控制，这里只防溢出阻塞 */
-        private const val TRACK_BUFFER_US = 400_000L
-        /** 手动提前量默认 0：纯时间戳对齐。设备后级 DSP 延迟用 MA 静态延迟校准 */
-        private const val DEFAULT_OUTPUT_DELAY_US = 0L
+        /** AudioTrack 硬件缓冲时长：留足余量吸收 MA 的预推突发（~1s 周期） */
+        private const val TRACK_BUFFER_US = 600_000L
+        /** 本机输出延迟默认值（写进 AudioTrack 到真正出声的补偿量） */
+        private const val DEFAULT_OUTPUT_DELAY_US = 100_000L
         /** 超过该值的滞后视为过期数据，直接丢弃以免延迟累积 */
         private const val LATE_DROP_US = 1_000_000L
-        /** 写入容差（诊断用） */
-        private const val LATE_TOLERANCE_US = 60_000L
-        /** ROLLING 重锚阈值：只有偏差超过这么多（≈10 块）才 flush 重锚，防抖动反复重锚 */
-        private const val RESYNC_THRESHOLD_US = 250_000L
         /** 时钟未同步时最多等这么久再退化顺序播放 */
         private const val UNSYNCED_WAIT_US = 2_000_000L
     }
@@ -92,8 +88,9 @@ class SendspinAudioPlayer(
     @Volatile
     private var droppedLate = 0L
 
-    /** 连续丢弃计数（时间轴失配保护） */
-    private var consecutiveDrops = 0L
+    /** 最近一块相对时间戳的写入延迟（微秒，>0 = 该块已过期） */
+    @Volatile
+    private var lastErrUs = 0L
 
     /** 时钟未同步累计等待起点（0 表示未在等待） */
     @Volatile
@@ -183,13 +180,8 @@ class SendspinAudioPlayer(
         try {
             track.pause()
             track.flush()
-            // 对齐基准：flush 后 playbackHead 可能不归零，直接把 framesWritten 贴上去，
-            // 保证 在飞量 = framesWritten − playbackHead 立刻为 0。
-            framesWritten = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-            // 交给状态机重新锚定（不要在这里 play()，否则下一块写入会立刻出声）
-            playState = PlayState.ANCHORING
-            anchorPlayAtUs = 0L
-            playStartNanos = 0L
+            framesWritten = 0L
+            track.play()
         } catch (e: Exception) {
             Log.w(TAG, "flush AudioTrack 失败", e)
         }
@@ -211,25 +203,19 @@ class SendspinAudioPlayer(
     fun debugStats(): org.json.JSONObject = org.json.JSONObject().apply {
         val track = audioTrack
         val sr = activeFormat?.sampleRate ?: 48000
-        val ts = AudioTimestamp()
-        val haveTs = try { track?.getTimestamp(ts) == true && ts.nanoTime > 0 } catch (_: Exception) { false }
-        val inFlightUs = if (haveTs && track != null) {
-            val played = ts.framePosition.toLong() and 0xFFFFFFFFL
-            val writtenF = framesWritten
-            val q = (writtenF - played).coerceAtLeast(0L)
-            if (q > sr.toLong() * 60L) 0L else q * 1_000_000L / sr
-        } else if (track != null) queuedPlaybackUs(track, sr) else 0L
-        put("queued_ms", inFlightUs / 1000L)
-        put("in_flight_ms", inFlightUs / 1000L)
+        put("queued_ms", if (track != null) queuedPlaybackUs(track, sr) / 1000L else 0L)
         put("chunks", chunksReceived)
         put("dropped_late", droppedLate)
         put("output_delay_ms", outputDelayUs / 1000L)
         put("err_ms", lastErrUs / 1000L)
-        put("end_lag_ms", lastEndLagUs / 1000L)
-        put("hard_syncs", hardSyncs)
-        put("state", playState.name)
-        put("pipeline_latency_ms", pipelineLatencyUs / 1000L)
+        put("playing", isTrackPlaying())
+        put("head_frames", track?.playbackHeadPosition?.toLong()?.and(0xFFFFFFFFL) ?: 0L)
+        put("written_frames", framesWritten)
     }
+
+    private fun isTrackPlaying(): Boolean = try {
+        audioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING
+    } catch (_: Exception) { false }
 
     fun release() {
         stopStream()
@@ -267,15 +253,11 @@ class SendspinAudioPlayer(
         framesWritten = 0L
         applyVolumeToTrack()
 
-        // 不立刻 play()：先以静默状态积攒 cushion，由状态机在首块时间戳时刻 play()，
-        // 让"第一帧出声时刻"精确锚定到服务端时间轴。
-        playState = PlayState.ANCHORING
-        anchorPlayAtUs = 0L
-        calibrationsLeft = 2
-        hardSyncs = 0L
-        panicked = false
-        lastHardSyncNanos = 0L
-        rollingSinceNanos = 0L
+        try {
+            track.play()
+        } catch (e: Exception) {
+            Log.e(TAG, "启动 AudioTrack 失败", e)
+        }
 
         acquireWakeLock()
         running = true
@@ -305,76 +287,23 @@ class SendspinAudioPlayer(
         queue.clear()
         queueBytesCount = 0
         unsyncedWaitSinceUs = 0L
-        playState = PlayState.ANCHORING
-        anchorPlayAtUs = 0L
         releaseWakeLock()
     }
 
-    /**
-     * 播放状态机。
-     * ANCHORING：把音频写进（尚未 play() 的）AudioTrack 积累 cushion，
-     *            到首块时间戳时刻调用 play() 锚定出声起点；
-     * ROLLING  ：FIFO 已在跑，之后"到货即写"，节奏由服务端 1x 推送天然维持。
-     */
-    private enum class PlayState { ANCHORING, ROLLING }
-
-    @Volatile
-    private var playState = PlayState.ANCHORING
-
-    /** 锚定时刻（本地微秒）：到点调用 play()，块 0 从此刻出声 */
-    @Volatile
-    private var anchorPlayAtUs = 0L
-
-    /**
-     * 自校准的设备管线延迟（微秒）：play() 到首帧真正出声的间隔。
-     * 锚定时提前这么多 play()，让出声时刻落在时间戳上。
-     * 每次开流最多校准 2 轮（首次猜 0，测出误差后修正）。
-     */
-    @Volatile
-    private var pipelineLatencyUs = 0L
-
-    /** 本流剩余可校准次数 */
-    @Volatile
-    private var calibrationsLeft = 2
-
-    /** play() 时刻（纳秒）：稳定期内不做超差重锚，避免自激 */
-    @Volatile
-    private var rollingSinceNanos = 0L
-
-    /** 最近一次 play() 调用时刻（纳秒）：用于测量设备管线延迟 */
-    @Volatile
-    private var playStartNanos = 0L
-
     private fun playbackLoop(sampleRate: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-        val ts = AudioTimestamp()
+
+        // 极简可靠的播放策略：**到货即写**。
+        // 物理事实：AudioTrack 是 FIFO；一份音频写入时，它排在已有在飞音频之后开始播。
+        // 服务端以 1x 推送、设备以 1x 消耗，所以只要不断供、不溢出，
+        // "写入时刻 + 在飞量" 就自动等于该块的时间戳时刻——水位与相位自稳。
+        // 因此这里只做三件事：等首块到点（不抢跑）、缓冲满时等待（不溢出）、
+        // 严重过期时丢弃（不累积越拖越多）。
+        var started = false
 
         while (running) {
             val track = audioTrack ?: break
             val head = queue.peek()
-
-            // ---- 在飞量（已写入但尚未播出）----
-            // 暂停态（ANCHORING 攒缓冲时）：精确等于已写帧数——一个字节都还没播。
-            // 播放态：优先 AudioTimestamp（帧计数 + 纳秒时戳，含 HAL/DSP 管线），
-            //   但要求时戳新鲜（<200ms）且帧号不大于已写帧数，否则用 playbackHead 退化。
-            val nowNanos = System.nanoTime()
-            val playing = isTrackPlaying()
-            val framesWrittenUs = framesWritten * 1_000_000L / sampleRate
-            // 在飞量统一用 playbackHeadPosition：它与 flush 的基准天然自洽
-            // （AudioTimestamp 的 framePosition 在 flush 后不一定归零，拿它算在飞量
-            //  会得出 0，触发"err 巨大 → 立刻重锚 → 再丢音频"的死循环）。
-            // AudioTimestamp 只用于测设备管线延迟（需要绝对时间）。
-            val inFlightUs = queuedPlaybackUs(track, sampleRate)
-            // 管线延迟校准用的绝对时戳（新鲜且帧号合理才采信）
-            var playedFrames = -1L
-            var tsNanos = 0L
-            if (playing) {
-                val haveTs = try { track.getTimestamp(ts) } catch (_: Exception) { false }
-                if (haveTs && ts.nanoTime > 0 && (nowNanos - ts.nanoTime) in 0..200_000_000L) {
-                    val f = ts.framePosition.toLong() and 0xFFFFFFFFL
-                    if (f <= framesWritten) { playedFrames = f; tsNanos = ts.nanoTime }
-                }
-            }
 
             if (head == null) {
                 try { Thread.sleep(10) } catch (e: InterruptedException) { break }
@@ -382,173 +311,56 @@ class SendspinAudioPlayer(
             }
 
             if (!clockFilter.isSynced) {
+                // 时钟未同步：最多等 2s，之后退化顺序播放（有声优先）
                 if (unsyncedWaitSinceUs == 0L) unsyncedWaitSinceUs = System.nanoTime() / 1000L
                 val waitedUs = System.nanoTime() / 1000L - unsyncedWaitSinceUs
                 if (waitedUs < UNSYNCED_WAIT_US) {
                     try { Thread.sleep(10) } catch (e: InterruptedException) { break }
                     continue
                 }
+                started = true
                 val chunk = queue.poll() ?: continue
                 synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
                 writeToTrack(track, chunk.pcmData)
-                if (!isTrackPlaying()) try { track.play() } catch (_: Exception) {}
                 continue
             }
             unsyncedWaitSinceUs = 0L
 
             val chunk = head
-            // 目标出声时刻 = 时间戳 - 手动提前量（MA 静态延迟）
-            val chunkTargetUs = clockFilter.serverToLocalUs(chunk.timestampUs) - outputDelayUs
-            // 锚定时还要再提前设备管线延迟，补偿 play()→出声 的间隔
-            val chunkLocalUs = chunkTargetUs - pipelineLatencyUs
-            val durationUs = chunk.pcmData.size * 1_000_000L / (sampleRate * 4L)
-            val nowUs = nowNanos / 1000L
+            val targetUs = clockFilter.serverToLocalUs(chunk.timestampUs) - outputDelayUs
+            val nowUs = System.nanoTime() / 1000L
 
-            when (playState) {
-                PlayState.ANCHORING -> {
-                    // 严格丢弃已过期的块：锚点必须精确等于头块目标时刻，
-                    // 否则 FIFO 时间轴起点早于锚点 → err 永久偏移 → 每秒重锚 + 大量丢块。
-                    if (chunkLocalUs < nowUs) {
-                        val stale = queue.poll() ?: continue
-                        synchronized(lock) { queueBytesCount -= stale.pcmData.size }
-                        droppedLate++
-                        // 保护：连续丢弃过多说明时间轴对不上（offset 异常），
-                        // 强行以当前时刻为锚开播——宁可相位不准，也必须出声。
-                        consecutiveDrops++
-                        if (consecutiveDrops > 40) {
-                            consecutiveDrops = 0
-                            droppedLate = 0
-                            if (isTrackPlaying()) {
-                                try { track.pause(); track.flush() } catch (_: Exception) {}
-                                framesWritten = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-                            }
-                            anchorPlayAtUs = maxOf(nowUs, 1L)
-                            Log.w(TAG, "时间轴失配，强制以当前时刻开播")
-                        }
-                        continue
-                    }
-                    consecutiveDrops = 0
-                    if (anchorPlayAtUs == 0L) {
-                        // 从 ROLLING 掉回锚定：先停掉播放，避免 FIFO 旧音频立刻出声
-                        if (isTrackPlaying()) {
-                            try { track.pause(); track.flush() } catch (_: Exception) {}
-                            // flush 后把基准贴到 playbackHead，保证在飞量立刻为 0
-                            framesWritten = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
-                        }
-                        anchorPlayAtUs = chunkLocalUs
-                    }
-                    if (nowUs < anchorPlayAtUs) {
-                        // 未到锚定时刻：把音频写进（暂停中的）FIFO 攒 cushion
-                        if (inFlightUs + durationUs <= TRACK_BUFFER_US) {
-                            queue.poll()
-                            synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
-                            writeToTrack(track, chunk.pcmData)
-                            lastEndLagUs = 0L
-                            continue
-                        }
-                        val sleepUs = minOf(anchorPlayAtUs - nowUs, 10_000L)
-                        try { Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt()) }
-                        catch (e: InterruptedException) { break }
-                        continue
-                    }
-                    // 到锚定时刻：启动播放，第一块从此刻（+设备管线延迟）开始出声
-                    if (!isTrackPlaying()) {
-                        playStartNanos = System.nanoTime()
-                        rollingSinceNanos = playStartNanos
-                        try { track.play() } catch (e: Exception) { Log.w(TAG, "play 失败", e) }
-                    }
-                    lastErrUs = 0L
-                    playState = PlayState.ROLLING
+            // 首块：等到它的时间戳时刻才写，避免整条流系统性提前
+            if (!started) {
+                if (nowUs < targetUs) {
+                    val sleepUs = minOf(targetUs - nowUs, 10_000L)
+                    try { Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt()) }
+                    catch (e: InterruptedException) { break }
                     continue
                 }
-
-                PlayState.ROLLING -> {
-                    val leadUs = chunkLocalUs - nowUs
-                    // ---- 设备管线延迟实测 ----
-                    // 首帧呈现时刻 P0 = nanoTime − framePosition/sr；
-                    // D = P0 − play() 调用时刻。测量到就校正锚点并重锚一次。
-                    if (playStartNanos > 0L && calibrationsLeft > 0 && playedFrames > 0) {
-                        val p0Nanos = tsNanos - playedFrames * 1_000_000_000L / sampleRate
-                        val dUs = (p0Nanos - playStartNanos) / 1000L
-                        if (dUs in -20_000L..600_000L) {
-                            calibrationsLeft--
-                            pipelineLatencyUs = if (pipelineLatencyUs == 0L) dUs
-                                                else (pipelineLatencyUs * 3 + dUs) / 4
-                            playStartNanos = 0L
-                            Log.i(TAG, "实测管线延迟: ${dUs / 1000}ms（累计 ${pipelineLatencyUs / 1000}ms）")
-                            // 不立刻重锚（那会 flush 掉缓冲、产生一次跳音），
-                            // 校正量留给下一次自然锚定（换流/欠载/超差）生效。
-                            continue
-                        }
-                    }
-
-                    // err 在 FIFO 流动中是常量（写一块 +dur，下一块的 lead 也 +dur），
-                    // 只有锚定/flush 能改变它。所以这里只做"超差 → 重锚"。
-                    val errUs = inFlightUs - leadUs
-                    if (panicIfTooManyResyncs()) {
-                        if (inFlightUs + durationUs > TRACK_BUFFER_US) {
-                            try { Thread.sleep(durationUs.coerceIn(5_000L, 30_000L) / 1000L) }
-                            catch (e: InterruptedException) { break }
-                            continue
-                        }
-                        queue.poll()
-                        synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
-                        lastErrUs = errUs
-                        writeToTrack(track, chunk.pcmData)
-                        continue
-                    }
-                    val t = System.nanoTime()
-                    val settled = t - rollingSinceNanos > 1_500_000_000L
-                    if (settled && kotlin.math.abs(errUs) > RESYNC_THRESHOLD_US) {
-                        if (t - lastHardSyncNanos > 2_000_000_000L) {
-                            lastHardSyncNanos = t
-                            hardSyncs++
-                            lastErrUs = errUs
-                            playState = PlayState.ANCHORING
-                            anchorPlayAtUs = 0L
-                            continue
-                        }
-                    }
-                    // 缓冲余量（正常 1x 流动下不会触发）
-                    if (inFlightUs + durationUs > TRACK_BUFFER_US) {
-                        try { Thread.sleep(durationUs.coerceIn(5_000L, 30_000L) / 1000L) }
-                        catch (e: InterruptedException) { break }
-                        continue
-                    }
-                    // 到货即写：水位由服务端 1x 推送维持，出声时刻由锚点延续
-                    queue.poll()
-                    synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
-                    lastErrUs = errUs
-                    lastEndLagUs = errUs
-                    writeToTrack(track, chunk.pcmData)
-                }
+                started = true
             }
+
+            // 严重过期（断流恢复/seek 残留）：丢弃，避免越拖越多
+            if (nowUs - targetUs > LATE_DROP_US) {
+                val stale = queue.poll() ?: continue
+                synchronized(lock) { queueBytesCount -= stale.pcmData.size }
+                droppedLate++
+                continue
+            }
+
+            // 缓冲余量：在飞量接近缓冲上限就等一会（write 否则会阻塞）
+            if (queuedPlaybackUs(track, sampleRate) + 50_000L > TRACK_BUFFER_US) {
+                try { Thread.sleep(10) } catch (e: InterruptedException) { break }
+                continue
+            }
+
+            queue.poll()
+            synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
+            lastErrUs = nowUs - targetUs          // >0 = 该块已过期（写入即稍晚出声）
+            writeToTrack(track, chunk.pcmData)
         }
     }
-
-    private fun isTrackPlaying(): Boolean = try {
-        audioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING
-    } catch (_: Exception) { false }
-
-    /** 上次硬同步时刻（纳秒，System.nanoTime 基），限流用 */
-    @Volatile
-    private var lastHardSyncNanos = 0L
-
-    /** 硬同步次数（清空硬件缓冲重对齐），诊断用 */
-    @Volatile
-    private var hardSyncs = 0L
-
-    /** 最近一块的播出误差（微秒，>0 = 比时间戳晚出声），诊断与 MA 上报用 */
-    @Volatile
-    private var lastErrUs = 0L
-
-    /** 末端相对时间戳的滞后（≈一整块时长 = 正常值），诊断用 */
-    @Volatile
-    private var lastEndLagUs = 0L
-
-    fun measuredErrMs(): Int = (lastErrUs / 1000L).toInt()
-
-    fun measuredEndLagMs(): Int = (lastEndLagUs / 1000L).toInt()
 
     /** AudioTrack 内已写入但尚未播出的音频时长（微秒）—— AudioTimestamp 不可用时的退化估计 */
     private fun queuedPlaybackUs(track: AudioTrack, sampleRate: Int): Long {
@@ -557,19 +369,6 @@ class SendspinAudioPlayer(
         if (queuedFrames <= 0L || queuedFrames > sampleRate.toLong() * 60L) return 0L
         return queuedFrames * 1_000_000L / sampleRate
     }
-
-    /** 保险：单条流内硬同步次数上限，超过就退化为"顺序播放"（宁可不同步也要有声） */
-    private fun panicIfTooManyResyncs(): Boolean {
-        if (hardSyncs <= 20L) return false
-        if (!panicked) {
-            panicked = true
-            Log.w(TAG, "硬同步次数过多（$hardSyncs），退化为顺序播放")
-        }
-        return true
-    }
-
-    @Volatile
-    private var panicked = false
 
     /** 完整写入一块 PCM（AudioTrack.write 可能短写） */
     private fun writeToTrack(track: AudioTrack, data: ByteArray) {
