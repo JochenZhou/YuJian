@@ -54,11 +54,14 @@ jobs:
           "$SDKMGR" --install "platforms;android-34" "build-tools;34.0.0" "platform-tools" > /dev/null
           echo "platform 34 就绪"
 
-      # 仓库不含 gradle-wrapper.jar（二进制不入库），因此用 setup-gradle 提供 Gradle 8.7 并直接调用 gradle
+      # 仓库不含 gradle-wrapper.jar（二进制不入库），因此用 setup-gradle 提供 Gradle 8.7 并直接调用 gradle。
+      # cache: false —— GitHub 缓存服务 504/400 抖动曾让"下载发行版"也跟着失败（attempt2/3）；
+      # 关掉缓存后 setup-gradle 直接走 services.gradle.org 下载，稳定。
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
+          cache-disabled: true
 
       - name: Decode keystore (optional)
         if: ${{ env.KEYSTORE_BASE64 != '' }}
