@@ -827,18 +827,11 @@ object SendspinManager {
     }
 
     /**
-     * 上报给 MA 的输出延迟：实测播出误差（写末端 vs 时间戳），EMA 平滑。
-     * 服务端用它计算本设备的缓冲完成时刻与迟到判定（发送节奏更贴合）；
-     * 时间戳本身不平移（所有客户端收到相同时间戳，同步靠客户端锚定调度）。
+     * 上报给 MA 的输出延迟 = 本地实际生效的提前量（set_output_delay / 默认 0）。
+     * 服务端用它计算本设备缓冲完成时刻与迟到判定；时间戳本身不平移。
+     * 实测播出误差走 /health 的 err_ms，不上报（避免和服务端配置互相打架）。
      */
-    private var reportedErrEmaUs = 0L
-
-    private fun reportedOutputDelayMs(): Int {
-        val errMs = audioPlayer?.measuredErrMs() ?: return 100
-        reportedErrEmaUs = if (reportedErrEmaUs == 0L) errMs * 1000L
-                          else (reportedErrEmaUs * 3 + errMs * 1000L) / 4
-        return (reportedErrEmaUs / 1000L).toInt().coerceIn(0, 1000)
-    }
+    private fun reportedOutputDelayMs(): Int = audioPlayer?.outputDelayMs() ?: 0
 
     private fun startTimeSyncLoop() {
         timeSyncThread?.interrupt()
