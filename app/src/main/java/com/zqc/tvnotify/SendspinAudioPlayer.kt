@@ -311,12 +311,29 @@ class SendspinAudioPlayer(
         var started = false
 
         while (running) {
-            val track = audioTrack ?: break
+            // watchdog 会并发 release 旧 AudioTrack；任何单轮异常都吞掉，
+            // 绝不能让未捕获异常杀死这个线程——线程一死就没人消费队列，
+            // 表现为无声 + 队列涨满 + 所有计数冻结（v1.5.15 真机根因）。
+            try {
+                playbackLoopOnce(sampleRate, started)?.let { started = it }
+            } catch (e: InterruptedException) {
+                break
+            } catch (e: Throwable) {
+                Log.e(TAG, "playbackLoop 单轮异常，继续", e)
+                try { Thread.sleep(20) } catch (e2: InterruptedException) { break }
+            }
+        }
+    }
+
+    private fun playbackLoopOnce(sampleRate: Int, prevStarted: Boolean): Boolean? {
+        var started = prevStarted
+        run step@{
+            val track = audioTrack ?: return null
             val head = queue.peek()
 
             if (head == null) {
-                try { Thread.sleep(10) } catch (e: InterruptedException) { break }
-                continue
+                try { Thread.sleep(10) } catch (e: InterruptedException) { return null }
+                return started
             }
 
             if (!clockFilter.isSynced) {
@@ -324,14 +341,14 @@ class SendspinAudioPlayer(
                 if (unsyncedWaitSinceUs == 0L) unsyncedWaitSinceUs = System.nanoTime() / 1000L
                 val waitedUs = System.nanoTime() / 1000L - unsyncedWaitSinceUs
                 if (waitedUs < UNSYNCED_WAIT_US) {
-                    try { Thread.sleep(10) } catch (e: InterruptedException) { break }
-                    continue
+                    try { Thread.sleep(10) } catch (e: InterruptedException) { return null }
+                    return started
                 }
                 started = true
-                val chunk = queue.poll() ?: continue
+                val chunk = queue.poll() ?: return started
                 synchronized(lock) { queueBytesCount -= chunk.pcmData.size }
                 writeToTrack(track, chunk.pcmData)
-                continue
+                return started
             }
             unsyncedWaitSinceUs = 0L
 
@@ -347,28 +364,28 @@ class SendspinAudioPlayer(
                     if (targetUs - nowUs > TRACK_BUFFER_US) {
                         Log.w(TAG, "首块目标时刻过远(${(targetUs - nowUs) / 1000}ms)，放弃等待直接开播")
                         started = true
-                        continue
+                        return started
                     }
                     val sleepUs = minOf(targetUs - nowUs, 10_000L)
                     try { Thread.sleep(sleepUs / 1000L, ((sleepUs % 1000L) * 1000L).toInt()) }
-                    catch (e: InterruptedException) { break }
-                    continue
+                    catch (e: InterruptedException) { return null }
+                    return started
                 }
                 started = true
             }
 
             // 严重过期（断流恢复/seek 残留）：丢弃，避免越拖越多
             if (nowUs - targetUs > LATE_DROP_US) {
-                val stale = queue.poll() ?: continue
+                val stale = queue.poll() ?: return started
                 synchronized(lock) { queueBytesCount -= stale.pcmData.size }
                 droppedLate++
-                continue
+                return started
             }
 
             // 缓冲余量：在飞量接近缓冲上限就等一会（write 否则会阻塞）
             if (queuedPlaybackUs(track, sampleRate) + 50_000L > TRACK_BUFFER_US) {
-                try { Thread.sleep(10) } catch (e: InterruptedException) { break }
-                continue
+                try { Thread.sleep(10) } catch (e: InterruptedException) { return null }
+                return started
             }
 
             queue.poll()
@@ -376,6 +393,7 @@ class SendspinAudioPlayer(
             lastErrUs = nowUs - targetUs          // >0 = 该块已过期（写入即稍晚出声）
             writeToTrack(track, chunk.pcmData)
         }
+        return started
     }
 
     /** AudioTrack 内已写入但尚未播出的音频时长（微秒）—— AudioTimestamp 不可用时的退化估计 */
@@ -403,7 +421,12 @@ class SendspinAudioPlayer(
         // 会把播放线程一起冻死。这里最多试一次，写不下就留给下轮。
         while (offset < data.size && running) {
             val written = try {
+                if (track.state == AudioTrack.STATE_UNINITIALIZED) { writeFailures++; break }
                 track.write(data, offset, data.size - offset, AudioTrack.WRITE_NON_BLOCKING)
+            } catch (e: IllegalStateException) {
+                // watchdog 正在重建：本块作废，绝不能让异常杀线程
+                writeFailures++
+                break
             } catch (e: Exception) {
                 writeFailures++
                 break
@@ -441,6 +464,18 @@ class SendspinAudioPlayer(
                 val consumed = (try { track.getTimestamp(ts) && ts.nanoTime > 0 } catch (_: Exception) { false })
                     .let { ok -> if (ok) ts.framePosition.toLong() and 0xFFFFFFFFL
                                  else track.playbackHeadPosition.toLong() and 0xFFFFFFFFL }
+                // playbackLoop 线程死亡检测：没人消费队列 = 永久无声，必须重启线程
+                val worker = workerThread
+                if (worker != null && !worker.isAlive && running) {
+                    Log.w(TAG, "watchdog: 播放线程已死亡，重启")
+                    try { worker.join(1000) } catch (_: Exception) {}
+                    val t = Thread({ playbackLoop(sampleRate) }, "sendspin-audio-worker")
+                    t.priority = Thread.MAX_PRIORITY
+                    workerThread = t
+                    t.start()
+                    stuckRounds = 0
+                    continue
+                }
                 val writeFailing = writeFailures > lastWriteFailures
                 lastWriteFailures = writeFailures
                 if (consumed > lastProgress && !writeFailing) {
