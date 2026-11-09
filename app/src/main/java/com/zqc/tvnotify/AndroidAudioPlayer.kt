@@ -3,9 +3,7 @@ package com.zqc.tvnotify
 import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioManager
-import android.media.AudioTimestamp
 import android.media.AudioTrack
-import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import com.sendspin.protocol.AudioBuffer
@@ -53,13 +51,13 @@ class AndroidAudioPlayer(
     @Volatile private var playbackStarted = false
     @Volatile private var focusGranted = false
     @Volatile private var pausedForFocus = false
+    @Volatile private var playbackClockNs = 0L
     private var thread: Thread? = null
 
     private var lastReportedOutputDelayMs = -1
     private var lastDelaySampleNs = 0L
     private var lastPumpDiagnosticNs = 0L
     private var firstWriteLogged = false
-    private val timestamp = AudioTimestamp()
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
@@ -195,9 +193,6 @@ class AndroidAudioPlayer(
         var pendingGeneration = -1L
         var lastWriteResult: Int? = null
         var startupFramesWritten = 0L
-        var lastProgressHead = -1L
-        var lastProgressNs = 0L
-        var stallRebuilds = 0
         lastPumpDiagnosticNs = 0L
         firstWriteLogged = false
         Log.i(TAG, "Audio pump entered running=${running.get()} focus=$focusGranted format=$format")
@@ -215,7 +210,7 @@ class AndroidAudioPlayer(
                 val currentFormat = format ?: break
                 val frameBytes = currentFormat.channels * (currentFormat.bitDepth / 8)
                 val sampleRate = currentFormat.sampleRate
-                val playedFrames = outputPlaybackHead(output)
+                val playedFrames = playbackHeadEstimate(output)
                 val queuedFrames = (framesWritten.get() - playedFrames).coerceAtLeast(0L)
                 val localNow = System.nanoTime() / 1_000L
                 val projectedOutputTime = if (sampleRate > 0) {
@@ -241,27 +236,10 @@ class AndroidAudioPlayer(
                         if (running.get() && track === output && focusGranted && !playbackStarted) {
                             output.play()
                             playbackStarted = true
-                            lastProgressHead = -1L
-                            lastProgressNs = System.nanoTime()
+                            playbackClockNs = System.nanoTime()
                             Log.i(TAG, "AudioTrack started with startup buffer queuedFrames=$queuedFrames threshold=$startupBufferFrames format=$currentFormat playState=${output.playState}")
                         }
                     }
-                }
-                if (playbackStarted && playbackHeadFrames == lastProgressHead) {
-                    val stalledNs = System.nanoTime() - lastProgressNs
-                    if (stalledNs >= STALL_REBUILD_NS && stallRebuilds < MAX_STALL_REBUILDS) {
-                        Log.e(TAG, "AudioTrack stalled at head=$playbackHeadFrames after ${stalledNs / 1_000_000} ms; rebuilding ($stallRebuilds/$MAX_STALL_REBUILDS)")
-                        stallRebuilds++
-                        rebuildTrackAfterStall()
-                        lastProgressHead = -1L
-                        lastProgressNs = System.nanoTime()
-                        continue
-                    }
-                }
-                if (playbackHeadFrames != lastProgressHead) {
-                    lastProgressHead = playbackHeadFrames
-                    lastProgressNs = System.nanoTime()
-                    stallRebuilds = 0
                 }
                 updateOutputDelay(output, sampleRate, queuedFrames)
                 if (queuedFrames >= maxQueuedFrames) {
@@ -290,7 +268,7 @@ class AndroidAudioPlayer(
                 }
 
                 val data = pendingData ?: continue
-                val availableFrames = (maxQueuedFrames - (framesWritten.get() - outputPlaybackHead(output)))
+                val availableFrames = (maxQueuedFrames - (framesWritten.get() - playbackHeadEstimate(output)))
                     .coerceAtLeast(0L)
                 if (availableFrames == 0L) {
                     Thread.sleep(POLL_SLEEP_MS)
@@ -401,6 +379,7 @@ class AndroidAudioPlayer(
         playbackHeadFrames = 0L
         lastPlaybackHeadPosition = 0L
         playbackStarted = false
+        playbackClockNs = 0L
         // 重建后只保留最近 0.5 s 内的块，扔掉卡死期间积压的过期音频
         buffer.dropChunksOlderThan(System.nanoTime() / 1_000L - STALE_CHUNK_LIMIT_US)
         fresh.setStereoVolume(volume, volume)
@@ -413,13 +392,9 @@ class AndroidAudioPlayer(
         val sampleNowNs = System.nanoTime()
         if (sampleNowNs - lastDelaySampleNs < DELAY_REPORT_INTERVAL_NS) return
         lastDelaySampleNs = sampleNowNs
-        val measuredQueuedFrames = if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT && output.getTimestamp(timestamp)
-        ) {
-            (framesWritten.get() - timestamp.framePosition).coerceAtLeast(0L)
-        } else {
-            queuedFrames
-        }
+        // 位置回传损坏的设备上 AudioTimestamp 恒 0，会算出 framesWritten 全量排队；
+        // 直接用流量控制的排队能避免把 output delay 报成 80 ms 上限。
+        val measuredQueuedFrames = queuedFrames
         reportOutputDelay((measuredQueuedFrames * 1_000L / sampleRate).toInt())
     }
 
@@ -445,6 +420,22 @@ class AndroidAudioPlayer(
         lastPlaybackHeadPosition = raw
         playbackHeadFrames
     }
+
+    /**
+     * 已播放帧数估计。这台小米电视（Android 6）AudioFlinger 消费 PCM 正常但
+     * playbackHeadPosition/AudioTimestamp 恒回 0（位置回传链路损坏），直接用会导致
+     * 流量控制误判队列永远为满。真值有推进时用真值；否则按 play() 起始时间 × 采样率推算。
+     */
+    private fun playbackHeadEstimate(output: AudioTrack): Long {
+        val real = outputPlaybackHead(output)
+        if (real > 0L || !playbackStarted) return real
+        val elapsedNs = System.nanoTime() - playbackClockNs
+        val estimated = elapsedNs / 1_000L * sampleRateForEstimate / 1_000_000L
+        return maxOf(real, estimated)
+    }
+
+    private val sampleRateForEstimate: Int
+        get() = format?.sampleRate ?: 44_100
 
     private fun stopLocked() {
         Log.i(TAG, "AudioTrack stop running=${running.get()} focus=$focusGranted playState=${track?.playState} framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames")
