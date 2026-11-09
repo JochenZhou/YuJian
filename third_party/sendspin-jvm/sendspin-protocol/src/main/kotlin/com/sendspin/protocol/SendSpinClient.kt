@@ -79,8 +79,8 @@ data class ClientPreferences(
     val visualizerSupport: VisualizerSupport? = null,
     /** Advertised `player@v1_support.buffer_capacity`. Defaults match [PlayerSupport]. */
     val playerBufferCapacity: Int = 262144,
-    /** Advertised `player@v1_support.supported_commands`. Defaults match [PlayerSupport]. */
-    val playerSupportedCommands: List<String> = listOf("volume", "mute"),
+    /** Controls reported in `client/state.player.supported_commands`. */
+    val playerSupportedCommands: List<String> = listOf("volume", "mute", "set_output_delay"),
     /**
      * Roles to advertise in `client/hello`. A role that is absent here is omitted from
      * `supported_roles` together with its `*_support` block.
@@ -769,7 +769,7 @@ class SendSpinClient(
                     PlayerSupport(
                         supportedFormats = preferences.supportedFormats,
                         bufferCapacity = preferences.playerBufferCapacity,
-                        supportedCommands = preferences.playerSupportedCommands,
+                        supportedCommands = listOf("volume", "mute"),
                     )
                 } else null,
                 metadataSupport = if (advertises(OptionalRole.METADATA)) MetadataSupport() else null,

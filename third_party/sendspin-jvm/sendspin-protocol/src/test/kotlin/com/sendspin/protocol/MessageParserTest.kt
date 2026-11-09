@@ -10,6 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.json.JSONObject
 import java.nio.ByteBuffer
 
 class MessageParserTest {
@@ -346,6 +347,33 @@ class MessageParserTest {
         )
         val json = adapter.toJson(msg)
         assertTrue(json.contains(""""output_delay_ms":0"""))
+    }
+
+    @Test
+    fun `client preferences keep set_output_delay out of hello player support`() {
+        val adapter = Moshi.Builder()
+            .add(JsonOptionalAdapterFactory())
+            .addLast(KotlinJsonAdapterFactory())
+            .build()
+            .adapter(ClientHello::class.java)
+        val hello = ClientHello(
+            payload = ClientHelloPayload(
+                clientId = "client",
+                name = "TV",
+                supportedRoles = listOf("player@v1"),
+                playerSupport = PlayerSupport(
+                    supportedFormats = listOf(AudioFormat("pcm", 2, 48_000, 16)),
+                    supportedCommands = listOf("volume", "mute"),
+                ),
+            )
+        )
+
+        val json = adapter.toJson(hello)
+        val commands = JSONObject(json).getJSONObject("payload")
+            .getJSONObject("player@v1_support").getJSONArray("supported_commands")
+        assertEquals(2, commands.length())
+        assertEquals("volume", commands.getString(0))
+        assertEquals("mute", commands.getString(1))
     }
 
     @Test
