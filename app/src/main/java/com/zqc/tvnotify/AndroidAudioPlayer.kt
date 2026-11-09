@@ -67,37 +67,33 @@ class AndroidAudioPlayer(
                 Log.i(TAG, "Audio focus GAIN running=${running.get()} paused=$pausedForFocus playState=${track?.playState}")
                 if (pausedForFocus) {
                     pausedForFocus = false
-                    if (running.get() && playbackStarted) {
+                    val output = track
+                    if (running.get() && playbackStarted && output != null) {
                         try {
-                            track?.play()
+                            output.play()
                             playbackClockNs = System.nanoTime()
                         } catch (error: Exception) { Log.w(TAG, "Audio resume failed", error) }
                     }
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
-            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK,
+            AudioManager.AUDIOFOCUS_LOSS -> {
                 focusGranted = false
-                pausedForFocus = playbackStarted
-                Log.i(TAG, "Audio focus transient loss running=${running.get()} playState=${track?.playState}")
+                // 焦点丢失（含永久丢失）一律按“可恢复暂停”处理：pump 保持 running，
+                // 在 focusGranted=false 时自然空转等待，GAIN 后继续。若把 running 置
+                // false 停泵，切歌瞬间被其他应用短暂抢焦点后 pump 将无法自恢复，
+                // 表现为“切歌后无声，需手动暂停再播放”。
+                pausedForFocus = true
+                Log.i(TAG, "Audio focus lost (change=$change) running=${running.get()} playState=${track?.playState}")
                 if (playbackStarted) {
                     try {
                         track?.pause()
-                        // 暂停时冻结时间推算的起点；恢复后从同一已播帧数继续，暂停墙钟不计入。
                         val output = track
                         if (output != null) playbackStartFrames = playbackHeadEstimate(output)
                         playbackClockNs = System.nanoTime()
                     } catch (_: Exception) { }
                 }
-            }
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                focusGranted = false
-                pausedForFocus = false
-                running.set(false)
-                playbackStarted = false
-                Log.w(TAG, "Audio focus permanent loss; pump stopped playState=${track?.playState}")
-                try { track?.pause() } catch (_: Exception) { }
-                releaseWakeLock()
             }
         }
     }
@@ -417,12 +413,10 @@ class AndroidAudioPlayer(
         val bounded = delayMs.coerceIn(0, 250)
         if (bounded == lastReportedOutputDelayMs) return
         lastReportedOutputDelayMs = bounded
-        buffer.setOutputDelayMicros(bounded * 1_000L)
-        try {
-            onOutputDelayMeasured(bounded)
-        } catch (error: Exception) {
-            Log.w(TAG, "Unable to report output latency", error)
-        }
+        // 不写回 buffer 的调度延迟：本地队列长度只是流量控制观测值，不等于设备真实
+        // 声学延迟。设备延迟由 MA 的 set_output_delay 校准（或手动配置）唯一决定，
+        // 写回会把校准值覆盖成 0 导致同步漂移。
+        Log.i(TAG, "AudioTrack local queue latency estimate=${bounded}ms (not applied to schedule)")
     }
 
     private fun outputPlaybackHead(output: AudioTrack): Long = synchronized(ioLock) {
