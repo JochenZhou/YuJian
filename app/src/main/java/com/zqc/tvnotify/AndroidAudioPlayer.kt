@@ -29,6 +29,7 @@ class AndroidAudioPlayer(
         private const val TAG = "YuJianAudio"
         private const val POLL_SLEEP_MS = 2L
         private const val MAX_QUEUE_MS = 80L
+        private const val STARTUP_BUFFER_MS = 40L
         private const val MAX_WRITE_BYTES = 8 * 1024
         private const val MAX_OUTPUT_DELAY_MS = 250
         private const val INITIAL_OUTPUT_DELAY_MS = 40
@@ -208,9 +209,9 @@ class AndroidAudioPlayer(
         var pendingOffset = 0
         var pendingGeneration = -1L
         var lastWriteResult: Int? = null
+        var startupFramesWritten = 0L
         lastPumpDiagnosticNs = 0L
         firstWriteLogged = false
-        lastWriteResult = null
         Log.i(TAG, "Audio pump entered running=${running.get()} focus=$focusGranted format=$format")
         try {
             while (running.get() && track === output) {
@@ -236,14 +237,24 @@ class AndroidAudioPlayer(
                 } else {
                     null
                 }
-                logPumpState(output, currentFormat, queuedFrames, nextChunkDelayMicros, pendingData, pendingOffset, lastWriteResult)
+                logPumpState(output, currentFormat, queuedFrames, nextChunkDelayMicros, pendingData, pendingOffset, lastWriteResult, startupFramesWritten)
                 if (frameBytes <= 0 || !focusGranted) {
                     Thread.sleep(POLL_SLEEP_MS)
                     continue
                 }
 
-                updateOutputDelay(output, sampleRate, queuedFrames)
                 val maxQueuedFrames = sampleRate.toLong() * MAX_QUEUE_MS / 1_000L
+                val startupBufferFrames = sampleRate.toLong() * STARTUP_BUFFER_MS / 1_000L
+                if (!playbackStarted && queuedFrames >= startupBufferFrames) {
+                    synchronized(ioLock) {
+                        if (running.get() && track === output && focusGranted && !playbackStarted) {
+                            output.play()
+                            playbackStarted = true
+                            Log.i(TAG, "AudioTrack started with startup buffer queuedFrames=$queuedFrames threshold=$startupBufferFrames format=$currentFormat playState=${output.playState}")
+                        }
+                    }
+                }
+                updateOutputDelay(output, sampleRate, queuedFrames)
                 if (queuedFrames >= maxQueuedFrames) {
                     Thread.sleep(POLL_SLEEP_MS)
                     continue
@@ -291,11 +302,7 @@ class AndroidAudioPlayer(
                         if (count > 0) {
                             check(count % frameBytes == 0) { "AudioTrack returned unaligned PCM write: $count" }
                             val totalFrames = framesWritten.addAndGet((count / frameBytes).toLong())
-                            if (!playbackStarted && focusGranted && running.get() && track === output) {
-                                output.play()
-                                playbackStarted = true
-                                Log.i(TAG, "AudioTrack activated after PCM write bytes=$count totalFrames=$totalFrames format=$currentFormat state=${output.state} playState=${output.playState}")
-                            }
+                            startupFramesWritten += (count / frameBytes).toLong()
                             if (!firstWriteLogged) {
                                 firstWriteLogged = true
                                 Log.i(TAG, "First PCM write bytes=$count frames=$totalFrames format=$currentFormat playState=${output.playState} focus=$focusGranted")
@@ -309,7 +316,6 @@ class AndroidAudioPlayer(
                     Thread.sleep(POLL_SLEEP_MS)
                 } else {
                     pendingOffset += written
-                    playbackStarted = true
                     if (pendingOffset >= data.size) {
                         pendingData = null
                         pendingOffset = 0
@@ -339,6 +345,7 @@ class AndroidAudioPlayer(
         pendingData: ByteArray?,
         pendingOffset: Int,
         lastWriteResult: Int?,
+        startupFramesWritten: Long,
     ) {
         val nowNs = System.nanoTime()
         if (nowNs - lastPumpDiagnosticNs < PUMP_DIAGNOSTIC_INTERVAL_NS) return
@@ -352,7 +359,7 @@ class AndroidAudioPlayer(
                 "nextChunkDelayUs=$nextChunkDelayMicros outputDelayUs=${buffer.outputDelayMicros} " +
                 "clockOffsetUs=${clock.offsetMicros} clockDriftPpm=${clock.lastDriftPpm} " +
                 "framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames queuedFrames=$queuedFrames " +
-                "pendingBytes=$dataRemaining lastWriteResult=$lastWriteResult",
+                "startupFramesWritten=$startupFramesWritten pendingBytes=$dataRemaining lastWriteResult=$lastWriteResult",
         )
     }
 
