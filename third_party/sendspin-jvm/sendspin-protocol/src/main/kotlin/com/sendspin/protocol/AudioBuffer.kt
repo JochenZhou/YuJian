@@ -94,13 +94,26 @@ class AudioBuffer(
 
     /**
      * Returns the next chunk whose scheduled time is at or before [nowMicros],
-     * or `null` if none is ready yet.
+     * or `null` if none is ready yet. Chunks that fell more than
+     * [DROP_THRESHOLD_MICROS] behind the play head are discarded here too, so a
+     * paused consumer does not replay minutes of stale audio once it resumes —
+     * it jumps straight to the live position instead.
      */
     fun poll(nowMicros: Long = ClockSync.localMicros()): AudioChunk? {
         synchronized(lock) {
-            val head = queue.peek() ?: return null
-            if (scheduledMicros(head.chunk, nowMicros) > nowMicros) return null
-            return queue.poll()?.chunk
+            while (true) {
+                val head = queue.peek() ?: return null
+                val scheduled = scheduledMicros(head.chunk, nowMicros)
+                if (scheduled > nowMicros) return null
+                if (scheduled < nowMicros - DROP_THRESHOLD_MICROS) {
+                    queue.poll()
+                    lateChunks++
+                    droppedChunks++
+                    Timber.w("AudioBuffer: dropped stale chunk (%.1f ms behind play head)", (nowMicros - scheduled) / 1000.0)
+                    continue
+                }
+                return queue.poll()?.chunk
+            }
         }
     }
 
