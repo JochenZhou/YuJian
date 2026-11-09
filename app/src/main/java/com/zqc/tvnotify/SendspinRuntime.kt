@@ -249,7 +249,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                     }
                 }
                 if (server == null && client?.state?.value !in setOf(ClientState.STREAMING, ClientState.CLOCK_SYNCING)) {
-                    publish(currentStatus.copy(state = "discovering", server = ""))
+                    updateStatus { it.copy(state = "discovering", server = "") }
                 }
             }
         }
@@ -301,28 +301,30 @@ class SendspinRuntime private constructor(private val context: Context) {
                 instance.serverState.collect { state -> updateFromServerState(state) }
             }
             launch {
-                instance.albumArtwork.collect { bytes -> publish(currentStatus.copy(artwork = bytes)) }
+                instance.albumArtwork.collect { bytes -> updateStatus { it.copy(artwork = bytes) } }
             }
             launch {
                 instance.streamFormat.collectLatest { format ->
                     if (format != null) instance.audioPlayer.setVolume(instance.currentPlayerGain)
-                    publish(currentStatus.copy(playerGain = instance.currentPlayerGain))
+                    updateStatus { it.copy(playerGain = instance.currentPlayerGain) }
                 }
             }
             launch {
                 instance.controllerState.collectLatest { controller ->
                     val active = controller?.supportedCommands?.toSet() ?: emptySet()
-                    publish(currentStatus.copy(
-                        commands = active + currentStatus.playerCommands,
-                        controllerCommands = active,
-                    ))
+                    updateStatus {
+                        it.copy(
+                            commands = active + it.playerCommands,
+                            controllerCommands = active,
+                        )
+                    }
                 }
             }
             launch {
                 instance.diagnostics.collectLatest { diagnostics ->
-                    val wasPlaying = currentStatus.playing
-                    publish(currentStatus.copy(playing = diagnostics.isAudioPlaying))
-                    if (diagnostics.isAudioPlaying && !wasPlaying && !activityVisible) {
+                    val previous = synchronized(lock) { currentStatus }
+                    updateStatus { it.copy(playing = diagnostics.isAudioPlaying) }
+                    if (diagnostics.isAudioPlaying && !previous.playing && !activityVisible) {
                         onOpenUiRequested?.invoke(true)
                     }
                 }
@@ -332,19 +334,21 @@ class SendspinRuntime private constructor(private val context: Context) {
                     val activeRoles = hello?.activeRoles.orEmpty().toSet()
                     val controllerEnabled = "controller@v1" in activeRoles || "controller" in activeRoles
                     val playerEnabled = "player@v1" in activeRoles || "player" in activeRoles
-                    val controller = currentStatus.controllerCommands.takeIf { controllerEnabled } ?: emptySet()
-                    val player = setOf("volume", "mute").takeIf { playerEnabled } ?: emptySet()
                     val pairingRequired = "pairing@v1" in activeRoles
-                    publish(currentStatus.copy(
-                        state = if (pairingRequired) "error" else currentStatus.state,
-                        error = if (pairingRequired) "Music Assistant 要求配对；当前客户端不支持 Noise/PSK，请启用 legacy client 兼容" else currentStatus.error,
-                        controllerCommands = controller,
-                        playerCommands = player,
-                        commands = controller + player,
-                    volume = instance.currentPlayerVolume,
-                    muted = instance.currentPlayerMuted,
-                    playerGain = instance.currentPlayerGain,
-                    ))
+                    updateStatus {
+                        val controller = it.controllerCommands.takeIf { _ -> controllerEnabled } ?: emptySet()
+                        val player = setOf("volume", "mute").takeIf { _ -> playerEnabled } ?: emptySet()
+                        it.copy(
+                            state = if (pairingRequired) "error" else it.state,
+                            error = if (pairingRequired) "Music Assistant 要求配对；当前客户端不支持 Noise/PSK，请启用 legacy client 兼容" else it.error,
+                            controllerCommands = controller,
+                            playerCommands = player,
+                            commands = controller + player,
+                            volume = instance.currentPlayerVolume,
+                            muted = instance.currentPlayerMuted,
+                            playerGain = instance.currentPlayerGain,
+                        )
+                    }
                 }
             }
             launch {
@@ -363,7 +367,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                         ClientState.ERROR -> "error"
                         ClientState.DISCONNECTED -> "disconnected"
                     }
-                    publish(currentStatus.copy(state = label, server = instance.serverName.value, playing = instance.audioPlayer.isPlaying, error = error))
+                    updateStatus { it.copy(state = label, server = instance.serverName.value, playing = instance.audioPlayer.isPlaying, error = error) }
                 }
             }
         }
@@ -428,8 +432,22 @@ class SendspinRuntime private constructor(private val context: Context) {
     }
 
     private fun publish(status: Status) {
-        currentStatus = status
-        listeners.toList().forEach { callback -> main.post { callback(status) } }
+        // watch() 的多个 collector 在不同协程上发布增量更新；currentStatus.copy 在
+        // 并发下会相互覆盖（诊断流的 playing 更新能把状态流的 connected 退回旧值），
+        // 读改写必须在同一锁内完成。
+        synchronized(lock) {
+            currentStatus = status
+        }
+        listeners.toList().forEach { callback -> main.post { callback(currentStatus) } }
+    }
+
+    /** Thread-safe incremental update of [currentStatus]. */
+    private fun updateStatus(transform: (Status) -> Status) {
+        val next = synchronized(lock) {
+            currentStatus = transform(currentStatus)
+            currentStatus
+        }
+        listeners.toList().forEach { callback -> main.post { callback(next) } }
     }
 
     private fun ensureMulticastLock() {
