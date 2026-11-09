@@ -52,7 +52,7 @@ class AndroidAudioPlayer(
     @Volatile private var focusGranted = false
     @Volatile private var pausedForFocus = false
     @Volatile private var playbackClockNs = 0L
-    @Volatile private var playbackPositionEpochFrames = 0L
+    @Volatile private var playbackStartFrames = 0L
     private var thread: Thread? = null
 
     private var lastReportedOutputDelayMs = -1
@@ -83,8 +83,9 @@ class AndroidAudioPlayer(
                 if (playbackStarted) {
                     try {
                         track?.pause()
-                        // 冻结位置锚点；恢复时不能把暂停期间的墙上时间算成已播放帧。
-                        playbackPositionEpochFrames = timeBasedHead()
+                        // 暂停时冻结时间推算的起点；恢复后从同一已播帧数继续，暂停墙钟不计入。
+                        val output = track
+                        if (output != null) playbackStartFrames = playbackHeadEstimate(output)
                         playbackClockNs = System.nanoTime()
                     } catch (_: Exception) { }
                 }
@@ -117,7 +118,8 @@ class AndroidAudioPlayer(
             val channelMask = if (format.channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
             val minBytes = AudioTrack.getMinBufferSize(format.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
             check(minBytes > 0) { "AudioTrack rejected stream format: $minBytes" }
-            val bufferBytes = max(minBytes * 2, format.sampleRate * format.channels * 2 / 2)
+            // 同步要求低的输出缓冲；取 2×最小缓冲，避免 500ms 大缓冲把实际出声延迟拉大。
+            val bufferBytes = minBytes * 2
             // Android 6 小米电视上 AudioTrack.Builder(USAGE_MEDIA) 路径创建的轨道会出现在
             // AudioFlinger 里但 Server 永远不推进（写入成功、播放头恒 0）；走旧构造器
             // STREAM_MUSIC 路径与本机 TTS/MediaPlayer 一致，实测可以出声。
@@ -248,7 +250,7 @@ class AndroidAudioPlayer(
                             output.play()
                             playbackStarted = true
                             playbackClockNs = System.nanoTime()
-                            playbackPositionEpochFrames = queuedFrames
+                            playbackStartFrames = queuedFrames
                             Log.i(TAG, "AudioTrack started with startup buffer queuedFrames=$queuedFrames threshold=$startupBufferFrames format=$currentFormat playState=${output.playState}")
                         }
                     }
@@ -378,7 +380,7 @@ class AndroidAudioPlayer(
             Log.e(TAG, "AudioTrack rebuild rejected stream format: $minBytes")
             return false
         }
-        val bufferBytes = max(minBytes * 2, currentFormat.sampleRate * currentFormat.channels * 2 / 2)
+        val bufferBytes = max(minBytes * 2, currentFormat.sampleRate * currentFormat.channels * 2 / 10)
         val fresh = @Suppress("DEPRECATION")
         AudioTrack(AudioManager.STREAM_MUSIC, currentFormat.sampleRate, channelMask,
             AudioFormat.ENCODING_PCM_16BIT, bufferBytes, AudioTrack.MODE_STREAM)
@@ -392,7 +394,7 @@ class AndroidAudioPlayer(
         lastPlaybackHeadPosition = 0L
         playbackStarted = false
         playbackClockNs = 0L
-        playbackPositionEpochFrames = 0L
+        playbackStartFrames = 0L
         // 重建后只保留最近 0.5 s 内的块，扔掉卡死期间积压的过期音频
         buffer.dropChunksOlderThan(System.nanoTime() / 1_000L - STALE_CHUNK_LIMIT_US)
         fresh.setStereoVolume(volume, volume)
@@ -415,7 +417,7 @@ class AndroidAudioPlayer(
         val bounded = delayMs.coerceIn(0, 250)
         if (bounded == lastReportedOutputDelayMs) return
         lastReportedOutputDelayMs = bounded
-        buffer.outputDelayMicros = bounded * 1_000L
+        buffer.setOutputDelayMicros(bounded * 1_000L)
         try {
             onOutputDelayMeasured(bounded)
         } catch (error: Exception) {
@@ -442,21 +444,14 @@ class AndroidAudioPlayer(
     private fun playbackHeadEstimate(output: AudioTrack): Long {
         val real = outputPlaybackHead(output)
         if (real == 0L || !playbackStarted) return timeBasedHead()
-        val now = timeBasedHead()
-        if (real + playbackPositionEpochFrames < now) {
-            playbackPositionEpochFrames = now - real
-            Log.i(TAG, "AudioTrack position became available; anchored raw=$real estimated=$now")
-        }
-        return real + playbackPositionEpochFrames
+        return maxOf(real, timeBasedHead())
     }
 
     private fun timeBasedHead(): Long {
         if (!playbackStarted) return playbackHeadFrames
         val elapsedNs = System.nanoTime() - playbackClockNs
-        return playbackPositionEpochFrames + elapsedNs / 1_000L * sampleRateForEstimate / 1_000_000L
+        return playbackStartFrames + elapsedNs / 1_000L * sampleRateForEstimate / 1_000_000L
     }
-
-    private fun timeBasedHead(): Long {
 
     private val sampleRateForEstimate: Int
         get() = format?.sampleRate ?: 44_100
