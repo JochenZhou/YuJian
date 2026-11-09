@@ -249,7 +249,7 @@ class AndroidAudioPlayer(
                 }
 
                 if (pendingData == null) {
-                    val delay = nextChunkDelayMicros
+                    val delay = buffer.nextChunkDelayMicros(projectedOutputTime)
                     if (delay != null && delay > 0L) {
                         Thread.sleep(minOf(POLL_SLEEP_MS, maxOf(1L, delay / 1_000L)))
                         continue
