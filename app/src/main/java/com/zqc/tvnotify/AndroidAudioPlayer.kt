@@ -52,6 +52,7 @@ class AndroidAudioPlayer(
     @Volatile private var focusGranted = false
     @Volatile private var pausedForFocus = false
     @Volatile private var playbackClockNs = 0L
+    @Volatile private var playbackPositionEpochFrames = 0L
     private var thread: Thread? = null
 
     private var lastReportedOutputDelayMs = -1
@@ -67,7 +68,10 @@ class AndroidAudioPlayer(
                 if (pausedForFocus) {
                     pausedForFocus = false
                     if (running.get() && playbackStarted) {
-                        try { track?.play() } catch (error: Exception) { Log.w(TAG, "Audio resume failed", error) }
+                        try {
+                            track?.play()
+                            playbackClockNs = System.nanoTime()
+                        } catch (error: Exception) { Log.w(TAG, "Audio resume failed", error) }
                     }
                 }
             }
@@ -76,7 +80,14 @@ class AndroidAudioPlayer(
                 focusGranted = false
                 pausedForFocus = playbackStarted
                 Log.i(TAG, "Audio focus transient loss running=${running.get()} playState=${track?.playState}")
-                if (playbackStarted) try { track?.pause() } catch (_: Exception) { }
+                if (playbackStarted) {
+                    try {
+                        track?.pause()
+                        // 冻结位置锚点；恢复时不能把暂停期间的墙上时间算成已播放帧。
+                        playbackPositionEpochFrames = timeBasedHead()
+                        playbackClockNs = System.nanoTime()
+                    } catch (_: Exception) { }
+                }
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
                 focusGranted = false
@@ -237,6 +248,7 @@ class AndroidAudioPlayer(
                             output.play()
                             playbackStarted = true
                             playbackClockNs = System.nanoTime()
+                            playbackPositionEpochFrames = queuedFrames
                             Log.i(TAG, "AudioTrack started with startup buffer queuedFrames=$queuedFrames threshold=$startupBufferFrames format=$currentFormat playState=${output.playState}")
                         }
                     }
@@ -380,6 +392,7 @@ class AndroidAudioPlayer(
         lastPlaybackHeadPosition = 0L
         playbackStarted = false
         playbackClockNs = 0L
+        playbackPositionEpochFrames = 0L
         // 重建后只保留最近 0.5 s 内的块，扔掉卡死期间积压的过期音频
         buffer.dropChunksOlderThan(System.nanoTime() / 1_000L - STALE_CHUNK_LIMIT_US)
         fresh.setStereoVolume(volume, volume)
@@ -422,17 +435,28 @@ class AndroidAudioPlayer(
     }
 
     /**
-     * 已播放帧数估计。这台小米电视（Android 6）AudioFlinger 消费 PCM 正常但
-     * playbackHeadPosition/AudioTimestamp 恒回 0（位置回传链路损坏），直接用会导致
-     * 流量控制误判队列永远为满。真值有推进时用真值；否则按 play() 起始时间 × 采样率推算。
+     * 位置回传延迟约 4 秒的电视上，真实位置从 0 开始会落后时间推算值，不能在
+     * 首次推进时直接切换造成“播放头回退”。以当前已播放位置为基准重新锚定真实值，
+     * 保持时间线单调且能利用后续真实位置跟随硬件实际速度。
      */
     private fun playbackHeadEstimate(output: AudioTrack): Long {
         val real = outputPlaybackHead(output)
-        if (real > 0L || !playbackStarted) return real
-        val elapsedNs = System.nanoTime() - playbackClockNs
-        val estimated = elapsedNs / 1_000L * sampleRateForEstimate / 1_000_000L
-        return maxOf(real, estimated)
+        if (real == 0L || !playbackStarted) return timeBasedHead()
+        val now = timeBasedHead()
+        if (real + playbackPositionEpochFrames < now) {
+            playbackPositionEpochFrames = now - real
+            Log.i(TAG, "AudioTrack position became available; anchored raw=$real estimated=$now")
+        }
+        return real + playbackPositionEpochFrames
     }
+
+    private fun timeBasedHead(): Long {
+        if (!playbackStarted) return playbackHeadFrames
+        val elapsedNs = System.nanoTime() - playbackClockNs
+        return playbackPositionEpochFrames + elapsedNs / 1_000L * sampleRateForEstimate / 1_000_000L
+    }
+
+    private fun timeBasedHead(): Long {
 
     private val sampleRateForEstimate: Int
         get() = format?.sampleRate ?: 44_100

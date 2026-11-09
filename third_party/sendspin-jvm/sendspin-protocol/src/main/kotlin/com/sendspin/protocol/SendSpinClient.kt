@@ -189,7 +189,7 @@ class SendSpinClient(
     @Volatile private var outputDelayMs: Int = settingsStore.getInt(ClientSettingsKeys.OUTPUT_DELAY_MS, 0)
         .coerceIn(0, 5000)
     init {
-        audioBuffer.outputDelayMicros = outputDelayMs * 1_000L
+        audioBuffer.setOutputDelayMicros(outputDelayMs * 1_000L)
     }
     @Volatile private var requiredLeadTimeMs: Int = 0
     @Volatile private var minBufferMs: Int = 0
@@ -208,9 +208,21 @@ class SendSpinClient(
     val currentPlayerMuted: Boolean get() = playerMuted
     val currentPlayerGain: Float get() = if (playerMuted) 0f else (playerVolume / 100.0).pow(1.5).toFloat()
 
+    /**
+     * Android 适配器只把本地估计作为初始输出延迟；服务器后续下发的校准值优先。
+     * 软件队列长度不等于设备实际声学延迟，不应被持续上报成用户校准值。
+     */
+    fun setEstimatedOutputDelayMs(delayMs: Int) {
+        val bounded = delayMs.coerceIn(0, 5000)
+        // 启动时若无历史校准，采用 Android 适配器的保守初始延迟；已有校准不被队列估计覆盖。
+        if (outputDelayMs == 0) {
+            audioBuffer.setOutputDelayMicros(bounded * 1_000L)
+            sendClientState()
+        }
+    }
     fun setOutputDelayMs(delayMs: Int) {
         outputDelayMs = delayMs.coerceIn(0, 5000)
-        audioBuffer.outputDelayMicros = outputDelayMs * 1_000L
+        audioBuffer.setOutputDelayMicros(outputDelayMs * 1_000L)
         settingsStore.putInt(ClientSettingsKeys.OUTPUT_DELAY_MS, outputDelayMs)
         sendClientState()
         // Chunks already in the buffer retain their old scheduled times; the new delay applies

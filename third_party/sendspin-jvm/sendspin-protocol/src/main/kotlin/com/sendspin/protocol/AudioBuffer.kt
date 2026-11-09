@@ -29,6 +29,11 @@ class AudioBuffer(
 
     /** Microseconds to subtract from every chunk's scheduled play time (receiver compensation). */
     @Volatile var outputDelayMicros: Long = 0L
+        private set
+
+    fun setOutputDelayMicros(delayMicros: Long) {
+        outputDelayMicros = delayMicros
+    }
 
     // ── Stats (for diagnostics) ───────────────────────────────────────────────
 

@@ -258,7 +258,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     @Volatile private var activeClientForAudio: SendSpinClient? = null
 
     private fun createdDelayUpdate(delayMs: Int) {
-        activeClientForAudio?.setOutputDelayMs(delayMs)
+        activeClientForAudio?.setEstimatedOutputDelayMs(delayMs)
     }
 
     private fun createClient(): SendSpinClient = synchronized(lock) {
