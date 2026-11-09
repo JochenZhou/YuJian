@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.util.Log
 import com.sendspin.protocol.AudioBuffer
 import com.sendspin.protocol.AudioPlayer
+import com.sendspin.protocol.ClockSync
 import com.sendspin.protocol.StreamFormat
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -20,6 +21,7 @@ import kotlin.math.max
 class AndroidAudioPlayer(
     private val context: Context,
     private val buffer: AudioBuffer,
+    private val clock: ClockSync,
     private val audioManager: AudioManager,
     private val onOutputDelayMeasured: (Int) -> Unit,
 ) : AudioPlayer {
@@ -31,6 +33,7 @@ class AndroidAudioPlayer(
         private const val MAX_OUTPUT_DELAY_MS = 250
         private const val INITIAL_OUTPUT_DELAY_MS = 40
         private const val DELAY_REPORT_INTERVAL_NS = 500_000_000L
+        private const val PUMP_DIAGNOSTIC_INTERVAL_NS = 1_000_000_000L
     }
 
     private val lock = Any()
@@ -51,12 +54,15 @@ class AndroidAudioPlayer(
 
     private var lastReportedOutputDelayMs = -1
     private var lastDelaySampleNs = 0L
+    private var lastPumpDiagnosticNs = 0L
+    private var firstWriteLogged = false
     private val timestamp = AudioTimestamp()
 
     private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
         when (change) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 focusGranted = true
+                Log.i(TAG, "Audio focus GAIN running=${running.get()} paused=$pausedForFocus playState=${track?.playState}")
                 if (pausedForFocus && running.get()) {
                     pausedForFocus = false
                     try { track?.play() } catch (error: Exception) { Log.w(TAG, "Audio resume failed", error) }
@@ -66,6 +72,7 @@ class AndroidAudioPlayer(
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 focusGranted = false
                 pausedForFocus = true
+                Log.i(TAG, "Audio focus transient loss running=${running.get()} playState=${track?.playState}")
                 try { track?.pause() } catch (_: Exception) { }
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
@@ -73,6 +80,7 @@ class AndroidAudioPlayer(
                 pausedForFocus = false
                 running.set(false)
                 playbackStarted = false
+                Log.w(TAG, "Audio focus permanent loss; pump stopped playState=${track?.playState}")
                 try { track?.pause() } catch (_: Exception) { }
                 releaseWakeLock()
             }
@@ -127,14 +135,17 @@ class AndroidAudioPlayer(
             lastPlaybackHeadPosition = 0L
             playbackStarted = false
             output.setStereoVolume(volume, volume)
+            Log.i(TAG, "AudioTrack configured codec=${format.codec} rate=${format.sampleRate} channels=${format.channels} bits=${format.bitDepth} minBytes=$minBytes bufferBytes=$bufferBytes state=${output.state}")
             val focus = audioManager.requestAudioFocus(
                 focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN
             )
             if (focus != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                Log.e(TAG, "Audio focus request denied result=$focus")
                 releaseTrackLocked()
                 throw IllegalStateException("Music audio focus denied")
             }
             focusGranted = true
+            Log.i(TAG, "Audio focus granted playState=${output.playState}")
             lastReportedOutputDelayMs = -1
             reportOutputDelay(INITIAL_OUTPUT_DELAY_MS)
             acquireWakeLock()
@@ -147,6 +158,7 @@ class AndroidAudioPlayer(
             if (!running.compareAndSet(false, true)) return
             try {
                 output.play()
+                Log.i(TAG, "AudioTrack start format=$format state=${output.state} playState=${output.playState} focus=$focusGranted bufferChunks=${buffer.size}")
                 thread = Thread({ pump(output) }, "sendspin-audio").apply { isDaemon = true; start() }
             } catch (error: Exception) {
                 running.set(false)
@@ -159,7 +171,7 @@ class AndroidAudioPlayer(
     }
 
     override fun flush() {
-        flushGeneration.incrementAndGet()
+        val generation = flushGeneration.incrementAndGet()
         synchronized(lock) {
             buffer.flush()
             synchronized(ioLock) {
@@ -175,6 +187,7 @@ class AndroidAudioPlayer(
                     Log.w(TAG, "AudioTrack flush failed", error)
                 }
             }
+            Log.i(TAG, "AudioTrack flush generation=$generation running=${running.get()} focus=$focusGranted playState=${track?.playState}")
         }
     }
 
@@ -193,6 +206,11 @@ class AndroidAudioPlayer(
         var pendingData: ByteArray? = null
         var pendingOffset = 0
         var pendingGeneration = -1L
+        var lastWriteResult: Int? = null
+        lastPumpDiagnosticNs = 0L
+        firstWriteLogged = false
+        lastWriteResult = null
+        Log.i(TAG, "Audio pump entered running=${running.get()} focus=$focusGranted format=$format")
         try {
             while (running.get() && track === output) {
                 val generation = flushGeneration.get()
@@ -204,13 +222,25 @@ class AndroidAudioPlayer(
                 val currentFormat = format ?: break
                 val frameBytes = currentFormat.channels * (currentFormat.bitDepth / 8)
                 val sampleRate = currentFormat.sampleRate
+                val playedFrames = outputPlaybackHead(output)
+                val queuedFrames = (framesWritten.get() - playedFrames).coerceAtLeast(0L)
+                val localNow = System.nanoTime() / 1_000L
+                val projectedOutputTime = if (sampleRate > 0) {
+                    localNow + queuedFrames * 1_000_000L / sampleRate
+                } else {
+                    localNow
+                }
+                val nextChunkDelayMicros = if (frameBytes > 0) {
+                    buffer.nextChunkDelayMicros(projectedOutputTime)
+                } else {
+                    null
+                }
+                logPumpState(output, currentFormat, queuedFrames, nextChunkDelayMicros, pendingData, pendingOffset)
                 if (frameBytes <= 0 || !focusGranted) {
                     Thread.sleep(POLL_SLEEP_MS)
                     continue
                 }
 
-                val playedFrames = outputPlaybackHead(output)
-                val queuedFrames = (framesWritten.get() - playedFrames).coerceAtLeast(0L)
                 updateOutputDelay(output, sampleRate, queuedFrames)
                 val maxQueuedFrames = sampleRate.toLong() * MAX_QUEUE_MS / 1_000L
                 if (queuedFrames >= maxQueuedFrames) {
@@ -219,9 +249,7 @@ class AndroidAudioPlayer(
                 }
 
                 if (pendingData == null) {
-                    val localNow = System.nanoTime() / 1_000L
-                    val projectedOutputTime = localNow + queuedFrames * 1_000_000L / sampleRate
-                    val delay = buffer.nextChunkDelayMicros(projectedOutputTime)
+                    val delay = nextChunkDelayMicros
                     if (delay != null && delay > 0L) {
                         Thread.sleep(minOf(POLL_SLEEP_MS, maxOf(1L, delay / 1_000L)))
                         continue
@@ -258,9 +286,14 @@ class AndroidAudioPlayer(
                         0
                     } else {
                         val count = output.write(data, pendingOffset, requestBytes, AudioTrack.WRITE_NON_BLOCKING)
+                        lastWriteResult = count
                         if (count > 0) {
                             check(count % frameBytes == 0) { "AudioTrack returned unaligned PCM write: $count" }
-                            framesWritten.addAndGet((count / frameBytes).toLong())
+                            val totalFrames = framesWritten.addAndGet((count / frameBytes).toLong())
+                            if (!firstWriteLogged) {
+                                firstWriteLogged = true
+                                Log.i(TAG, "First PCM write bytes=$count frames=$totalFrames format=$currentFormat playState=${output.playState} focus=$focusGranted")
+                            }
                         }
                         count
                     }
@@ -287,7 +320,33 @@ class AndroidAudioPlayer(
                 if (track === output) releaseTrackLocked()
                 releaseWakeLock()
             }
+        } finally {
+            Log.i(TAG, "Audio pump exited running=${running.get()} trackCurrent=${track === output} focus=$focusGranted framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames playState=${output.playState} bufferChunks=${buffer.size}")
         }
+    }
+
+    private fun logPumpState(
+        output: AudioTrack,
+        currentFormat: StreamFormat,
+        queuedFrames: Long,
+        nextChunkDelayMicros: Long?,
+        pendingData: ByteArray?,
+        pendingOffset: Int,
+    ) {
+        val nowNs = System.nanoTime()
+        if (nowNs - lastPumpDiagnosticNs < PUMP_DIAGNOSTIC_INTERVAL_NS) return
+        lastPumpDiagnosticNs = nowNs
+        val dataRemaining = pendingData?.let { (it.size - pendingOffset).coerceAtLeast(0) } ?: 0
+        Log.i(
+            TAG,
+            "Audio pump state running=${running.get()} focus=$focusGranted pausedForFocus=$pausedForFocus " +
+                "format=${currentFormat.codec}/${currentFormat.sampleRate}/${currentFormat.channels}/${currentFormat.bitDepth} " +
+                "trackState=${output.state} playState=${output.playState} bufferChunks=${buffer.size} " +
+                "nextChunkDelayUs=$nextChunkDelayMicros outputDelayUs=${buffer.outputDelayMicros} " +
+                "clockOffsetUs=${clock.offsetMicros} clockDriftPpm=${clock.lastDriftPpm} " +
+                "framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames queuedFrames=$queuedFrames " +
+                "pendingBytes=$dataRemaining lastWriteResult=$lastWriteResult",
+        )
     }
 
     private fun updateOutputDelay(output: AudioTrack, sampleRate: Int, queuedFrames: Long) {
@@ -328,6 +387,7 @@ class AndroidAudioPlayer(
     }
 
     private fun stopLocked() {
+        Log.i(TAG, "AudioTrack stop running=${running.get()} focus=$focusGranted playState=${track?.playState} framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames")
         running.set(false)
         val oldThread = thread
         thread = null

@@ -279,8 +279,8 @@ class SendspinRuntime private constructor(private val context: Context) {
             manufacturer = "JochenZhou",
             productName = "YuJian TV",
             softwareVersion = BuildConfig.VERSION_NAME,
-            audioPlayerFactory = { buffer, _ ->
-                AndroidAudioPlayer(app, buffer, audioManager) { delayMs -> createdDelayUpdate(delayMs) }
+            audioPlayerFactory = { buffer, clock ->
+                AndroidAudioPlayer(app, buffer, clock, audioManager) { delayMs -> createdDelayUpdate(delayMs) }
             },
             settingsStore = SendspinPrefsStore(app),
         ).also { created ->
