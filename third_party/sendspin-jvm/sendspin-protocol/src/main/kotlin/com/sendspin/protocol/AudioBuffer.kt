@@ -116,6 +116,29 @@ class AudioBuffer(
         Timber.d("AudioBuffer: flushed")
     }
 
+    /**
+     * Drop chunks scheduled before [cutoffLocalMicros] (local-clock µs).
+     * Used after a stalled AudioTrack rebuild to discard audio that would
+     * otherwise replay out-of-order once the fresh track starts.
+     */
+    fun dropChunksOlderThan(cutoffLocalMicros: Long) {
+        synchronized(lock) {
+            val iterator = queue.iterator()
+            var removed = 0
+            while (iterator.hasNext()) {
+                val queued = iterator.next()
+                if (clockSync.toLocalMicros(queued.chunk.serverTimestampMicros) < cutoffLocalMicros) {
+                    iterator.remove()
+                    removed++
+                }
+            }
+            if (removed > 0) {
+                droppedChunks += removed
+                Timber.w("AudioBuffer: dropped %d stale chunks after track rebuild", removed)
+            }
+        }
+    }
+
     val size: Int get() = synchronized(lock) { queue.size }
 
     /** Signal a buffer underrun (called by the audio player when it runs out of data). */

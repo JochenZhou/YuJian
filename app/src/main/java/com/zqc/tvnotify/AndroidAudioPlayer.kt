@@ -1,7 +1,6 @@
 package com.zqc.tvnotify
 
 import android.content.Context
-import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTimestamp
@@ -35,6 +34,9 @@ class AndroidAudioPlayer(
         private const val INITIAL_OUTPUT_DELAY_MS = 40
         private const val DELAY_REPORT_INTERVAL_NS = 500_000_000L
         private const val PUMP_DIAGNOSTIC_INTERVAL_NS = 1_000_000_000L
+        private const val STALL_REBUILD_NS = 1_500_000_000L
+        private const val MAX_STALL_REBUILDS = 5
+        private const val STALE_CHUNK_LIMIT_US = 500_000L
     }
 
     private val lock = Any()
@@ -107,29 +109,12 @@ class AndroidAudioPlayer(
             val minBytes = AudioTrack.getMinBufferSize(format.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
             check(minBytes > 0) { "AudioTrack rejected stream format: $minBytes" }
             val bufferBytes = max(minBytes * 2, format.sampleRate * format.channels * 2 / 2)
-            val output = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(format.sampleRate)
-                            .setChannelMask(channelMask)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(bufferBytes)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
-            } else {
-                @Suppress("DEPRECATION")
-                AudioTrack(AudioManager.STREAM_MUSIC, format.sampleRate, channelMask,
-                    AudioFormat.ENCODING_PCM_16BIT, bufferBytes, AudioTrack.MODE_STREAM)
-            }
+            // Android 6 小米电视上 AudioTrack.Builder(USAGE_MEDIA) 路径创建的轨道会出现在
+            // AudioFlinger 里但 Server 永远不推进（写入成功、播放头恒 0）；走旧构造器
+            // STREAM_MUSIC 路径与本机 TTS/MediaPlayer 一致，实测可以出声。
+            val output = @Suppress("DEPRECATION")
+            AudioTrack(AudioManager.STREAM_MUSIC, format.sampleRate, channelMask,
+                AudioFormat.ENCODING_PCM_16BIT, bufferBytes, AudioTrack.MODE_STREAM)
             check(output.state == AudioTrack.STATE_INITIALIZED) { "AudioTrack initialization failed" }
             track = output
             this.format = format
@@ -210,6 +195,9 @@ class AndroidAudioPlayer(
         var pendingGeneration = -1L
         var lastWriteResult: Int? = null
         var startupFramesWritten = 0L
+        var lastProgressHead = 0L
+        var lastProgressNs = System.nanoTime()
+        var stallRebuilds = 0
         lastPumpDiagnosticNs = 0L
         firstWriteLogged = false
         Log.i(TAG, "Audio pump entered running=${running.get()} focus=$focusGranted format=$format")
@@ -253,6 +241,23 @@ class AndroidAudioPlayer(
                             Log.i(TAG, "AudioTrack started with startup buffer queuedFrames=$queuedFrames threshold=$startupBufferFrames format=$currentFormat playState=${output.playState}")
                         }
                     }
+                }
+                if (playbackStarted && playbackHeadFrames == lastProgressHead) {
+                    val stalledNs = System.nanoTime() - lastProgressNs
+                    if (stalledNs >= STALL_REBUILD_NS && stallRebuilds < MAX_STALL_REBUILDS) {
+                        Log.e(TAG, "AudioTrack stalled at head=$playbackHeadFrames after ${stalledNs / 1_000_000} ms; rebuilding ($stallRebuilds/$MAX_STALL_REBUILDS)")
+                        stallRebuilds++
+                        if (rebuildTrackAfterStall()) {
+                            Log.i(TAG, "AudioTrack rebuilt after stall; continuing pump")
+                        }
+                        lastProgressNs = System.nanoTime()
+                        continue
+                    }
+                }
+                if (playbackHeadFrames != lastProgressHead) {
+                    lastProgressHead = playbackHeadFrames
+                    lastProgressNs = System.nanoTime()
+                    stallRebuilds = 0
                 }
                 updateOutputDelay(output, sampleRate, queuedFrames)
                 if (queuedFrames >= maxQueuedFrames) {
@@ -361,6 +366,43 @@ class AndroidAudioPlayer(
                 "framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames queuedFrames=$queuedFrames " +
                 "startupFramesWritten=$startupFramesWritten pendingBytes=$dataRemaining lastWriteResult=$lastWriteResult",
         )
+    }
+
+    private fun rebuildTrackAfterStall(): Boolean = synchronized(lock) {
+        val currentFormat = format ?: return false
+        val deadTrack = track ?: return false
+        Log.i(TAG, "Rebuilding stalled AudioTrack format=$currentFormat framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames")
+        synchronized(ioLock) {
+            try { deadTrack.pause() } catch (_: Exception) { }
+            try { deadTrack.flush() } catch (_: Exception) { }
+            try { deadTrack.release() } catch (_: Exception) { }
+        }
+        track = null
+        val channelMask = if (currentFormat.channels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
+        val minBytes = AudioTrack.getMinBufferSize(currentFormat.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
+        if (minBytes <= 0) {
+            Log.e(TAG, "AudioTrack rebuild rejected stream format: $minBytes")
+            return false
+        }
+        val bufferBytes = max(minBytes * 2, currentFormat.sampleRate * currentFormat.channels * 2 / 2)
+        val fresh = @Suppress("DEPRECATION")
+        AudioTrack(AudioManager.STREAM_MUSIC, currentFormat.sampleRate, channelMask,
+            AudioFormat.ENCODING_PCM_16BIT, bufferBytes, AudioTrack.MODE_STREAM)
+        if (fresh.state != AudioTrack.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioTrack rebuild failed state=${fresh.state}")
+            try { fresh.release() } catch (_: Exception) { }
+            return false
+        }
+        framesWritten.set(0L)
+        playbackHeadFrames = 0L
+        lastPlaybackHeadPosition = 0L
+        playbackStarted = false
+        // 重建后只保留最近 0.5 s 内的块，扔掉卡死期间积压的过期音频
+        buffer.dropChunksOlderThan(System.nanoTime() / 1_000L - STALE_CHUNK_LIMIT_US)
+        fresh.setStereoVolume(volume, volume)
+        track = fresh
+        Log.i(TAG, "AudioTrack rebuilt state=${fresh.state} format=$currentFormat bufferBytes=$bufferBytes")
+        return true
     }
 
     private fun updateOutputDelay(output: AudioTrack, sampleRate: Int, queuedFrames: Long) {
