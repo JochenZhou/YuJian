@@ -189,20 +189,23 @@ class AndroidAudioPlayer(
         synchronized(lock) { track?.setStereoVolume(volume, volume) }
     }
 
-    private fun pump(output: AudioTrack) {
+    private fun pump(startTrack: AudioTrack) {
         var pendingData: ByteArray? = null
         var pendingOffset = 0
         var pendingGeneration = -1L
         var lastWriteResult: Int? = null
         var startupFramesWritten = 0L
-        var lastProgressHead = 0L
-        var lastProgressNs = System.nanoTime()
+        var lastProgressHead = -1L
+        var lastProgressNs = 0L
         var stallRebuilds = 0
         lastPumpDiagnosticNs = 0L
         firstWriteLogged = false
         Log.i(TAG, "Audio pump entered running=${running.get()} focus=$focusGranted format=$format")
         try {
-            while (running.get() && track === output) {
+            // 循环条件读取当前字段而不是启动时的轨道：卡死重建会替换 track 实例，
+            // 泵必须切换到新轨道继续喂数据。
+            while (running.get()) {
+                val output = track ?: break
                 val generation = flushGeneration.get()
                 if (pendingGeneration != generation) {
                     pendingData = null
@@ -238,6 +241,8 @@ class AndroidAudioPlayer(
                         if (running.get() && track === output && focusGranted && !playbackStarted) {
                             output.play()
                             playbackStarted = true
+                            lastProgressHead = -1L
+                            lastProgressNs = System.nanoTime()
                             Log.i(TAG, "AudioTrack started with startup buffer queuedFrames=$queuedFrames threshold=$startupBufferFrames format=$currentFormat playState=${output.playState}")
                         }
                     }
@@ -247,9 +252,8 @@ class AndroidAudioPlayer(
                     if (stalledNs >= STALL_REBUILD_NS && stallRebuilds < MAX_STALL_REBUILDS) {
                         Log.e(TAG, "AudioTrack stalled at head=$playbackHeadFrames after ${stalledNs / 1_000_000} ms; rebuilding ($stallRebuilds/$MAX_STALL_REBUILDS)")
                         stallRebuilds++
-                        if (rebuildTrackAfterStall()) {
-                            Log.i(TAG, "AudioTrack rebuilt after stall; continuing pump")
-                        }
+                        rebuildTrackAfterStall()
+                        lastProgressHead = -1L
                         lastProgressNs = System.nanoTime()
                         continue
                     }
@@ -334,11 +338,11 @@ class AndroidAudioPlayer(
             running.set(false)
             playbackStarted = false
             synchronized(lock) {
-                if (track === output) releaseTrackLocked()
+                releaseTrackLocked()
                 releaseWakeLock()
             }
         } finally {
-            Log.i(TAG, "Audio pump exited running=${running.get()} trackCurrent=${track === output} focus=$focusGranted framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames playState=${output.playState} bufferChunks=${buffer.size}")
+            Log.i(TAG, "Audio pump exited running=${running.get()} trackCurrent=${track === startTrack} focus=$focusGranted framesWritten=${framesWritten.get()} playbackHead=$playbackHeadFrames playState=${startTrack.playState} bufferChunks=${buffer.size}")
         }
     }
 
