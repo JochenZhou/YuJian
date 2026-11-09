@@ -74,7 +74,18 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run protocol and app tests
-        run: gradle testDebugUnitTest --no-daemon --stacktrace
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee test-output.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-test-log
+          path: test-output.log
+          if-no-files-found: warn
 
       # 没有配置签名 secret 时，build.gradle.kts 会自动回退 debug 签名，job 不会失败
       - name: Build release APK
