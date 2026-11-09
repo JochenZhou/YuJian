@@ -235,7 +235,7 @@ class AndroidAudioPlayer(
                 } else {
                     null
                 }
-                logPumpState(output, currentFormat, queuedFrames, nextChunkDelayMicros, pendingData, pendingOffset)
+                logPumpState(output, currentFormat, queuedFrames, nextChunkDelayMicros, pendingData, pendingOffset, lastWriteResult)
                 if (frameBytes <= 0 || !focusGranted) {
                     Thread.sleep(POLL_SLEEP_MS)
                     continue
@@ -332,6 +332,7 @@ class AndroidAudioPlayer(
         nextChunkDelayMicros: Long?,
         pendingData: ByteArray?,
         pendingOffset: Int,
+        lastWriteResult: Int?,
     ) {
         val nowNs = System.nanoTime()
         if (nowNs - lastPumpDiagnosticNs < PUMP_DIAGNOSTIC_INTERVAL_NS) return
