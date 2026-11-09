@@ -207,6 +207,7 @@ class SendSpinClient(
     val currentPlayerVolume: Int get() = playerVolume
     val currentPlayerMuted: Boolean get() = playerMuted
     val currentPlayerGain: Float get() = if (playerMuted) 0f else (playerVolume / 100.0).pow(1.5).toFloat()
+    val currentOutputDelayMs: Int get() = outputDelayMs
 
     /**
      * Android 适配器只把本地估计作为初始输出延迟；服务器后续下发的校准值优先。

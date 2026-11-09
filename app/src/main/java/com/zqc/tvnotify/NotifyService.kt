@@ -306,6 +306,9 @@ class NotifyService : Service() {
                     sendspinCommand = { command, volume, muted, position, offset ->
                         sendspinRuntime?.command(command, volume, muted, position, offset) == true
                     },
+                    onSetSendspinOutputDelay = { delayMs ->
+                        sendspinRuntime?.setOutputDelayMs(delayMs) == true
+                    },
                     onSendspinConfigChanged = { sendspinRuntime?.reconfigure() },
                     onOpenSendspinUi = { mainHandler.post { launchSendspinActivity(automatic = false) } },
                     onCloseSendspinUi = { mainHandler.post { SendspinActivity.closeCurrent() } }

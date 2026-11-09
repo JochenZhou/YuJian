@@ -31,6 +31,7 @@ class NotifyHttpServer(
     private val onDismiss: () -> Boolean,
     private val sendspinStatusProvider: () -> SendspinRuntime.Status,
     private val sendspinCommand: (String, Int?, Boolean?, Long?, Long?) -> Boolean,
+    private val onSetSendspinOutputDelay: (Int) -> Boolean,
     private val onSendspinConfigChanged: () -> Unit,
     private val onOpenSendspinUi: () -> Unit,
     private val onCloseSendspinUi: () -> Unit,
@@ -195,6 +196,9 @@ class NotifyHttpServer(
                         if (json.has("auto_popup")) Prefs.setSendspinAutoPopup(context, json.getBoolean("auto_popup"))
                         if (json.has("server_url")) Prefs.setSendspinServerUrl(context, json.getString("server_url"))
                         if (json.has("client_name")) Prefs.setSendspinClientName(context, json.getString("client_name"))
+                        if (json.has("output_delay_ms")) {
+                            onSetSendspinOutputDelay(json.optInt("output_delay_ms").coerceIn(0, 5000))
+                        }
                         onSendspinConfigChanged()
                         jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
                     }
@@ -242,6 +246,7 @@ class NotifyHttpServer(
         json.put("volume", status.volume)
         json.put("muted", status.muted)
         json.put("player_gain", status.playerGain)
+        json.put("output_delay_ms", status.outputDelayMs)
         json.put("supported_commands", org.json.JSONArray(status.controllerCommands.toList()))
         json.put("player_supported_commands", org.json.JSONArray(status.playerCommands.toList()))
         json.put("error", status.error)

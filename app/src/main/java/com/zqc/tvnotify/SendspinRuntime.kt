@@ -47,6 +47,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         val volume: Int = 100,
         val muted: Boolean = false,
         val playerGain: Float = 1f,
+        val outputDelayMs: Int = 0,
         val commands: Set<String> = emptySet(),
         val controllerCommands: Set<String> = emptySet(),
         val playerCommands: Set<String> = emptySet(),
@@ -230,6 +231,14 @@ class SendspinRuntime private constructor(private val context: Context) {
 
     fun status(): Status = currentStatus
 
+    /** 校准这台设备的真实输出延迟（写入 PCM 到扬声器出声），用于多设备同步。 */
+    fun setOutputDelayMs(delayMs: Int): Boolean {
+        val current = client ?: return false
+        current.setOutputDelayMs(delayMs)
+        updateStatus { it.copy(outputDelayMs = current.currentOutputDelayMs) }
+        return true
+    }
+
     private fun startDiscovery() {
         if (!enabled) return
         discoveryJob?.cancel()
@@ -258,7 +267,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     @Volatile private var activeClientForAudio: SendSpinClient? = null
 
     private fun createdDelayUpdate(delayMs: Int) {
-        activeClientForAudio?.setEstimatedOutputDelayMs(delayMs)
+        // 本地队列估计不代表设备真实声学延迟，不再回写校准值；校准由 setOutputDelayMs 显式完成。
     }
 
     private fun createClient(): SendSpinClient = synchronized(lock) {
@@ -347,6 +356,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                             volume = instance.currentPlayerVolume,
                             muted = instance.currentPlayerMuted,
                             playerGain = instance.currentPlayerGain,
+                            outputDelayMs = instance.currentOutputDelayMs,
                         )
                     }
                 }
