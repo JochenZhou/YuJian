@@ -348,6 +348,13 @@ button {
       <button class="btn-secondary" onclick="sendspinCommand('volume_up')">音量 +</button>
       <button class="btn-secondary" onclick="sendspinCommand('mute')">静音切换</button>
     </div>
+    <div class="form-group" style="margin-top:10px">
+      <label>设备输出延迟 output_delay_ms（毫秒，0–5000；电视偏早调小、偏慢调大）</label>
+      <input id="sendspin-delay" type="number" min="0" max="5000" step="50" placeholder="例如 800">
+    </div>
+    <div class="row">
+      <button class="btn-secondary" onclick="saveOutputDelay()">应用输出延迟</button>
+    </div>
     <div class="form-group" style="margin-top:10px"><label>Music Assistant WebSocket 地址（默认端口 8927）</label><input id="sendspin-url" type="text" placeholder="自动发现，或 ws://music-assistant:8927/sendspin"></div>
     <div class="row">
       <button class="btn-secondary" onclick="saveSendspinConfig()">保存并连接</button>
@@ -467,6 +474,8 @@ async function fetchSendspinStatus() {
     document.getElementById("sendspin-artist").textContent = [sendspinStatus.artist, sendspinStatus.album].filter(Boolean).join(" · ");
     const address = document.getElementById("sendspin-url");
     if (document.activeElement !== address) address.value = sendspinStatus.server_url || "";
+    const delay = document.getElementById("sendspin-delay");
+    if (document.activeElement !== delay) delay.value = (sendspinStatus.output_delay_ms != null ? sendspinStatus.output_delay_ms : "");
   } catch (_) {
     document.getElementById("sendspin-state").textContent = "状态暂不可用";
   }
@@ -502,6 +511,18 @@ async function saveSendspinConfig() {
     const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "config", enabled: true, server_url: document.getElementById("sendspin-url").value.trim() }) });
     const result = await res.json();
     toast(result.ok ? "Sendspin 设置已保存" : "保存失败");
+    setTimeout(fetchSendspinStatus, 700);
+  } catch (e) { toast("保存失败：" + e.message); }
+}
+async function saveOutputDelay() {
+  const el = document.getElementById("sendspin-delay");
+  const raw = parseInt(el.value, 10);
+  const ms = Number.isFinite(raw) ? Math.max(0, Math.min(5000, raw)) : 0;
+  el.value = ms;
+  try {
+    const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "config", output_delay_ms: ms }) });
+    const result = await res.json();
+    toast(result.ok ? "输出延迟已设为 " + ms + " ms" : "设置失败");
     setTimeout(fetchSendspinStatus, 700);
   } catch (e) { toast("保存失败：" + e.message); }
 }
