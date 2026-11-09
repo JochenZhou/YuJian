@@ -63,17 +63,19 @@ class AndroidAudioPlayer(
             AudioManager.AUDIOFOCUS_GAIN -> {
                 focusGranted = true
                 Log.i(TAG, "Audio focus GAIN running=${running.get()} paused=$pausedForFocus playState=${track?.playState}")
-                if (pausedForFocus && running.get()) {
+                if (pausedForFocus) {
                     pausedForFocus = false
-                    try { track?.play() } catch (error: Exception) { Log.w(TAG, "Audio resume failed", error) }
+                    if (running.get() && playbackStarted) {
+                        try { track?.play() } catch (error: Exception) { Log.w(TAG, "Audio resume failed", error) }
+                    }
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 focusGranted = false
-                pausedForFocus = true
+                pausedForFocus = playbackStarted
                 Log.i(TAG, "Audio focus transient loss running=${running.get()} playState=${track?.playState}")
-                try { track?.pause() } catch (_: Exception) { }
+                if (playbackStarted) try { track?.pause() } catch (_: Exception) { }
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
                 focusGranted = false
@@ -157,8 +159,7 @@ class AndroidAudioPlayer(
             val output = track ?: return
             if (!running.compareAndSet(false, true)) return
             try {
-                output.play()
-                Log.i(TAG, "AudioTrack start format=$format state=${output.state} playState=${output.playState} focus=$focusGranted bufferChunks=${buffer.size}")
+                Log.i(TAG, "Audio pump start requested format=$format state=${output.state} playState=${output.playState} focus=$focusGranted bufferChunks=${buffer.size}")
                 thread = Thread({ pump(output) }, "sendspin-audio").apply { isDaemon = true; start() }
             } catch (error: Exception) {
                 running.set(false)
@@ -182,7 +183,7 @@ class AndroidAudioPlayer(
                     framesWritten.set(0L)
                     playbackHeadFrames = 0L
                     lastPlaybackHeadPosition = track?.playbackHeadPosition?.toLong()?.and(0xFFFF_FFFFL) ?: 0L
-                    if (running.get() && focusGranted) track?.play() else Unit
+                    if (running.get() && focusGranted && playbackStarted) track?.play() else Unit
                 } catch (error: Exception) {
                     Log.w(TAG, "AudioTrack flush failed", error)
                 }
@@ -290,6 +291,11 @@ class AndroidAudioPlayer(
                         if (count > 0) {
                             check(count % frameBytes == 0) { "AudioTrack returned unaligned PCM write: $count" }
                             val totalFrames = framesWritten.addAndGet((count / frameBytes).toLong())
+                            if (!playbackStarted && focusGranted && running.get() && track === output) {
+                                output.play()
+                                playbackStarted = true
+                                Log.i(TAG, "AudioTrack activated after PCM write bytes=$count totalFrames=$totalFrames format=$currentFormat state=${output.state} playState=${output.playState}")
+                            }
                             if (!firstWriteLogged) {
                                 firstWriteLogged = true
                                 Log.i(TAG, "First PCM write bytes=$count frames=$totalFrames format=$currentFormat playState=${output.playState} focus=$focusGranted")
