@@ -170,7 +170,7 @@ class AndroidAudioPlayer(
                     framesWritten.set(0L)
                     playbackHeadFrames = 0L
                     lastPlaybackHeadPosition = track?.playbackHeadPosition?.toLong()?.and(0xFFFF_FFFFL) ?: 0L
-                    if (running.get() && focusGranted) track?.play()
+                    if (running.get() && focusGranted) track?.play() else Unit
                 } catch (error: Exception) {
                     Log.w(TAG, "AudioTrack flush failed", error)
                 }

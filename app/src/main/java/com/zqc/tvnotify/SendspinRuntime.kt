@@ -458,7 +458,7 @@ class SendspinRuntime private constructor(private val context: Context) {
             val port = if (uri.port > 0) uri.port else 8927
             val path = uri.encodedPath?.takeIf { it.isNotBlank() && it != "/" } ?: "/sendspin"
             val host = uri.host!!.let { if (it.contains(":") && !it.startsWith("[")) "[$it]" else it }
-            "${uri.scheme}://$host:$port$path${uri.encodedQuery?.let { "?$it" }.orEmpty()}
+            "${uri.scheme}://$host:$port$path${uri.encodedQuery?.let { "?$it" }.orEmpty()}"
         } catch (_: Exception) {
             null
         }

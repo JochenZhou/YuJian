@@ -153,7 +153,7 @@ class SendspinActivity : Activity() {
         root.addView(lower, params(top = dp(12)))
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(root, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         setContentView(scroll)
     }
