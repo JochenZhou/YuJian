@@ -3,6 +3,7 @@ package com.zqc.tvnotify
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -34,9 +35,11 @@ class NotifyService : Service() {
         const val CHANNEL_ID = "tvnotify_fg_v2"
         private const val OLD_CHANNEL_ID = "tvnotify_svc"
         private const val NOTIFICATION_ID = 8791
+        private const val FGS_TYPE_LAN = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        private const val FGS_TYPE_MEDIA = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
 
         /** 与 app/build.gradle.kts 的 versionName 保持一致；/health 与 mDNS TXT 都用它 */
-        const val VERSION_NAME = "1.3.4"
+        const val VERSION_NAME = BuildConfig.VERSION_NAME
 
         /**
          * 供设置界面显示「是否正在监听」。
@@ -82,12 +85,21 @@ class NotifyService : Service() {
     private var serverStarting: Boolean = false
     private var bannerController: BannerController? = null
     private var mdnsAdvertiser: MdnsAdvertiser? = null
+    private var sendspinRuntime: SendspinRuntime? = null
+    @Volatile private var lastMediaForeground = false
+    private val sendspinStatusListener: (SendspinRuntime.Status) -> Unit = { status ->
+        if (Build.VERSION.SDK_INT >= 29) updateForegroundTypes(status.playing)
+    }
 
     override fun onCreate() {
         super.onCreate()
         bannerController = BannerController(this)
-        // onCreate 里就先升级为前台，满足 API 26+ 的 5 秒限制
+        // Promote before network work to meet the foreground-service start deadline.
         startForegroundSafely()
+        sendspinRuntime = SendspinRuntime.init(applicationContext)
+        sendspinRuntime?.onOpenUiRequested = { automatic -> launchSendspinActivity(automatic) }
+        sendspinRuntime?.addListener(sendspinStatusListener)
+        sendspinRuntime?.start()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -99,7 +111,35 @@ class NotifyService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun launchSendspinActivity(automatic: Boolean) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { launchSendspinActivity(automatic) }
+            return
+        }
+        if (automatic && !Prefs.isSendspinAutoPopup(applicationContext)) return
+        val manager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+        val foreground = manager.runningAppProcesses.orEmpty().any {
+            it.processName == packageName &&
+                it.importance == android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        }
+        if (!foreground) {
+            Log.i(TAG, "Music playback continues; Android blocked background activity launch")
+            return
+        }
+        try {
+            startActivity(Intent(this, SendspinActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            })
+        } catch (error: Exception) {
+            Log.w(TAG, "Unable to open Sendspin screen", error)
+        }
+    }
+
     override fun onDestroy() {
+        sendspinRuntime?.removeListener(sendspinStatusListener)
+        sendspinRuntime?.onOpenUiRequested = null
+        SendspinRuntime.shutdown()
+        sendspinRuntime = null
         stopMdns()
         stopServer()
         // 先移除横幅再释放提示音，顺序反了会在 release 后还尝试播放
@@ -119,17 +159,33 @@ class NotifyService : Service() {
         try {
             val notification = buildNotification()
             if (Build.VERSION.SDK_INT >= 34) {
-                // API 34 起必须显式声明 FGS 类型，与 Manifest 的 specialUse 保持一致
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                )
+                val playing = sendspinRuntime?.status()?.playing == true
+                val type = FGS_TYPE_LAN or if (playing) FGS_TYPE_MEDIA else 0
+                startForeground(NOTIFICATION_ID, notification, type)
+            } else if (Build.VERSION.SDK_INT >= 29 && sendspinRuntime?.status()?.playing == true) {
+                startForeground(NOTIFICATION_ID, notification, FGS_TYPE_MEDIA)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Exception) {
             Log.e(TAG, "startForeground 失败，服务仍在内存中运行", e)
+        }
+    }
+
+    private fun updateForegroundTypes(playing: Boolean) {
+        if (Build.VERSION.SDK_INT < 29 || lastMediaForeground == playing) return
+        lastMediaForeground = playing
+        val type = if (Build.VERSION.SDK_INT >= 34) {
+            FGS_TYPE_LAN or if (playing) FGS_TYPE_MEDIA else FGS_TYPE_LAN
+        } else if (playing) {
+            FGS_TYPE_MEDIA
+        } else {
+            0
+        }
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(), type)
+        } catch (error: Exception) {
+            Log.w(TAG, "Unable to update foreground service types", error)
         }
     }
 
@@ -148,8 +204,12 @@ class NotifyService : Service() {
             null
         }
 
+        val contentIntent = Intent(this, SendspinActivity::class.java)
+        val pendingFlags = if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
+        val contentPendingIntent = PendingIntent.getActivity(this, NOTIFICATION_ID, contentIntent, pendingFlags)
         builder.setContentTitle(theme.foregroundTitle)
             .setContentText(theme.foregroundText(PORT))
+            .setContentIntent(contentPendingIntent)
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -241,7 +301,14 @@ class NotifyService : Service() {
                     onNotify = { request ->
                         mainHandler.post { bannerController?.show(request) }
                     },
-                    onDismiss = { bannerController?.dismissWithResult() ?: false }
+                    onDismiss = { bannerController?.dismissWithResult() ?: false },
+                    sendspinStatusProvider = { sendspinRuntime?.status() ?: SendspinRuntime.Status() },
+                    sendspinCommand = { command, volume, muted, position, offset ->
+                        sendspinRuntime?.command(command, volume, muted, position, offset) == true
+                    },
+                    onSendspinConfigChanged = { sendspinRuntime?.reconfigure() },
+                    onOpenSendspinUi = { mainHandler.post { launchSendspinActivity(automatic = false) } },
+                    onCloseSendspinUi = { mainHandler.post { SendspinActivity.closeCurrent() } }
                 )
                 httpd.start()
                 synchronized(serverLock) {

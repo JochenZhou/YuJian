@@ -16,4 +16,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "YuJian"
-include(":app")
+include(":app", ":sendspin-protocol")
+project(":sendspin-protocol").projectDir = file("third_party/sendspin-jvm/sendspin-protocol")

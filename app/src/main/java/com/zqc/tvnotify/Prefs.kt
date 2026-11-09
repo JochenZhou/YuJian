@@ -21,6 +21,10 @@ object Prefs {
     private const val KEY_POSITION = "banner_position"
     private const val KEY_MUTED = "banner_muted"
     private const val KEY_HISTORY = "notify_history"
+    private const val KEY_SENDSPIN_ENABLED = "sendspin_enabled"
+    private const val KEY_SENDSPIN_AUTO_POPUP = "sendspin_auto_popup"
+    private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
+    private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
 
     private const val TOKEN_LENGTH = 8
 
@@ -98,6 +102,36 @@ object Prefs {
     /** 保存历史记录 JSON 字符串 */
     fun setHistoryRaw(context: Context, rawJson: String) {
         prefs(context).edit().putString(KEY_HISTORY, rawJson).apply()
+    }
+
+    fun isSendspinEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SENDSPIN_ENABLED, true)
+
+    fun setSendspinEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SENDSPIN_ENABLED, enabled).apply()
+    }
+
+    fun isSendspinAutoPopup(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SENDSPIN_AUTO_POPUP, true)
+
+    fun setSendspinAutoPopup(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SENDSPIN_AUTO_POPUP, enabled).apply()
+    }
+
+    fun getSendspinServerUrl(context: Context): String =
+        prefs(context).getString(KEY_SENDSPIN_SERVER_URL, "") ?: ""
+
+    fun setSendspinServerUrl(context: Context, url: String) {
+        prefs(context).edit().putString(KEY_SENDSPIN_SERVER_URL, url.trim()).apply()
+    }
+
+    fun getSendspinClientName(context: Context): String {
+        val fallback = "玉简·${android.os.Build.MODEL.orEmpty().ifBlank { "TV" }}"
+        return prefs(context).getString(KEY_SENDSPIN_CLIENT_NAME, fallback) ?: fallback
+    }
+
+    fun setSendspinClientName(context: Context, name: String) {
+        prefs(context).edit().putString(KEY_SENDSPIN_CLIENT_NAME, name.trim()).apply()
     }
 
     private fun generateToken(): String {

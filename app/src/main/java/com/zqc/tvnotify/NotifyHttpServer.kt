@@ -28,7 +28,12 @@ class NotifyHttpServer(
     private val bannerVisibleProvider: () -> Boolean,
     private val assets: android.content.res.AssetManager,
     private val onNotify: (BannerRequest) -> Unit,
-    private val onDismiss: () -> Boolean
+    private val onDismiss: () -> Boolean,
+    private val sendspinStatusProvider: () -> SendspinRuntime.Status,
+    private val sendspinCommand: (String, Int?, Boolean?, Long?, Long?) -> Boolean,
+    private val onSendspinConfigChanged: () -> Unit,
+    private val onOpenSendspinUi: () -> Unit,
+    private val onCloseSendspinUi: () -> Unit,
 ) : NanoHTTPD(advertisedPort) {
 
     companion object {
@@ -45,6 +50,7 @@ class NotifyHttpServer(
         private const val ROUTE_STREAM = "stream"
         private const val ROUTE_HISTORY = "history"
         private const val ROUTE_CONFIG = "config"
+        private const val ROUTE_SENDSPIN = "sendspin"
         private const val ROUTE_UI = "ui"
 
         private const val DEFAULT_DURATION_SEC = 5
@@ -86,6 +92,7 @@ class NotifyHttpServer(
             ROUTE_STREAM -> handleTestStream(session)
             ROUTE_HISTORY -> handleHistory(session)
             ROUTE_CONFIG -> handleConfig(session)
+            ROUTE_SENDSPIN -> handleSendspin(session)
             else -> jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
         }
     }
@@ -166,6 +173,79 @@ class NotifyHttpServer(
             NanoHTTPD.Response.Status.OK,
             "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\",\"theme\":\"$currentTheme\"}"
         )
+    }
+
+    private fun handleSendspin(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        return when (session.method) {
+            NanoHTTPD.Method.GET -> jsonResponse(
+                NanoHTTPD.Response.Status.OK,
+                sendspinStatusJson(sendspinStatusProvider())
+            )
+            NanoHTTPD.Method.POST -> {
+                val body = readRequestBody(session)
+                if (body.tooLarge) {
+                    return jsonResponse(NanoHTTPD.Response.Status.PAYLOAD_TOO_LARGE, "{\"ok\":false,\"error\":\"body too large\"}")
+                }
+                val json = try { JSONObject(body.text) } catch (_: Exception) {
+                    return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, "{\"ok\":false,\"error\":\"invalid json\"}")
+                }
+                when (json.optString("action", "command")) {
+                    "config" -> {
+                        if (json.has("enabled")) Prefs.setSendspinEnabled(context, json.getBoolean("enabled"))
+                        if (json.has("auto_popup")) Prefs.setSendspinAutoPopup(context, json.getBoolean("auto_popup"))
+                        if (json.has("server_url")) Prefs.setSendspinServerUrl(context, json.getString("server_url"))
+                        if (json.has("client_name")) Prefs.setSendspinClientName(context, json.getString("client_name"))
+                        onSendspinConfigChanged()
+                        jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
+                    }
+                    "open_ui" -> {
+                        onOpenSendspinUi()
+                        jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
+                    }
+                    "close_ui" -> {
+                        onCloseSendspinUi()
+                        jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
+                    }
+                    else -> {
+                        val command = json.optString("command", "")
+                        val volume = if (json.has("volume")) json.optInt("volume").coerceIn(0, 100) else null
+                        val muted = if (json.has("muted")) json.optBoolean("muted") else null
+                        val position = if (json.has("position_ms")) json.optLong("position_ms") else null
+                        val offset = if (json.has("offset_ms")) json.optLong("offset_ms") else null
+                        val accepted = sendspinCommand(command, volume, muted, position, offset)
+                        jsonResponse(
+                            NanoHTTPD.Response.Status.OK,
+                            "{\"ok\":$accepted,\"error\":${if (accepted) "null" else "\"unsupported_or_disconnected\""}}"
+                        )
+                    }
+                }
+            }
+            else -> jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+    }
+
+    private fun sendspinStatusJson(status: SendspinRuntime.Status): String {
+        val json = JSONObject()
+        json.put("enabled", Prefs.isSendspinEnabled(context))
+        json.put("auto_popup", Prefs.isSendspinAutoPopup(context))
+        json.put("connected", status.state == "connected")
+        json.put("playing", status.playing)
+        json.put("state", status.state)
+        json.put("server", status.server)
+        json.put("server_url", Prefs.getSendspinServerUrl(context))
+        json.put("client_name", Prefs.getSendspinClientName(context))
+        json.put("title", status.title)
+        json.put("artist", status.artist)
+        json.put("album", status.album)
+        json.put("progress_ms", status.progressMs)
+        json.put("duration_ms", status.durationMs)
+        json.put("volume", status.volume)
+        json.put("muted", status.muted)
+        json.put("player_gain", status.playerGain)
+        json.put("supported_commands", org.json.JSONArray(status.controllerCommands.toList()))
+        json.put("player_supported_commands", org.json.JSONArray(status.playerCommands.toList()))
+        json.put("error", status.error)
+        return json.toString()
     }
 
     // ------------------------------------------------------------------

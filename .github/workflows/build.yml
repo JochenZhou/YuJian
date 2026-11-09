@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - master
+      - feature/sendspin-jvm-v1.4.0
     tags:
       - 'v*'
   pull_request:
@@ -71,6 +72,9 @@ jobs:
             echo "KEY_ALIAS=$KEY_ALIAS"
             echo "KEY_PASSWORD=$KEY_PASSWORD"
           } >> "$GITHUB_ENV"
+
+      - name: Run protocol and app tests
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
 
       # 没有配置签名 secret 时，build.gradle.kts 会自动回退 debug 签名，job 不会失败
       - name: Build release APK

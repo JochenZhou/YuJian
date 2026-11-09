@@ -335,6 +335,26 @@ button {
     </div>
   </div>
 
+  <!-- Sendspin 音乐控制 -->
+  <div class="card">
+    <div class="card-title"><span>Sendspin 音乐</span><span id="sendspin-state" style="font-size:12px;color:var(--text-muted)">正在检查…</span></div>
+    <div id="sendspin-track" style="font-size:17px;font-weight:600">未播放</div>
+    <div id="sendspin-artist" style="font-size:13px;color:var(--text-muted);margin-top:4px"></div>
+    <div class="btn-group" style="margin-top:12px">
+      <button class="btn-secondary" onclick="sendspinCommand('previous')">上一首</button>
+      <button class="btn-primary" onclick="sendspinCommand('play_pause')">播放 / 暂停</button>
+      <button class="btn-secondary" onclick="sendspinCommand('next')">下一首</button>
+      <button class="btn-secondary" onclick="sendspinCommand('volume_down')">音量 −</button>
+      <button class="btn-secondary" onclick="sendspinCommand('volume_up')">音量 +</button>
+      <button class="btn-secondary" onclick="sendspinCommand('mute')">静音切换</button>
+    </div>
+    <div class="form-group" style="margin-top:10px"><label>Music Assistant WebSocket 地址（默认端口 8927）</label><input id="sendspin-url" type="text" placeholder="自动发现，或 ws://music-assistant:8927/sendspin"></div>
+    <div class="row">
+      <button class="btn-secondary" onclick="saveSendspinConfig()">保存并连接</button>
+      <button class="btn-secondary" onclick="sendspinCommand('open_ui')">打开电视音乐页</button>
+    </div>
+  </div>
+
   <!-- 传音简录 (历史记录) -->
   <div class="card">
     <div class="card-title">
@@ -365,6 +385,7 @@ const NOTIFY_URL = window.location.origin + "/" + TOKEN + "/notify";
 const DISMISS_URL = window.location.origin + "/" + TOKEN + "/dismiss";
 const CONFIG_URL = window.location.origin + "/" + TOKEN + "/config";
 const HISTORY_URL = window.location.origin + "/" + TOKEN + "/history";
+const SENDSPIN_URL = window.location.origin + "/" + TOKEN + "/sendspin";
 
 let currentTheme = "${theme.storageId}";
 let currentMuted = $isMuted;
@@ -433,6 +454,59 @@ function updateMuteButton() {
     ? (isX ? "🔇 闭关免扰 (已开启静音)" : "🔇 静音模式 (已开启)") 
     : (isX ? "🔊 灵音畅通 (已开启声音)" : "🔊 提示音效 (已开启)");
 }
+
+let sendspinStatus = null;
+async function fetchSendspinStatus() {
+  try {
+    const res = await fetch(SENDSPIN_URL, { cache: "no-store" });
+    sendspinStatus = await res.json();
+    document.getElementById("sendspin-state").textContent = sendspinStatus.connected
+      ? "已连接 · " + (sendspinStatus.server || "Music Assistant")
+      : (sendspinStatus.error || sendspinStatus.state || "未连接");
+    document.getElementById("sendspin-track").textContent = sendspinStatus.title || "未播放";
+    document.getElementById("sendspin-artist").textContent = [sendspinStatus.artist, sendspinStatus.album].filter(Boolean).join(" · ");
+    const address = document.getElementById("sendspin-url");
+    if (document.activeElement !== address) address.value = sendspinStatus.server_url || "";
+  } catch (_) {
+    document.getElementById("sendspin-state").textContent = "状态暂不可用";
+  }
+}
+async function sendspinCommand(command, extra = {}) {
+  const actual = command === "play_pause" ? ((sendspinStatus && sendspinStatus.playing) ? "pause" : "play") : command;
+  if (actual === "volume_up" || actual === "volume_down") {
+    const supported = (sendspinStatus && sendspinStatus.player_supported_commands) || [];
+    if (!supported.includes("volume")) { toast("播放器未提供本地音量控制"); return; }
+    extra = { volume: Math.max(0, Math.min(100, (sendspinStatus.volume || 100) + (actual === "volume_up" ? 5 : -5))) };
+  }
+  const supported = (sendspinStatus && sendspinStatus.supported_commands) || [];
+  const playerSupported = (sendspinStatus && sendspinStatus.player_supported_commands) || [];
+  const playerAction = ["volume_up", "volume_down", "mute"].includes(actual);
+  const wireCommand = ["volume_up", "volume_down"].includes(actual) ? "volume" : actual;
+  const controlSupported = playerAction ? playerSupported : supported;
+  if (actual === "mute") extra = { muted: !(sendspinStatus && sendspinStatus.muted) };
+  if (!["open_ui", "close_ui"].includes(actual) && !controlSupported.includes(actual)) {
+    toast("Music Assistant 未公布此控制命令"); return;
+  }
+  try {
+    const body = ["open_ui", "close_ui"].includes(actual)
+      ? { action: actual }
+      : { action: "command", command: wireCommand, ...extra };
+    const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const result = await res.json();
+    if (!result.ok) toast("Sendspin 命令未发送：" + (result.error || "未连接"));
+    else setTimeout(fetchSendspinStatus, 250);
+  } catch (e) { toast("Sendspin 控制失败：" + e.message); }
+}
+async function saveSendspinConfig() {
+  try {
+    const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "config", enabled: true, server_url: document.getElementById("sendspin-url").value.trim() }) });
+    const result = await res.json();
+    toast(result.ok ? "Sendspin 设置已保存" : "保存失败");
+    setTimeout(fetchSendspinStatus, 700);
+  } catch (e) { toast("保存失败：" + e.message); }
+}
+setInterval(fetchSendspinStatus, 2500);
+fetchSendspinStatus();
 
 function toggleDetails() {
   const box = document.getElementById("details-box");
