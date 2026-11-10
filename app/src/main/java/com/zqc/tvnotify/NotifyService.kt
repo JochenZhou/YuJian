@@ -151,19 +151,6 @@ class NotifyService : Service() {
         super.onDestroy()
     }
 
-    private fun launchSendspinActivityFromBackground() {
-        mainHandler.post {
-            try {
-                val intent = Intent(this, SendspinActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                }
-                startActivity(intent)
-            } catch (e: Exception) {
-                Log.w(TAG, "后台拉起 Sendspin 歌词页受限", e)
-            }
-        }
-    }
-
     // ------------------------------------------------------------------
     // 前台通知
     // ------------------------------------------------------------------

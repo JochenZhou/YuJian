@@ -1,6 +1,6 @@
 # Sendspin 自动同步实验分支
 
-`feature/sendspin-auto-sync` / `1.6.2-auto-sync`（versionCode 43）在官方 sendspin-jvm 协议、PCM16 解码和 Kalman 时钟之上，增加 Android 输出同步闭环。支持 Android 6 / API 23。
+`feature/sendspin-auto-sync` / `1.7.0`（versionCode 44）在官方 sendspin-jvm 协议、PCM16 解码和 Kalman 时钟之上，增加 Android 输出同步闭环。支持 Android 6 / API 23。
 
 ## 工作方式
 

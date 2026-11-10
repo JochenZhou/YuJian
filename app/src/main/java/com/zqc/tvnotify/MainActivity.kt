@@ -97,7 +97,6 @@ class MainActivity : Activity() {
     }
 
     private lateinit var headerBadgeView: TextView
-    private lateinit var sendspinButton: Button
     private lateinit var stateMetricValue: TextView
     private lateinit var portMetricValue: TextView
     private lateinit var overlayMetricValue: TextView
@@ -263,28 +262,12 @@ class MainActivity : Activity() {
         headerTitleCol.addView(subtitleView)
         headerBar.addView(headerTitleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        sendspinButton = buildButton(
-            label = if (theme.isXianxia) "🎵 灵音歌词台" else "🎵 Sendspin 歌词",
-            isPrimary = true,
-            onClick = { startActivity(Intent(this, SendspinActivity::class.java)) }
-        ).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
-            setPadding(dp(12), dp(5), dp(12), dp(5))
-        }
-
         headerBadgeView = makeText("", 12f, Color.WHITE, true).apply {
             setPadding(dp(12), dp(5), dp(12), dp(5))
             background = roundedRect(dp(16).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
         }
         if (isWideScreen) {
-            headerBar.addView(sendspinButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                rightMargin = dp(10)
-            })
             headerBar.addView(headerBadgeView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        } else {
-            headerBar.addView(sendspinButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
-                rightMargin = dp(6)
-            })
         }
         rootColumn.addView(headerBar)
 
@@ -730,13 +713,6 @@ class MainActivity : Activity() {
         muteButton.text = theme.muteButtonText(Prefs.isMuted(this))
         themeButton.text = themeToggleLabel()
         updateButton.text = AppUpdater.getButtonText(this, theme)
-
-        val snap = SendspinManager.snapshot()
-        sendspinButton.text = when {
-            snap.playing && snap.metadata.title.isNotBlank() -> "🎵 " + snap.metadata.title.take(7)
-            snap.connected -> "🎵 已连 " + (if (snap.serverName.isNotBlank()) snap.serverName else "MA").take(6)
-            else -> if (theme.isXianxia) "🎵 灵音歌词台" else "🎵 Sendspin 歌词"
-        }
 
         refreshQrDisplay()
     }
