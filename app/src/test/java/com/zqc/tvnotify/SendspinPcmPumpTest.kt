@@ -21,6 +21,7 @@ class SendspinPcmPumpTest {
         var latency = 0L
         var timestampDelayUs = 0L
         var minimumFrames = 0
+        var capacityFrames = 0
         val samples = mutableListOf<Short>()
         override fun playbackHead(): Long = if (useHardwareHead && playing) {
             minOf(written, ((clockUs - startUs).coerceAtLeast(0) * 48_000 * speed / 1_000_000).toLong())
@@ -30,6 +31,7 @@ class SendspinPcmPumpTest {
         } else null
         override fun latencyUs() = latency
         override fun minimumBufferFrames() = minimumFrames
+        override fun bufferCapacityFrames() = capacityFrames
         override fun write(data: ByteArray, offset: Int, length: Int): Int {
             val frames = minOf(length / 2, limitFrames)
             repeat(frames) {
@@ -43,11 +45,11 @@ class SendspinPcmPumpTest {
         override fun pauseAndFlush() { playing = false; head = 0; written = 0 }
     }
 
-    private class Fixture(ready: Boolean = true, minimumFrames: Int = 0) {
+    private class Fixture(ready: Boolean = true, minimumFrames: Int = 0, capacityFrames: Int = 0) {
         val base = ClockSync.localMicros()
         val clock = ClockSync()
         val buffer = AudioBuffer(clock)
-        val output = Output().apply { this.minimumFrames = minimumFrames }
+        val output = Output().apply { this.minimumFrames = minimumFrames; this.capacityFrames = capacityFrames }
         val pump = SendspinPcmPump(buffer, clock, 48_000, 1, output)
         init { if (ready) clock.processMeasurement(base, base, base, base) }
         fun add(startUs: Long, frames: Int, value: Short = 1234) {
@@ -88,6 +90,19 @@ class SendspinPcmPumpTest {
         f.pump.step(f.base + 100_000L)
         assertTrue(f.output.playing)
         assertEquals(1, f.output.plays)
+    }
+
+    @Test fun `legacy mixer starts only after the entire allocated buffer is primed`() {
+        val f = Fixture(minimumFrames = 4_800, capacityFrames = 9_600)
+        f.add(f.base + 100_000L, 4_800)
+        f.prefill(f.base)
+        f.pump.step(f.base + 100_000L)
+        assertFalse("legacy FS_FILLING needs allocated capacity, not merely getMinBufferSize", f.output.playing)
+        f.add(f.base + 200_000L, 4_800)
+        repeat(24) { f.pump.step(f.base + 102_000L) }
+        f.pump.step(f.base + 104_000L)
+        assertTrue(f.output.playing)
+        assertEquals(9_600L, f.output.written)
     }
 
     @Test fun `short preroll waits for contiguous samples instead of starting an underrun`() {

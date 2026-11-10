@@ -30,12 +30,15 @@ internal class SendspinPcmPump(
         /** Estimated latency downstream of playbackHead(), excluding this track's queued PCM. */
         fun latencyUs(): Long = 0L
         fun minimumBufferFrames(): Int = 0
+        fun bufferCapacityFrames(): Int = 0
     }
 
     private val frameBytes = channels * 2
     private val minimumFrames = output.minimumBufferFrames().coerceAtLeast(0).toLong()
-    private val startupFrames = minimumFrames
-    private val queueLimit = maxOf(sampleRate * 80L / 1000, minimumFrames * 3 / 2)
+    private val capacityFrames = output.bufferCapacityFrames().coerceAtLeast(0).toLong()
+    // Android 6 AudioFlinger FS_FILLING waits for the allocated capacity, not getMinBufferSize.
+    private val startupFrames = maxOf(minimumFrames, capacityFrames)
+    private val queueLimit = maxOf(sampleRate * 80L / 1000, minimumFrames * 3 / 2, capacityFrames)
     private val positions = PlaybackPositionTracker(sampleRate)
     private val consumption = PlaybackPositionTracker(sampleRate)
     private var occupiedFrames = 0L

@@ -208,7 +208,9 @@ class AndroidAudioPlayer(
         minimumBytes: Int,
     ) : SendspinPcmPump.Output {
         private val minimumFrames = minimumBytes / frameBytes
+        private val capacityFrames = bufferBytes / frameBytes
         override fun minimumBufferFrames() = minimumFrames
+        override fun bufferCapacityFrames() = capacityFrames
         private val audioTimestamp = AudioTimestamp()
         private val bufferDurationUs = bufferBytes.toLong() * 1_000_000L / frameBytes / sampleRate
         private var latencyMethod = try { AudioTrack::class.java.getMethod("getLatency") } catch (_: Exception) { null }
