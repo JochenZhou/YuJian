@@ -67,7 +67,7 @@ class AndroidAudioPlayer(
         require(format.sampleRate in 8_000..192_000) { "Unsupported PCM sample rate" }
         synchronized(lock) {
             synchronized(ioLock) {
-                if (this.format == format && track != null) {
+                if (this.format == format && track != null && focusGranted) {
                     transitionPending = true
                     pump?.flush(ClockSync.localMicros())
                     sync = pump?.snapshot ?: OutputSyncSnapshot(state = "buffering")
