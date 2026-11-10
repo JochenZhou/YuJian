@@ -33,6 +33,8 @@ internal class SendspinPcmPump(
     private val frameBytes = channels * 2
     private val queueLimit = sampleRate * 80L / 1000
     private val positions = PlaybackPositionTracker(sampleRate)
+    private val consumption = PlaybackPositionTracker(sampleRate)
+    private var occupiedFrames = 0L
     private val timeline = PcmFrameTimeline(sampleRate)
     private val synchronizer = PcmSynchronizer(sampleRate, channels)
     private val resampler = PcmResampler(channels)
@@ -78,11 +80,15 @@ internal class SendspinPcmPump(
         }
         check(writeBlockedSinceUs?.let { nowUs - it < 1_500_000L } != false) { "AudioTrack write stalled" }
         val stamp = output.timestamp()
-        lastPosition = positions.sample(nowUs, writtenFrames, output.playbackHead(), stamp?.frame, stamp?.timeUs)
+        val rawHead = output.playbackHead()
+        lastPosition = positions.sample(nowUs, writtenFrames, rawHead, stamp?.frame, stamp?.timeUs)
+        val consumed = consumption.sample(nowUs, writtenFrames, rawHead)
         // Keep history while a real hardware cursor catches up with the startup estimate.
         timeline.discardBefore((lastPosition.frames - sampleRate * 5L).coerceAtLeast(0L))
+        occupiedFrames = (writtenFrames - consumed.frames).coerceAtLeast(0L)
         val queued = (writtenFrames - lastPosition.frames).coerceAtLeast(0L)
-        if (lastPosition.reliable && queued > queueLimit + sampleRate / 50L) {
+        // The DAC cursor includes downstream latency; only consumption controls track occupancy.
+        if (consumed.reliable && occupiedFrames > queueLimit + sampleRate / 50L) {
             resetOutput(nowUs, "rebuffering", countResync = true)
             return
         }
@@ -113,11 +119,13 @@ internal class SendspinPcmPump(
                 // Buffered PCM is ready; do not wait for more packets after its deadline.
                 output.play()
                 positions.start(nowUs)
+                consumption.start(nowUs)
                 lastPosition = positions.sample(nowUs, writtenFrames, output.playbackHead())
+                consumption.sample(nowUs, writtenFrames, output.playbackHead())
                 started = true
             }
         }
-        if (queued >= queueLimit) {
+        if (occupiedFrames >= queueLimit) {
             updatePlayingSnapshot(nowUs, latencyUs)
             return
         }
@@ -138,7 +146,7 @@ internal class SendspinPcmPump(
         if (block == null) prepareBlock(nowUs, latencyUs, queued)
         val current = block
         if (current != null) {
-            val room = (queueLimit - (writtenFrames - lastPosition.frames).coerceAtLeast(0L)).coerceAtLeast(0L)
+            val room = (queueLimit - occupiedFrames).coerceAtLeast(0L)
             val bytes = minOf(current.bytes.size - current.written, (room * frameBytes).toInt(), 8192)
                 .let { it - it % frameBytes }
             if (bytes > 0) {
@@ -165,6 +173,7 @@ internal class SendspinPcmPump(
                     // Seed the submitted-frame bound immediately; future packets cannot consume
                     // elapsed time accumulated while nothing was submitted.
                     positions.sample(nowUs, writtenFrames, output.playbackHead())
+                    consumption.sample(nowUs, writtenFrames, output.playbackHead())
                 }
             }
         }
@@ -217,7 +226,7 @@ internal class SendspinPcmPump(
                 return@repeat
             }
             if (decision.silenceFrames > 0) {
-                val frames = minOf(decision.silenceFrames, (queueLimit - queued).toInt())
+                val frames = minOf(decision.silenceFrames, (queueLimit - occupiedFrames).coerceAtLeast(0L).toInt())
                 if (frames <= 0) return
                 val serverStart = serverUs - ((targetUs - predictedUs).coerceAtLeast(0L))
                 block = Block(ByteArray(frames * frameBytes), serverStart, frames, true)
@@ -267,6 +276,8 @@ internal class SendspinPcmPump(
     private fun resetOutput(nowUs: Long, state: String, countResync: Boolean, keepChunk: Boolean = false) {
         output.pauseAndFlush()
         positions.reset(nowUs)
+        consumption.reset(nowUs)
+        occupiedFrames = 0L
         timeline.reset()
         synchronizer.reset()
         resampler.reset()

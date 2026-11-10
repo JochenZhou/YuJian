@@ -16,6 +16,11 @@ interface AudioPlayer {
     val droppedDecodeFrames: Long
     /** States: waiting_clock, buffering, playing, estimated, rebuffering, paused, idle, error. */
     val outputSync: OutputSyncSnapshot get() = OutputSyncSnapshot()
+    /**
+     * Synchronously suspend consumption before a stream's network queue is cleared.
+     * The host keeps consumption suspended until configure/transition installs the new format.
+     */
+    fun prepareTransition() {}
     fun configure(format: StreamFormat)
     fun start()
     fun flush()

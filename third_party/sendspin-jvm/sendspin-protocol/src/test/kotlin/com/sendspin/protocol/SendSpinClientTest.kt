@@ -15,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 
 class SendSpinClientTest {
     private val clients = mutableListOf<SendSpinClient>()
@@ -216,18 +217,34 @@ class SendSpinClientTest {
     }
 
     @Test
-    fun `player stream start clears old encoded chunks before accepting the new format`() = runBlocking {
+    fun `player stream start suspends old consumption before clearing and retains new format frames`() = runBlocking {
         val player = TrackingPlayer()
         val client = client(player = player)
+        val allowConfigure = CountDownLatch(1)
+        player.beforeConfigure = { allowConfigure.await() }
+        var queuedAtPreparation = -1
+        player.onPrepare = { queuedAtPreparation = client.audioBuffer.size }
         client.audioBuffer.offer(AudioChunk(100L, byteArrayOf(1)))
         player.start()
-        client.handleTextMessage("""{"type":"stream/start","payload":{"player":{"codec":"pcm","sample_rate":48000,"channels":2,"bit_depth":16}}}""")
-        assertEquals(0, client.audioBuffer.size)
-        client.audioBuffer.offer(AudioChunk(200L, byteArrayOf(2)))
-        await { player.transitions == 1 }
-        assertTrue(player.isPlaying)
-        assertEquals(1, client.audioBuffer.size)
-        assertEquals(200L, client.audioBuffer.take()!!.serverTimestampMicros)
+        try {
+            client.handleTextMessage("""{"type":"stream/start","payload":{"player":{"codec":"pcm","sample_rate":48000,"channels":2,"bit_depth":16}}}""")
+            assertTrue("Old output must suspend at the message boundary", player.transitionPending)
+            assertEquals("Preparation must precede clearing old frames", 1, queuedAtPreparation)
+            assertEquals(0, client.audioBuffer.size)
+            val binary = ByteBuffer.allocate(14).put(BINARY_TYPE_AUDIO).putLong(200L).putInt(0).put(2).array()
+            client.handleBinaryMessage(binary.toByteString())
+            assertEquals(0, player.transitions)
+            assertTrue(player.transitionPending)
+            assertEquals(1, client.audioBuffer.size)
+            allowConfigure.countDown()
+            await { player.transitions == 1 }
+            assertFalse(player.transitionPending)
+            assertTrue(player.isPlaying)
+            assertEquals(1, client.audioBuffer.size)
+            assertEquals(200L, client.audioBuffer.take()!!.serverTimestampMicros)
+        } finally {
+            allowConfigure.countDown()
+        }
     }
 
     private fun client(
@@ -287,8 +304,12 @@ class SendSpinClientTest {
         @Volatile var stops = 0
         @Volatile var transitions = 0
         @Volatile var snapshot = OutputSyncSnapshot()
+        @Volatile var transitionPending = false
+        var onPrepare: (() -> Unit)? = null
+        var beforeConfigure: (() -> Unit)? = null
         override val outputSync: OutputSyncSnapshot get() = snapshot
-        override fun configure(format: StreamFormat) {}
+        override fun prepareTransition() { transitionPending = true; onPrepare?.invoke() }
+        override fun configure(format: StreamFormat) { beforeConfigure?.invoke(); transitionPending = false }
         override fun start() { isPlaying = true }
         override fun flush() { flushes++ }
         override fun stop() { isPlaying = false; snapshot = OutputSyncSnapshot(); stops++ }

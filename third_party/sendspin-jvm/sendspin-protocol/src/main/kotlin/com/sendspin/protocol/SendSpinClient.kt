@@ -578,6 +578,9 @@ class SendSpinClient(
                     Timber.d("SendSpinClient: stream/start artwork ch=%d source=%s %dx%d", i, ch.source, ch.width, ch.height)
                 }
                 if (msg.player != null) {
+                    // Suspend the old consumer before later binary frames can enter the queue;
+                    // async configure/transition resumes it with the new format.
+                    audioPlayer.prepareTransition()
                     // Encoded chunks have no format generation. Clear the old stream at the
                     // message boundary; later new-format binary frames must survive configure().
                     audioBuffer.flush()

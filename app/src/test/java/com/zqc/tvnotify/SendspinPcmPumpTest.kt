@@ -19,12 +19,13 @@ class SendspinPcmPumpTest {
         var useHardwareHead = false
         var emitTimestamp = false
         var latency = 0L
+        var timestampDelayUs = 0L
         val samples = mutableListOf<Short>()
         override fun playbackHead(): Long = if (useHardwareHead && playing) {
             minOf(written, ((clockUs - startUs).coerceAtLeast(0) * 48_000 * speed / 1_000_000).toLong())
         } else head
-        override fun timestamp(): SendspinPcmPump.Timestamp? = if (emitTimestamp && playing) {
-            SendspinPcmPump.Timestamp(minOf(written, (clockUs - startUs).coerceAtLeast(0) * 48_000 / 1_000_000), clockUs)
+        override fun timestamp(): SendspinPcmPump.Timestamp? = if (emitTimestamp && playing && clockUs - startUs >= timestampDelayUs) {
+            SendspinPcmPump.Timestamp(minOf(written, (clockUs - startUs - timestampDelayUs).coerceAtLeast(0) * 48_000 / 1_000_000), clockUs)
         } else null
         override fun latencyUs() = latency
         override fun write(data: ByteArray, offset: Int, length: Int): Int {
@@ -141,6 +142,30 @@ class SendspinPcmPumpTest {
             assertEquals("unexpected re-prime at speed $speed", 1, f.output.plays)
             assertEquals(0L, f.pump.snapshot.underrunCount)
         }
+    }
+
+    @Test fun `normal downstream presentation latency is not mistaken for a full track queue`() {
+        val f = Fixture()
+        f.output.useHardwareHead = true
+        f.output.emitTimestamp = true
+        f.output.timestampDelayUs = 50_000L
+        f.output.latency = 50_000L
+        var packet = 0
+        var sawTimestamp = false
+        for (tick in 0..1000) {
+            val now = f.base + tick * 2_000L
+            f.output.clockUs = now
+            while (f.base + 100_000L + packet * 20_000L <= now + 180_000L) {
+                f.add(f.base + 100_000L + packet * 20_000L, 960)
+                packet++
+            }
+            f.pump.step(now)
+            if (f.pump.snapshot.positionSource == "timestamp") sawTimestamp = true
+        }
+        assertTrue("valid timestamp should take over", sawTimestamp)
+        assertEquals("healthy pipeline must not repeatedly flush", 1, f.output.plays)
+        assertEquals(0L, f.pump.snapshot.resyncCount)
+        assertTrue(kotlin.math.abs(f.pump.snapshot.errorMicros ?: Long.MAX_VALUE) < 5_000L)
     }
 
     @Test fun `hardware takeover behind estimate discards hidden output backlog`() {

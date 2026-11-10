@@ -34,6 +34,7 @@ class AndroidAudioPlayer(
     @Volatile private var format: StreamFormat? = null
     @Volatile private var pump: SendspinPcmPump? = null
     @Volatile private var focusGranted = false
+    @Volatile private var transitionPending = false
     @Volatile private var volume = 1f
     @Volatile private var sync = OutputSyncSnapshot()
     private var thread: Thread? = null
@@ -90,6 +91,14 @@ class AndroidAudioPlayer(
         }
     }
 
+    override fun prepareTransition() {
+        synchronized(ioLock) {
+            transitionPending = true
+            pump?.flush(ClockSync.localMicros())
+            sync = OutputSyncSnapshot(state = "buffering")
+        }
+    }
+
     override fun transition(format: StreamFormat) {
         configure(format)
         start()
@@ -118,7 +127,7 @@ class AndroidAudioPlayer(
             while (running.get() && !Thread.currentThread().isInterrupted) {
                 try {
                     synchronized(ioLock) {
-                        if (running.get() && focusGranted) {
+                        if (running.get() && focusGranted && !transitionPending) {
                             val scheduler = pump ?: return
                             val nowUs = ClockSync.localMicros()
                             scheduler.step(nowUs)
@@ -174,6 +183,7 @@ class AndroidAudioPlayer(
         output.setVolume(volume)
         pump = SendspinPcmPump(buffer, clock, format.sampleRate, format.channels,
             TrackOutput(output, format.sampleRate, format.channels * 2, bufferBytes))
+        transitionPending = false
         sync = OutputSyncSnapshot(state = if (clock.isReady) "buffering" else "waiting_clock")
         Log.i(TAG, "AudioTrack configured rate=${format.sampleRate} channels=${format.channels} bufferBytes=$bufferBytes")
     }

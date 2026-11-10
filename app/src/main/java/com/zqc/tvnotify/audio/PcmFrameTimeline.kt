@@ -53,7 +53,9 @@ class PcmFrameTimeline(private val sampleRate: Int) {
     fun discardBefore(frame: Long) {
         require(frame >= 0)
         discardedBefore = maxOf(discardedBefore, frame)
-        while (segments.isNotEmpty() && segments.peekFirst().end <= discardedBefore) {
+        while (true) {
+            val first = segments.peekFirst() ?: break
+            if (first.end > discardedBefore) break
             segments.removeFirst()
         }
     }
