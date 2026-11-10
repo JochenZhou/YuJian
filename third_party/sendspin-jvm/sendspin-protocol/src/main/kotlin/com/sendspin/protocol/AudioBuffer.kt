@@ -35,6 +35,14 @@ class AudioBuffer(
         outputDelayMicros = delayMicros
     }
 
+    /** The host watches this together with [outputDelayMicros] to re-prime its output clock. */
+    @Volatile var automaticSync: Boolean = true
+        private set
+
+    fun setAutomaticSync(automatic: Boolean) {
+        automaticSync = automatic
+    }
+
     // ── Stats (for diagnostics) ───────────────────────────────────────────────
 
     @Volatile var droppedChunks: Long = 0L; private set
@@ -47,29 +55,29 @@ class AudioBuffer(
 
     /**
      * Add a chunk arriving from the network.
-     * Converts the server timestamp to local time and rejects chunks that are too late.
+     * Once the clock is ready, converts server time to local time and rejects late chunks.
+     * Before readiness, only capacity bounds apply.
      */
     fun offer(chunk: AudioChunk) {
-        val now = ClockSync.localMicros()
-        // Used only to evaluate admission policy (late / far-future / eviction) against the
-        // estimate at arrival time. The schedule itself is recomputed live at poll time so that
-        // later corrections to the ClockSync estimate are reflected for already-queued chunks.
-        val rawLocalTime = clockSync.toLocalMicros(chunk.serverTimestampMicros, now)
-
-        if (rawLocalTime < now - DROP_THRESHOLD_MICROS) {
-            lateChunks++
-            droppedChunks++
-            Timber.w("AudioBuffer: dropped late chunk (%.1f ms late)", (now - rawLocalTime) / 1000.0)
-            return
-        }
-
-        if (rawLocalTime > now + MAX_FUTURE_MICROS) {
-            droppedChunks++
-            Timber.w("AudioBuffer: dropped far-future chunk (%.1f s ahead)", (rawLocalTime - now) / 1_000_000.0)
-            return
-        }
-
         synchronized(lock) {
+            // Before seeding, the server and local monotonic clocks can have unrelated epochs.
+            // Keep the queue bounded by capacity without rejecting against an unknown offset.
+            if (clockSync.isReady) {
+                val now = ClockSync.localMicros()
+                // Admission uses raw local time; output compensation belongs to the consumer.
+                val rawLocalTime = clockSync.toLocalMicros(chunk.serverTimestampMicros, now)
+                if (rawLocalTime < now - DROP_THRESHOLD_MICROS) {
+                    lateChunks++
+                    droppedChunks++
+                    Timber.w("AudioBuffer: dropped late chunk (%.1f ms late)", (now - rawLocalTime) / 1000.0)
+                    return
+                }
+                if (rawLocalTime > now + MAX_FUTURE_MICROS) {
+                    droppedChunks++
+                    Timber.w("AudioBuffer: dropped far-future chunk (%.1f s ahead)", (rawLocalTime - now) / 1_000_000.0)
+                    return
+                }
+            }
             if (queue.size >= capacity) {
                 // Evict the chunk scheduled furthest in the future — it is the least urgent.
                 // Evicting the soonest-to-play chunk (the default PriorityQueue.poll() order)
@@ -92,6 +100,12 @@ class AudioBuffer(
 
     // ── Read path ─────────────────────────────────────────────────────────────
 
+    /** Inspect the earliest server-timestamped chunk without applying any timing policy. */
+    fun peek(): AudioChunk? = synchronized(lock) { queue.peek()?.chunk }
+
+    /** Remove the earliest chunk unconditionally; the host owns playback timing and trimming. */
+    fun take(): AudioChunk? = synchronized(lock) { queue.poll()?.chunk }
+
     /**
      * Returns the next chunk whose scheduled time is at or before [nowMicros],
      * or `null` if none is ready yet. Chunks that fell more than
@@ -101,6 +115,7 @@ class AudioBuffer(
      */
     fun poll(nowMicros: Long = ClockSync.localMicros()): AudioChunk? {
         synchronized(lock) {
+            if (!clockSync.isReady) return null
             while (true) {
                 val head = queue.peek() ?: return null
                 val scheduled = scheduledMicros(head.chunk, nowMicros)
@@ -123,6 +138,7 @@ class AudioBuffer(
      */
     fun nextChunkDelayMicros(nowMicros: Long = ClockSync.localMicros()): Long? {
         synchronized(lock) {
+            if (!clockSync.isReady) return null
             val head = queue.peek() ?: return null
             return (scheduledMicros(head.chunk, nowMicros) - nowMicros).coerceAtLeast(0L)
         }
@@ -141,6 +157,7 @@ class AudioBuffer(
      */
     fun dropChunksOlderThan(cutoffLocalMicros: Long) {
         synchronized(lock) {
+            if (!clockSync.isReady) return
             val iterator = queue.iterator()
             var removed = 0
             while (iterator.hasNext()) {

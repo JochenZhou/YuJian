@@ -44,6 +44,12 @@ data class DiagnosticsSnapshot(
     val lateChunks: Long = 0L,
     val droppedDecodeFrames: Long = 0L,
     val isAudioPlaying: Boolean = false,
+    val clockReady: Boolean = false,
+    val clockUncertaintyMs: Double = 0.0,
+    val outputSync: OutputSyncSnapshot = OutputSyncSnapshot(),
+    val automaticSync: Boolean = true,
+    val outputDelayMs: Int = 0,
+    val manualOutputDelayMs: Int = 0,
 )
 
 /**
@@ -186,10 +192,16 @@ class SendSpinClient(
     private val _visualizerStreamConfig = MutableStateFlow<StreamVisualizerConfig?>(null)
     val visualizerStreamConfig: StateFlow<StreamVisualizerConfig?> = _visualizerStreamConfig
 
-    @Volatile private var outputDelayMs: Int = settingsStore.getInt(ClientSettingsKeys.OUTPUT_DELAY_MS, 0)
+    @Volatile private var manualOutputDelayMs: Int = settingsStore.getInt(ClientSettingsKeys.OUTPUT_DELAY_MS, 0)
         .coerceIn(0, 5000)
+    @Volatile private var automaticSync: Boolean = settingsStore.getInt(ClientSettingsKeys.OUTPUT_SYNC_AUTOMATIC, 1) != 0
     init {
-        audioBuffer.setOutputDelayMicros(outputDelayMs * 1_000L)
+        applyOutputCompensation()
+        _diagnostics.value = DiagnosticsSnapshot(
+            automaticSync = automaticSync,
+            outputDelayMs = currentOutputDelayMs,
+            manualOutputDelayMs = manualOutputDelayMs,
+        )
     }
     @Volatile private var requiredLeadTimeMs: Int = 0
     @Volatile private var minBufferMs: Int = 0
@@ -207,29 +219,36 @@ class SendSpinClient(
     val currentPlayerVolume: Int get() = playerVolume
     val currentPlayerMuted: Boolean get() = playerMuted
     val currentPlayerGain: Float get() = if (playerMuted) 0f else (playerVolume / 100.0).pow(1.5).toFloat()
-    val currentOutputDelayMs: Int get() = outputDelayMs
+    val currentAutomaticSync: Boolean get() = automaticSync
+    val currentManualOutputDelayMs: Int get() = manualOutputDelayMs
+    /** Effective fixed compensation reported to the server; automatic output timing uses zero. */
+    val currentOutputDelayMs: Int get() = if (automaticSync) 0 else manualOutputDelayMs
 
-    /**
-     * Android 适配器只把本地估计作为初始输出延迟；服务器后续下发的校准值优先。
-     * 软件队列长度不等于设备实际声学延迟，不应被持续上报成用户校准值。
-     */
-    fun setEstimatedOutputDelayMs(delayMs: Int) {
-        val bounded = delayMs.coerceIn(0, 5000)
-        // 启动时若无历史校准，采用 Android 适配器的保守初始延迟；已有校准不被队列估计覆盖。
-        if (outputDelayMs == 0) {
-            audioBuffer.setOutputDelayMicros(bounded * 1_000L)
-            sendClientState()
-        }
-    }
-    fun setOutputDelayMs(delayMs: Int) {
-        outputDelayMs = delayMs.coerceIn(0, 5000)
-        audioBuffer.setOutputDelayMicros(outputDelayMs * 1_000L)
-        settingsStore.putInt(ClientSettingsKeys.OUTPUT_DELAY_MS, outputDelayMs)
+    /** Select automatic output timing without overwriting the saved manual calibration. */
+    @Synchronized
+    fun setAutomaticSync(automatic: Boolean) {
+        automaticSync = automatic
+        settingsStore.putInt(ClientSettingsKeys.OUTPUT_SYNC_AUTOMATIC, if (automatic) 1 else 0)
+        applyOutputCompensation()
         sendClientState()
-        // Chunks already in the buffer retain their old scheduled times; the new delay applies
-        // only to newly arriving chunks. The transition resolves within one server buffer window
-        // (~2 s). A full flush on delay change would cause a noticeable gap, so we accept the
-        // gradual crossover.
+    }
+
+    /** An explicit calibration, including zero, selects manual output compensation. */
+    @Synchronized
+    fun setOutputDelayMs(delayMs: Int) {
+        manualOutputDelayMs = delayMs.coerceIn(0, 5000)
+        automaticSync = false
+        settingsStore.putInt(ClientSettingsKeys.OUTPUT_DELAY_MS, manualOutputDelayMs)
+        settingsStore.putInt(ClientSettingsKeys.OUTPUT_SYNC_AUTOMATIC, 0)
+        applyOutputCompensation()
+        sendClientState()
+    }
+
+    private fun applyOutputCompensation() {
+        audioBuffer.setOutputDelayMicros(currentOutputDelayMs * 1_000L)
+        audioBuffer.setAutomaticSync(automaticSync)
+        // The output controller observes (automaticSync, outputDelayMicros) and re-primes its
+        // local track. Keeping the network queue intact avoids losing the server's lead-in.
     }
 
     fun setRequiredLeadTimeMs(ms: Int) {
@@ -388,6 +407,7 @@ class SendSpinClient(
     fun disconnect(reason: String = "user_request") {
         activeOkHttpWs = null
         reconnectAttempt = Int.MAX_VALUE / 2
+        _state.value = ClientState.DISCONNECTED
         cleanupJobs()
         clearSessionState()
         ws?.send(clientGoodbyeAdapter.toJson(ClientGoodbye(payload = ClientGoodbyePayload(reason = reason))))
@@ -524,21 +544,28 @@ class SendSpinClient(
                 val t4 = ClockSync.localMicros()
                 burstReplies.add(msg to t4)
                 if (burstReplies.size >= ClockSyncConfig.PROBES_PER_BURST) {
-                    val (best, bestT4) = burstReplies.minByOrNull { (m, replyT4) ->
+                    val candidates = burstReplies.filter { (m, replyT4) ->
+                        ClockSync.isValidMeasurement(m.clientTime, m.serverReceive, m.serverSend, replyT4)
+                    }.sortedBy { (m, replyT4) ->
                         ClockSync.rttMicros(m.clientTime, m.serverReceive, m.serverSend, replyT4)
-                    }!!
+                    }
                     burstReplies.clear()
-                    clockSync.processMeasurement(best.clientTime, best.serverReceive, best.serverSend, bestT4)
-                }
-                if (!firstMeasurementCompleted) {
-                    firstMeasurementCompleted = true
-                    // Flush chunks that arrived with offset=0 before the first estimate was ready.
-                    // Delegated through audioPlayer so implementations that don't need timing-based
-                    // flushing (e.g. conformance adapter) can override flush() as a no-op.
-                    audioPlayer.flush()
-                }
-                if (_state.value == ClientState.CLOCK_SYNCING) {
-                    _state.value = ClientState.STREAMING
+                    // A malformed negative-RTT sample must not win "best" selection. Try the
+                    // valid candidates in RTT order; stale samples cannot move the filter back.
+                    val accepted = candidates.any { (sample, replyT4) ->
+                        clockSync.processMeasurement(sample.clientTime, sample.serverReceive, sample.serverSend, replyT4)
+                    }
+                    if (accepted) {
+                        if (!firstMeasurementCompleted) {
+                            firstMeasurementCompleted = true
+                            // Only a processed burst makes the clock ready. Serialize the one-time
+                            // flush with configure/start/stop to reset any pre-clock output state.
+                            audioScope.launch { audioPlayer.flush() }
+                        }
+                        if (_state.value == ClientState.CLOCK_SYNCING) {
+                            _state.value = ClientState.STREAMING
+                        }
+                    }
                 }
             }
             is StreamStart -> {
@@ -551,6 +578,9 @@ class SendSpinClient(
                     Timber.d("SendSpinClient: stream/start artwork ch=%d source=%s %dx%d", i, ch.source, ch.width, ch.height)
                 }
                 if (msg.player != null) {
+                    // Encoded chunks have no format generation. Clear the old stream at the
+                    // message boundary; later new-format binary frames must survive configure().
+                    audioBuffer.flush()
                     Timber.i("SendSpinClient: stream/start codec=%s", msg.player.codec)
                     sendClientState()
                     audioScope.launch {
@@ -851,7 +881,7 @@ class SendSpinClient(
             PlayerStatePayload(
                 volume = playerVolume,
                 muted = playerMuted,
-                outputDelayMs = outputDelayMs,
+                outputDelayMs = currentOutputDelayMs,
                 requiredLeadTimeMs = requiredLeadTimeMs,
                 supportedCommands = preferences.playerSupportedCommands,
                 minBufferMs = minBufferMs,
@@ -879,6 +909,7 @@ class SendSpinClient(
         diagnosticsJob = scope.launch {
             while (isActive) {
                 delay(500L)
+                val clockReady = clockSync.isReady
                 _diagnostics.value = DiagnosticsSnapshot(
                     state = _state.value,
                     serverName = serverNameStr,
@@ -890,6 +921,12 @@ class SendSpinClient(
                     lateChunks = audioBuffer.lateChunks,
                     droppedDecodeFrames = audioPlayer.droppedDecodeFrames,
                     isAudioPlaying = audioPlayer.isPlaying,
+                    clockReady = clockReady,
+                    clockUncertaintyMs = if (clockReady) clockSync.uncertaintyMicros / 1000.0 else 0.0,
+                    outputSync = audioPlayer.outputSync,
+                    automaticSync = automaticSync,
+                    outputDelayMs = currentOutputDelayMs,
+                    manualOutputDelayMs = manualOutputDelayMs,
                 )
             }
         }
@@ -929,8 +966,12 @@ class SendSpinClient(
         _albumArtwork.value = null
         _artistArtwork.value = null
         firstAudioChunkLogged = false
+        resetClockState()
+    }
+
+    private fun resetClockState() {
         firstMeasurementCompleted = false
-        clockSync.reset()   // drop stale Kalman state so the next session re-seeds from its own server clock
+        clockSync.reset()
         burstReplies.clear()
     }
 
@@ -938,6 +979,14 @@ class SendSpinClient(
         clockJob?.cancel(); clockJob = null
         stateJob?.cancel(); stateJob = null
         diagnosticsJob?.cancel(); diagnosticsJob = null
+        resetClockState()
+        audioBuffer.flush()
+        _diagnostics.value = DiagnosticsSnapshot(
+            state = _state.value,
+            automaticSync = automaticSync,
+            outputDelayMs = currentOutputDelayMs,
+            manualOutputDelayMs = manualOutputDelayMs,
+        )
         _groupPlaybackState.value = null
         _controllerState.value = null
         _streamFormat.value = null

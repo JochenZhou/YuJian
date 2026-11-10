@@ -3,6 +3,8 @@ package com.sendspin.protocol
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -17,7 +19,8 @@ class AudioBufferTest {
     @Before
     fun setUp() {
         clockSync = mockk()
-        // By default, toLocalMicros is identity (no offset)
+        // Legacy timing tests run against a seeded clock with an identity offset.
+        every { clockSync.isReady } returns true
         every { clockSync.toLocalMicros(any(), any()) } answers { firstArg() }
         buffer = AudioBuffer(clockSync, capacity = 8)
     }
@@ -171,7 +174,7 @@ class AudioBufferTest {
     @Test
     fun `outputDelayMicros shifts scheduled play time earlier`() {
         val now = System.nanoTime() / 1_000L
-        buffer.outputDelayMicros = 200_000L // 200 ms
+        buffer.setOutputDelayMicros(200_000L) // 200 ms
 
         // Server timestamp 300 ms in the future; with 200 ms delay, local time = now+100 ms
         buffer.offer(chunk(now + 300_000L))
@@ -185,11 +188,79 @@ class AudioBufferTest {
     @Test
     fun `zero outputDelayMicros does not shift playback time`() {
         val now = System.nanoTime() / 1_000L
-        buffer.outputDelayMicros = 0L
+        buffer.setOutputDelayMicros(0L)
 
         buffer.offer(chunk(now + 300_000L))
         assertNull(buffer.poll(now + 100_000L))
         assertNotNull(buffer.poll(now + 300_000L))
+    }
+
+    @Test
+    fun `peek leaves the earliest chunk queued and take ignores the playback window`() {
+        val now = ClockSync.localMicros()
+        val near = chunk(now + 2_000_000L)
+        val far = chunk(now + 20_000_000L)
+        buffer.offer(far)
+        buffer.offer(near)
+
+        assertSame(near, buffer.peek())
+        assertSame(near, buffer.peek())
+        assertEquals(2, buffer.size)
+        assertSame(near, buffer.take())
+        // A stalled controller can inspect and trim a chunk itself instead of losing it to poll().
+        assertNull(buffer.poll(now + 25_000_000L))
+        assertEquals(1L, buffer.lateChunks)
+    }
+
+    @Test
+    fun `take preserves large timestamp gaps and does not discard stale chunks`() {
+        val now = ClockSync.localMicros()
+        val first = chunk(now + 1_000_000L)
+        val next = chunk(now + 20_000_000L)
+        buffer.offer(next)
+        buffer.offer(first)
+
+        assertSame(first, buffer.take())
+        assertSame(next, buffer.take())
+        assertNull(buffer.peek())
+        assertNull(buffer.take())
+        assertEquals(0L, buffer.droppedChunks)
+    }
+
+    @Test
+    fun `before clock readiness chunks with unrelated server epoch remain bounded and ordered`() {
+        val unseeded = ClockSync()
+        val waiting = AudioBuffer(unseeded, capacity = 2)
+        val first = chunk(100L)
+        val second = chunk(200L)
+        waiting.offer(second)
+        waiting.offer(first)
+        waiting.offer(chunk(300L))
+
+        assertEquals(2, waiting.size)
+        assertEquals(1L, waiting.droppedChunks)
+        assertEquals(0L, waiting.lateChunks)
+        assertSame(first, waiting.peek())
+        assertNull(waiting.poll())
+        assertNull(waiting.nextChunkDelayMicros())
+        waiting.dropChunksOlderThan(Long.MAX_VALUE)
+        assertEquals(2, waiting.size)
+        assertSame(first, waiting.take())
+        assertEquals(300L, waiting.take()!!.serverTimestampMicros)
+    }
+
+    @Test
+    fun `automatic and manual zero are distinguishable without discarding network chunks`() {
+        val now = ClockSync.localMicros()
+        buffer.offer(chunk(now + 1_000_000L))
+        assertTrue(buffer.automaticSync)
+        buffer.setAutomaticSync(false)
+        buffer.setOutputDelayMicros(0L)
+        assertFalse(buffer.automaticSync)
+        assertEquals(1, buffer.size)
+        buffer.setAutomaticSync(true)
+        assertTrue(buffer.automaticSync)
+        assertEquals(1, buffer.size)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ on:
       - main
       - master
       - feature/sendspin-jvm-v1.4.0
+      - feature/sendspin-auto-sync
     tags:
       - 'v*'
   pull_request:
@@ -74,10 +75,9 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Run protocol and app tests
-        continue-on-error: true
         run: |
           set -o pipefail
-          gradle testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee test-output.log
+          gradle :sendspin-protocol:test :app:testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee test-output.log
 
       - name: Upload test log
         if: always()
@@ -85,6 +85,20 @@ jobs:
         with:
           name: yujian-test-log
           path: test-output.log
+          if-no-files-found: warn
+
+      - name: Run web console tests
+        run: node --test app/src/test/js/sendspin-console.test.cjs
+
+      - name: Build debug APK and run lint
+        run: gradle :app:assembleDebug :app:lintDebug --no-daemon --stacktrace
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-lint-report
+          path: app/build/reports/lint-results-debug.*
           if-no-files-found: warn
 
       # 没有配置签名 secret 时，build.gradle.kts 会自动回退 debug 签名，job 不会失败

@@ -349,12 +349,20 @@ button {
       <button class="btn-secondary" onclick="sendspinCommand('mute')">静音切换</button>
     </div>
     <div class="form-group" style="margin-top:10px">
-      <label>设备输出延迟 output_delay_ms（毫秒，0–5000；电视偏早调小、偏慢调大）</label>
-      <input id="sendspin-delay" type="number" min="0" max="5000" step="50" placeholder="例如 800">
+      <label for="sendspin-sync-mode">自动同步</label>
+      <select id="sendspin-sync-mode">
+        <option value="auto" selected>自动同步</option>
+        <option value="manual">手动固定补偿</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="sendspin-delay">手动固定补偿（毫秒，0–5000；自动模式保留此值）</label>
+      <input id="sendspin-delay" type="number" min="0" max="5000" step="1" placeholder="例如 800" disabled>
     </div>
     <div class="row">
-      <button class="btn-secondary" onclick="saveOutputDelay()">应用输出延迟</button>
+      <button id="sendspin-sync-apply" class="btn-secondary" onclick="saveOutputDelay()">应用同步设置</button>
     </div>
+    <div id="sendspin-sync" role="status" style="font-size:12px;color:var(--text-muted);margin-top:10px">同步：等待状态…</div>
     <div class="form-group" style="margin-top:10px"><label>Music Assistant WebSocket 地址（默认端口 8927）</label><input id="sendspin-url" type="text" placeholder="自动发现，或 ws://music-assistant:8927/sendspin"></div>
     <div class="row">
       <button class="btn-secondary" onclick="saveSendspinConfig()">保存并连接</button>
@@ -463,21 +471,66 @@ function updateMuteButton() {
 }
 
 let sendspinStatus = null;
+let sendspinSyncDirty = false;
+let sendspinSyncEditVersion = 0;
+let sendspinAddressDirty = false;
+let sendspinAddressEditVersion = 0;
+let sendspinStatusRequest = 0;
+function updateSyncInput() {
+  document.getElementById("sendspin-delay").disabled = document.getElementById("sendspin-sync-mode").value === "auto";
+}
+["sendspin-sync-mode", "sendspin-delay"].forEach(id => {
+  ["input", "change"].forEach(event => document.getElementById(id).addEventListener(event, () => {
+    sendspinSyncDirty = true;
+    sendspinSyncEditVersion++;
+    updateSyncInput();
+  }));
+});
+["input", "change"].forEach(event => document.getElementById("sendspin-url").addEventListener(event, () => {
+  sendspinAddressDirty = true;
+  sendspinAddressEditVersion++;
+}));
+function syncStatusText(status) {
+  const source = String(status.position_source || "unavailable").toLowerCase();
+  const sourceLabel = source.includes("timestamp") ? "可靠时间戳"
+    : source.includes("head") ? "可靠播放位置"
+    : source.includes("estimat") ? "估算位置" : "位置不可用";
+  const states = { idle: "未播放", waiting_clock: "等待时钟", buffering: "缓冲中", playing: "播放中", estimated: "估算同步", rebuffering: "重新缓冲", paused: "已暂停", error: "同步异常" };
+  const state = states[status.sync_state] || (status.clock_ready ? "同步中" : "等待时钟");
+  const error = status.sync_error_ms;
+  const errorLabel = typeof error === "number" && Number.isFinite(error)
+    ? (error > 0 ? "电视偏晚 " : error < 0 ? "电视偏早 " : "偏差 ") + Math.abs(error).toFixed(1) + " ms"
+    : "偏差暂不可用";
+  return "同步：" + state + " · " + sourceLabel + " · " + errorLabel
+    + " · 重缓冲 " + (status.resync_count || 0) + " / 欠载 " + (status.underrun_count || 0);
+}
 async function fetchSendspinStatus() {
+  const request = ++sendspinStatusRequest;
   try {
     const res = await fetch(SENDSPIN_URL, { cache: "no-store" });
-    sendspinStatus = await res.json();
-    document.getElementById("sendspin-state").textContent = sendspinStatus.connected
-      ? "已连接 · " + (sendspinStatus.server || "Music Assistant")
-      : (sendspinStatus.error || sendspinStatus.state || "未连接");
-    document.getElementById("sendspin-track").textContent = sendspinStatus.title || "未播放";
-    document.getElementById("sendspin-artist").textContent = [sendspinStatus.artist, sendspinStatus.album].filter(Boolean).join(" · ");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const status = await res.json();
+    if (request !== sendspinStatusRequest) return;
+    sendspinStatus = status;
+    document.getElementById("sendspin-state").textContent = status.connected
+      ? "已连接 · " + (status.server || "Music Assistant")
+      : (status.error || status.state || "未连接");
+    document.getElementById("sendspin-track").textContent = status.title || "未播放";
+    document.getElementById("sendspin-artist").textContent = [status.artist, status.album].filter(Boolean).join(" · ");
+    document.getElementById("sendspin-sync").textContent = syncStatusText(status);
     const address = document.getElementById("sendspin-url");
-    if (document.activeElement !== address) address.value = sendspinStatus.server_url || "";
+    if (!sendspinAddressDirty && document.activeElement !== address) address.value = status.server_url || "";
+    const mode = document.getElementById("sendspin-sync-mode");
     const delay = document.getElementById("sendspin-delay");
-    if (document.activeElement !== delay) delay.value = (sendspinStatus.output_delay_ms != null ? sendspinStatus.output_delay_ms : "");
+    if (!sendspinSyncDirty && document.activeElement !== mode && document.activeElement !== delay) {
+      mode.value = status.sync_mode === "manual" || status.automatic_sync === false ? "manual" : "auto";
+      delay.value = status.manual_output_delay_ms != null ? status.manual_output_delay_ms : "";
+      updateSyncInput();
+    }
   } catch (_) {
+    if (request !== sendspinStatusRequest) return;
     document.getElementById("sendspin-state").textContent = "状态暂不可用";
+    document.getElementById("sendspin-sync").textContent = "同步：状态暂不可用";
   }
 }
 async function sendspinCommand(command, extra = {}) {
@@ -507,24 +560,41 @@ async function sendspinCommand(command, extra = {}) {
   } catch (e) { toast("Sendspin 控制失败：" + e.message); }
 }
 async function saveSendspinConfig() {
+  const editVersion = sendspinAddressEditVersion;
   try {
     const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "config", enabled: true, server_url: document.getElementById("sendspin-url").value.trim() }) });
     const result = await res.json();
-    toast(result.ok ? "Sendspin 设置已保存" : "保存失败");
-    setTimeout(fetchSendspinStatus, 700);
+    if (!res.ok || result.ok !== true) throw new Error(result.error || "HTTP " + res.status);
+    if (editVersion === sendspinAddressEditVersion) sendspinAddressDirty = false;
+    sendspinStatusRequest++;
+    toast("Sendspin 设置已保存");
+    fetchSendspinStatus();
   } catch (e) { toast("保存失败：" + e.message); }
 }
 async function saveOutputDelay() {
-  const el = document.getElementById("sendspin-delay");
-  const raw = parseInt(el.value, 10);
-  const ms = Number.isFinite(raw) ? Math.max(0, Math.min(5000, raw)) : 0;
-  el.value = ms;
+  const mode = document.getElementById("sendspin-sync-mode").value;
+  if (!["auto", "manual"].includes(mode)) { toast("请选择同步模式"); return; }
+  const body = { action: "config", sync_mode: mode };
+  if (mode === "manual") {
+    const raw = document.getElementById("sendspin-delay").value.trim();
+    if (!/^[0-9]+$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > 5000) {
+      toast("请输入 0–5000 的整数毫秒值"); return;
+    }
+    body.output_delay_ms = Number(raw);
+  }
+  const editVersion = sendspinSyncEditVersion;
+  const button = document.getElementById("sendspin-sync-apply");
+  button.disabled = true;
   try {
-    const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "config", output_delay_ms: ms }) });
+    const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     const result = await res.json();
-    toast(result.ok ? "输出延迟已设为 " + ms + " ms" : "设置失败");
-    setTimeout(fetchSendspinStatus, 700);
+    if (!res.ok || result.ok !== true) throw new Error(result.error || "HTTP " + res.status);
+    if (editVersion === sendspinSyncEditVersion) sendspinSyncDirty = false;
+    sendspinStatusRequest++;
+    toast(mode === "auto" ? "已启用自动同步" : "手动固定补偿已设为 " + body.output_delay_ms + " ms");
+    fetchSendspinStatus();
   } catch (e) { toast("保存失败：" + e.message); }
+  finally { button.disabled = false; }
 }
 setInterval(fetchSendspinStatus, 2500);
 fetchSendspinStatus();

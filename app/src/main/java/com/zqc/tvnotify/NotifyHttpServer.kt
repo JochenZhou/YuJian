@@ -32,6 +32,7 @@ class NotifyHttpServer(
     private val sendspinStatusProvider: () -> SendspinRuntime.Status,
     private val sendspinCommand: (String, Int?, Boolean?, Long?, Long?) -> Boolean,
     private val onSetSendspinOutputDelay: (Int) -> Boolean,
+    private val onSetSendspinAutomaticSync: (Boolean) -> Boolean,
     private val onSendspinConfigChanged: () -> Unit,
     private val onOpenSendspinUi: () -> Unit,
     private val onCloseSendspinUi: () -> Unit,
@@ -191,17 +192,7 @@ class NotifyHttpServer(
                     return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, "{\"ok\":false,\"error\":\"invalid json\"}")
                 }
                 when (json.optString("action", "command")) {
-                    "config" -> {
-                        if (json.has("enabled")) Prefs.setSendspinEnabled(context, json.getBoolean("enabled"))
-                        if (json.has("auto_popup")) Prefs.setSendspinAutoPopup(context, json.getBoolean("auto_popup"))
-                        if (json.has("server_url")) Prefs.setSendspinServerUrl(context, json.getString("server_url"))
-                        if (json.has("client_name")) Prefs.setSendspinClientName(context, json.getString("client_name"))
-                        if (json.has("output_delay_ms")) {
-                            onSetSendspinOutputDelay(json.optInt("output_delay_ms").coerceIn(0, 5000))
-                        }
-                        onSendspinConfigChanged()
-                        jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
-                    }
+                    "config" -> handleSendspinConfig(json)
                     "open_ui" -> {
                         onOpenSendspinUi()
                         jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
@@ -228,6 +219,40 @@ class NotifyHttpServer(
         }
     }
 
+    private fun handleSendspinConfig(json: JSONObject): NanoHTTPD.Response {
+        val config = try {
+            parseSendspinConfig(json)
+        } catch (error: IllegalArgumentException) {
+            return jsonResponse(
+                NanoHTTPD.Response.Status.BAD_REQUEST,
+                JSONObject().put("ok", false).put("error", error.message).toString(),
+            )
+        }
+        return try {
+            if (config.outputDelayMs != null && !onSetSendspinOutputDelay(config.outputDelayMs)) {
+                return jsonResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "{\"ok\":false,\"error\":\"output_delay_update_failed\"}")
+            }
+            // An explicit mode wins over a delay in the same request. Delay alone selects manual.
+            if (config.automaticSync != null && (config.outputDelayMs == null || config.automaticSync)) {
+                if (!onSetSendspinAutomaticSync(config.automaticSync)) {
+                    return jsonResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "{\"ok\":false,\"error\":\"sync_mode_update_failed\"}")
+                }
+            }
+            val reconnect = (config.enabled != null && config.enabled != Prefs.isSendspinEnabled(context)) ||
+                (config.serverUrl != null && config.serverUrl.trim() != Prefs.getSendspinServerUrl(context)) ||
+                (config.clientName != null && config.clientName.trim() != Prefs.getSendspinClientName(context))
+            config.enabled?.let { Prefs.setSendspinEnabled(context, it) }
+            config.autoPopup?.let { Prefs.setSendspinAutoPopup(context, it) }
+            config.serverUrl?.let { Prefs.setSendspinServerUrl(context, it) }
+            config.clientName?.let { Prefs.setSendspinClientName(context, it) }
+            if (reconnect) onSendspinConfigChanged()
+            jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
+        } catch (error: Exception) {
+            Log.w(TAG, "Unable to update Sendspin config", error)
+            jsonResponse(NanoHTTPD.Response.Status.INTERNAL_ERROR, "{\"ok\":false,\"error\":\"config_update_failed\"}")
+        }
+    }
+
     private fun sendspinStatusJson(status: SendspinRuntime.Status): String {
         val json = JSONObject()
         json.put("enabled", Prefs.isSendspinEnabled(context))
@@ -246,7 +271,19 @@ class NotifyHttpServer(
         json.put("volume", status.volume)
         json.put("muted", status.muted)
         json.put("player_gain", status.playerGain)
+        json.put("sync_mode", if (status.automaticSync) "auto" else "manual")
+        json.put("automatic_sync", status.automaticSync)
+        json.put("manual_output_delay_ms", status.manualOutputDelayMs)
         json.put("output_delay_ms", status.outputDelayMs)
+        json.put("clock_ready", status.clockReady)
+        json.put("clock_uncertainty_ms", status.clockUncertaintyMs.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        json.put("sync_state", status.syncState)
+        json.put("position_source", status.positionSource)
+        json.put("sync_error_ms", status.syncErrorMs?.takeIf { it.isFinite() } ?: JSONObject.NULL)
+        json.put("resync_count", status.resyncCount)
+        json.put("underrun_count", status.underrunCount)
+        json.put("inserted_frames", status.insertedFrames)
+        json.put("dropped_frames", status.droppedFrames)
         json.put("supported_commands", org.json.JSONArray(status.controllerCommands.toList()))
         json.put("player_supported_commands", org.json.JSONArray(status.playerCommands.toList()))
         json.put("error", status.error)
@@ -611,6 +648,50 @@ class NotifyHttpServer(
         response.addHeader("Cache-Control", "no-store")
         return response
     }
+}
+
+internal data class SendspinConfig(
+    val automaticSync: Boolean? = null,
+    val outputDelayMs: Int? = null,
+    val enabled: Boolean? = null,
+    val autoPopup: Boolean? = null,
+    val serverUrl: String? = null,
+    val clientName: String? = null,
+)
+
+/** Validate every supplied value before any preference or client is changed. */
+internal fun parseSendspinConfig(json: JSONObject): SendspinConfig {
+    fun optionalBoolean(key: String): Boolean? {
+        if (!json.has(key)) return null
+        val value = json.opt(key)
+        require(value is Boolean) { "$key must be a boolean" }
+        return value
+    }
+    fun optionalString(key: String): String? {
+        if (!json.has(key)) return null
+        val value = json.opt(key)
+        require(value is String) { "$key must be a string" }
+        return value
+    }
+    val mode = optionalString("sync_mode")
+    require(mode == null || mode == "auto" || mode == "manual") { "sync_mode must be auto or manual" }
+    val delay = if (json.has("output_delay_ms")) {
+        val value = json.opt("output_delay_ms")
+        require(value is Number) { "output_delay_ms must be an integer from 0 to 5000" }
+        val number = value.toDouble()
+        require(number.isFinite() && number in 0.0..5000.0 && number == number.toInt().toDouble()) {
+            "output_delay_ms must be an integer from 0 to 5000"
+        }
+        number.toInt()
+    } else null
+    return SendspinConfig(
+        automaticSync = mode?.let { it == "auto" },
+        outputDelayMs = delay,
+        enabled = optionalBoolean("enabled"),
+        autoPopup = optionalBoolean("auto_popup"),
+        serverUrl = optionalString("server_url"),
+        clientName = optionalString("client_name"),
+    )
 }
 
 private class BodyRead(val text: String, val tooLarge: Boolean)

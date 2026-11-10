@@ -24,6 +24,7 @@ object NoOpClientSettingsStore : ClientSettingsStore {
 /** Setting keys used by [SendSpinClient]. */
 object ClientSettingsKeys {
     const val OUTPUT_DELAY_MS = "output_delay_ms"
+    const val OUTPUT_SYNC_AUTOMATIC = "output_sync_automatic"
     const val PLAYER_VOLUME = "player_volume"
     const val PLAYER_MUTED = "player_muted"
 }

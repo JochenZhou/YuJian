@@ -77,15 +77,20 @@ class ClockSync {
      * @param t2 server receive time (server µs)
      * @param t3 server send time (server µs)
      * @param t4 client receive time (local µs)
+     * @return true if accepted; impossible or out-of-order measurements leave all state unchanged.
      */
-    fun processMeasurement(t1: Long, t2: Long, t3: Long, t4: Long) {
+    fun processMeasurement(t1: Long, t2: Long, t3: Long, t4: Long): Boolean {
+        if (!isValidMeasurement(t1, t2, t3, t4)) return false
         val rtt = rttMicros(t1, t2, t3, t4)
-        val offsetEstimate = ((t2 - t1) + (t3 - t4)) / 2.0
-        // Measurement variance: (rtt/2 × max_error_scale)^2
+        // Convert before subtraction so unrelated monotonic epochs cannot overflow Long.
+        val offsetEstimate = ((t2.toDouble() - t1.toDouble()) + (t3.toDouble() - t4.toDouble())) / 2.0
+        // Measurement variance: (rtt/2 × max_error_scale)^2. A zero-RTT sample still
+        // has finite clock resolution; keep the innovation covariance non-singular.
         val scaledError = rtt * maxErrorScale / 2.0
-        val measurementVariance = scaledError * scaledError
+        val measurementVariance = (scaledError * scaledError).coerceAtLeast(1.0)
 
         synchronized(lock) {
+            if (seeded && t4 <= lastPredictTimeMicros) return false
             lastRttMicros = rtt
             if (!seeded) {
                 // Seed the filter directly from the first measurement instead of letting update()
@@ -111,7 +116,8 @@ class ClockSync {
         }
 
         Timber.d("ClockSync: offset=%.2f ms  drift=%.3f ppm  rtt=%d µs",
-            xOffset / 1000.0, xDrift * 1_000_000.0, rtt)
+            lastOffsetMicros / 1000.0, lastDriftPpm, rtt)
+        return true
     }
 
     /**
@@ -129,6 +135,12 @@ class ClockSync {
             return (serverMicros - currentOffset).toLong()
         }
     }
+
+    /** True after a valid measurement has seeded this session's clock estimate. */
+    val isReady: Boolean get() = synchronized(lock) { seeded }
+
+    /** Standard deviation of the filtered clock offset, in microseconds. */
+    val uncertaintyMicros: Double get() = synchronized(lock) { sqrt(p00.coerceAtLeast(0.0)) }
 
     /** Current best estimate of the clock offset in microseconds (server − local). */
     val offsetMicros: Long get() = synchronized(lock) { xOffset.toLong() }
@@ -222,6 +234,15 @@ class ClockSync {
          * internally for its measurement-noise model.
          */
         fun rttMicros(t1: Long, t2: Long, t3: Long, t4: Long): Long = (t4 - t1) - (t3 - t2)
+
+        /** Validate elapsed times before ranking or processing a probe response. */
+        fun isValidMeasurement(t1: Long, t2: Long, t3: Long, t4: Long): Boolean {
+            if (t4 < t1 || t3 < t2) return false
+            val clientElapsed = t4 - t1
+            val serverElapsed = t3 - t2
+            // Ordered endpoints can still produce a negative difference after Long overflow.
+            return clientElapsed >= 0L && serverElapsed >= 0L && serverElapsed <= clientElapsed
+        }
 
         /**
          * Computes current track progress (ms) using the spec formula:

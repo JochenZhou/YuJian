@@ -1,12 +1,26 @@
 package com.sendspin.protocol
 
+/** Output-clock state reported by a host's audio synchronization controller. */
+data class OutputSyncSnapshot(
+    val state: String = "idle",
+    val positionSource: String = "unavailable",
+    val errorMicros: Long? = null,
+    val resyncCount: Long = 0,
+    val underrunCount: Long = 0,
+    val insertedFrames: Long = 0,
+    val droppedFrames: Long = 0,
+)
+
 interface AudioPlayer {
     val isPlaying: Boolean
     val droppedDecodeFrames: Long
+    /** States: waiting_clock, buffering, playing, estimated, rebuffering, paused, idle, error. */
+    val outputSync: OutputSyncSnapshot get() = OutputSyncSnapshot()
     fun configure(format: StreamFormat)
     fun start()
     fun flush()
     fun stop()
+    /** Reconfigure for a new stream and leave the playback pump running (configure + start). */
     fun transition(format: StreamFormat)
     /** Apply a linear gain in [0.0, 1.0] derived from the perceptual volume curve. */
     fun setVolume(gain: Float)

@@ -48,6 +48,17 @@ class SendspinRuntime private constructor(private val context: Context) {
         val muted: Boolean = false,
         val playerGain: Float = 1f,
         val outputDelayMs: Int = 0,
+        val automaticSync: Boolean = true,
+        val manualOutputDelayMs: Int = 0,
+        val clockReady: Boolean = false,
+        val clockUncertaintyMs: Double = 0.0,
+        val syncState: String = "idle",
+        val positionSource: String = "unavailable",
+        val syncErrorMs: Double? = null,
+        val resyncCount: Long = 0L,
+        val underrunCount: Long = 0L,
+        val insertedFrames: Long = 0L,
+        val droppedFrames: Long = 0L,
         val commands: Set<String> = emptySet(),
         val controllerCommands: Set<String> = emptySet(),
         val playerCommands: Set<String> = emptySet(),
@@ -56,6 +67,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     )
 
     private val app = context.applicationContext
+    private val settingsStore = SendspinPrefsStore(app)
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -82,13 +94,25 @@ class SendspinRuntime private constructor(private val context: Context) {
     @Volatile private var client: SendSpinClient? = null
     @Volatile private var discoveryJob: Job? = null
     @Volatile private var stateJob: Job? = null
+    @Volatile private var watchedClient: SendSpinClient? = null
     @Volatile private var enabled = false
     @Volatile private var endpoint = ""
     @Volatile private var activityVisible = false
     @Volatile var onOpenUiRequested: ((Boolean) -> Unit)? = null
     @Volatile private var lastMetadata: TrackMetadataMsg? = null
     @Volatile private var lastController: ControllerState? = null
-    @Volatile private var currentStatus = Status()
+    @Volatile private var currentStatus = savedStatus()
+
+    private fun savedStatus(state: String = "disabled"): Status {
+        val automatic = settingsStore.automaticSync
+        val manualDelay = settingsStore.manualOutputDelayMs
+        return Status(
+            state = state,
+            automaticSync = automatic,
+            manualOutputDelayMs = manualDelay,
+            outputDelayMs = if (automatic) 0 else manualDelay,
+        )
+    }
 
     fun start() {
         if (enabled && (client != null || discoveryJob?.isActive == true)) return
@@ -111,7 +135,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun reconfigure() {
         if (!Prefs.isSendspinEnabled(app)) {
             stop()
-            publish(Status(state = "disabled"))
+            publish(savedStatus(state = "disabled"))
             return
         }
         enabled = true
@@ -123,7 +147,6 @@ class SendspinRuntime private constructor(private val context: Context) {
             synchronized(lock) {
                 client?.close()
                 client = null
-                activeClientForAudio = null
             }
             endpoint = ""
             startDiscovery()
@@ -139,13 +162,13 @@ class SendspinRuntime private constructor(private val context: Context) {
         discoveryJob = null
         stateJob?.cancel()
         stateJob = null
+        watchedClient = null
         synchronized(lock) {
             client?.close()
             client = null
-            activeClientForAudio = null
         }
         releaseMulticastLock()
-        publish(Status(state = "stopped"))
+        publish(savedStatus(state = "stopped"))
     }
 
     fun setActivityVisible(visible: Boolean) {
@@ -166,7 +189,6 @@ class SendspinRuntime private constructor(private val context: Context) {
             synchronized(lock) {
                 client?.close()
                 client = null
-                activeClientForAudio = null
             }
         }
         ensureMulticastLock()
@@ -180,7 +202,6 @@ class SendspinRuntime private constructor(private val context: Context) {
         synchronized(lock) {
             client?.close()
             client = null
-            activeClientForAudio = null
         }
         endpoint = ""
         enabled = true
@@ -231,18 +252,35 @@ class SendspinRuntime private constructor(private val context: Context) {
 
     fun status(): Status = currentStatus
 
-    /** 校准这台设备的真实输出延迟（写入 PCM 到扬声器出声），用于多设备同步。 */
-    fun setOutputDelayMs(delayMs: Int): Boolean {
-        val current = client ?: return false
-        current.setOutputDelayMs(delayMs)
-        updateStatus { it.copy(outputDelayMs = current.currentOutputDelayMs) }
-        return true
+    /** Enable automatic timing or restore the previously saved manual compensation. */
+    fun setAutomaticSync(automatic: Boolean): Boolean = synchronized(lock) {
+        if (!settingsStore.setAutomaticSync(automatic)) return@synchronized false
+        client?.setAutomaticSync(automatic)
+        updateStatus {
+            it.copy(
+                automaticSync = automatic,
+                manualOutputDelayMs = settingsStore.manualOutputDelayMs,
+                outputDelayMs = if (automatic) 0 else settingsStore.manualOutputDelayMs,
+            )
+        }
+        true
+    }
+
+    /** Explicit compensation selects manual mode, including while disconnected. */
+    fun setOutputDelayMs(delayMs: Int): Boolean = synchronized(lock) {
+        if (!settingsStore.setManualOutputDelayMs(delayMs)) return@synchronized false
+        client?.setOutputDelayMs(delayMs)
+        updateStatus {
+            it.copy(automaticSync = false, manualOutputDelayMs = delayMs, outputDelayMs = delayMs)
+        }
+        true
     }
 
     private fun startDiscovery() {
         if (!enabled) return
         discoveryJob?.cancel()
         val instance = createClient()
+        watch(instance)
         val browser = AndroidSendspinNsdBrowser(app)
         val discovery = DiscoveryService(browser)
         discoveryJob = scope.launch {
@@ -264,12 +302,6 @@ class SendspinRuntime private constructor(private val context: Context) {
         }
     }
 
-    @Volatile private var activeClientForAudio: SendSpinClient? = null
-
-    private fun createdDelayUpdate(delayMs: Int) {
-        // 本地队列估计不代表设备真实声学延迟，不再回写校准值；校准由 setOutputDelayMs 显式完成。
-    }
-
     private fun createClient(): SendSpinClient = synchronized(lock) {
         client?.let { return@synchronized it }
         val audioManager = app.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
@@ -289,12 +321,11 @@ class SendspinRuntime private constructor(private val context: Context) {
             productName = "YuJian TV",
             softwareVersion = BuildConfig.VERSION_NAME,
             audioPlayerFactory = { buffer, clock ->
-                AndroidAudioPlayer(app, buffer, clock, audioManager) { delayMs -> createdDelayUpdate(delayMs) }
+                AndroidAudioPlayer(app, buffer, clock, audioManager)
             },
-            settingsStore = SendspinPrefsStore(app),
+            settingsStore = settingsStore,
         ).also { created ->
             client = created
-            activeClientForAudio = created
             created.onAudioChunk = { chunk ->
                 if (chunk.data.isNotEmpty() && chunk.data.size < 2) {
                     Log.w(TAG, "Received undersized PCM chunk")
@@ -303,8 +334,10 @@ class SendspinRuntime private constructor(private val context: Context) {
         }
     }
 
-    private fun watch(instance: SendSpinClient) {
+    private fun watch(instance: SendSpinClient) = synchronized(lock) {
+        if (watchedClient === instance && stateJob?.isActive == true) return@synchronized
         stateJob?.cancel()
+        watchedClient = instance
         stateJob = scope.launch {
             launch {
                 instance.serverState.collect { state -> updateFromServerState(state) }
@@ -331,9 +364,28 @@ class SendspinRuntime private constructor(private val context: Context) {
             }
             launch {
                 instance.diagnostics.collectLatest { diagnostics ->
+                    if (client !== instance) return@collectLatest
                     val previous = synchronized(lock) { currentStatus }
-                    updateStatus { it.copy(playing = diagnostics.isAudioPlaying) }
-                    if (diagnostics.isAudioPlaying && !previous.playing && !activityVisible) {
+                    val streaming = instance.state.value == ClientState.STREAMING
+                    updateStatus {
+                        val next = it.copy(
+                            playing = streaming && diagnostics.isAudioPlaying,
+                            automaticSync = instance.currentAutomaticSync,
+                            outputDelayMs = instance.currentOutputDelayMs,
+                            manualOutputDelayMs = instance.currentManualOutputDelayMs,
+                            clockReady = diagnostics.clockReady,
+                            clockUncertaintyMs = diagnostics.clockUncertaintyMs,
+                            syncState = diagnostics.outputSync.state,
+                            positionSource = diagnostics.outputSync.positionSource,
+                            syncErrorMs = diagnostics.outputSync.errorMicros?.div(1000.0),
+                            resyncCount = diagnostics.outputSync.resyncCount,
+                            underrunCount = diagnostics.outputSync.underrunCount,
+                            insertedFrames = diagnostics.outputSync.insertedFrames,
+                            droppedFrames = diagnostics.outputSync.droppedFrames,
+                        )
+                        if (streaming) next else next.withoutOutputTiming(instance.state.value)
+                    }
+                    if (streaming && diagnostics.isAudioPlaying && !previous.playing && !activityVisible) {
                         onOpenUiRequested?.invoke(true)
                     }
                 }
@@ -357,12 +409,15 @@ class SendspinRuntime private constructor(private val context: Context) {
                             muted = instance.currentPlayerMuted,
                             playerGain = instance.currentPlayerGain,
                             outputDelayMs = instance.currentOutputDelayMs,
+                            automaticSync = instance.currentAutomaticSync,
+                            manualOutputDelayMs = instance.currentManualOutputDelayMs,
                         )
                     }
                 }
             }
             launch {
                 instance.state.collectLatest { state ->
+                    if (client !== instance) return@collectLatest
                     val reason = instance.lastConnectionReason.orEmpty()
                     val error = when {
                         reason.contains("pair", true) || reason.contains("encrypt", true) ->
@@ -377,11 +432,31 @@ class SendspinRuntime private constructor(private val context: Context) {
                         ClientState.ERROR -> "error"
                         ClientState.DISCONNECTED -> "disconnected"
                     }
-                    updateStatus { it.copy(state = label, server = instance.serverName.value, playing = instance.audioPlayer.isPlaying, error = error) }
+                    updateStatus {
+                        val next = it.copy(
+                            state = label,
+                            server = instance.serverName.value,
+                            playing = state == ClientState.STREAMING && instance.audioPlayer.isPlaying,
+                            error = error,
+                        )
+                        if (state == ClientState.STREAMING) next else next.withoutOutputTiming(state)
+                    }
                 }
             }
         }
     }
+
+    private fun Status.withoutOutputTiming(state: ClientState): Status = copy(
+        playing = false,
+        clockReady = false,
+        clockUncertaintyMs = 0.0,
+        syncState = when (state) {
+            ClientState.CONNECTING, ClientState.HANDSHAKING, ClientState.CLOCK_SYNCING -> "waiting_clock"
+            else -> "idle"
+        },
+        positionSource = "unavailable",
+        syncErrorMs = null,
+    )
 
     private fun updateFromServerState(message: ServerState) {
         val previousMetadata = lastMetadata
