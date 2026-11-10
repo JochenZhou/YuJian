@@ -25,9 +25,6 @@ object Prefs {
     private const val KEY_SENDSPIN_AUTO_POPUP = "sendspin_auto_popup"
     private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
-    private const val KEY_SENDSPIN_PRIV_KEY = "sendspin_priv_key"
-    private const val KEY_SENDSPIN_PAIRINGS = "sendspin_pairings"
-    private const val KEY_SENDSPIN_PAIRING_PSK = "sendspin_pairing_psk"
 
     private const val TOKEN_LENGTH = 8
 
@@ -107,113 +104,34 @@ object Prefs {
         prefs(context).edit().putString(KEY_HISTORY, rawJson).apply()
     }
 
-    /** 读取 Sendspin 服务是否启用 */
     fun isSendspinEnabled(context: Context): Boolean =
         prefs(context).getBoolean(KEY_SENDSPIN_ENABLED, true)
 
-    /** 设置 Sendspin 服务是否启用 */
     fun setSendspinEnabled(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_SENDSPIN_ENABLED, enabled).apply()
     }
 
-    /** 读取收到音乐流时是否自动弹出全屏歌词页 */
     fun isSendspinAutoPopup(context: Context): Boolean =
         prefs(context).getBoolean(KEY_SENDSPIN_AUTO_POPUP, true)
 
-    /** 设置收到音乐流时是否自动弹出全屏歌词页 */
-    fun setSendspinAutoPopup(context: Context, autoPopup: Boolean) {
-        prefs(context).edit().putBoolean(KEY_SENDSPIN_AUTO_POPUP, autoPopup).apply()
+    fun setSendspinAutoPopup(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SENDSPIN_AUTO_POPUP, enabled).apply()
     }
 
-    /** 读取手动配置的 Sendspin 服务端 WebSocket 地址（留空则为 mDNS 自动发现模式） */
     fun getSendspinServerUrl(context: Context): String =
         prefs(context).getString(KEY_SENDSPIN_SERVER_URL, "") ?: ""
 
-    /** 设置手动配置的 Sendspin 服务端 WebSocket 地址 */
     fun setSendspinServerUrl(context: Context, url: String) {
         prefs(context).edit().putString(KEY_SENDSPIN_SERVER_URL, url.trim()).apply()
     }
 
-    /** 读取 Sendspin 客户端对外展示的友好设备名 */
     fun getSendspinClientName(context: Context): String {
-        val defaultName = "玉简·${(android.os.Build.MODEL ?: "TV").trim()}"
-        return prefs(context).getString(KEY_SENDSPIN_CLIENT_NAME, defaultName) ?: defaultName
+        val fallback = "玉简·${android.os.Build.MODEL.orEmpty().ifBlank { "TV" }}"
+        return prefs(context).getString(KEY_SENDSPIN_CLIENT_NAME, fallback) ?: fallback
     }
 
-    /** 设置 Sendspin 客户端对外展示的友好设备名 */
     fun setSendspinClientName(context: Context, name: String) {
         prefs(context).edit().putString(KEY_SENDSPIN_CLIENT_NAME, name.trim()).apply()
-    }
-
-    /** 读取或生成客户端静态 X25519 私钥（32 字节 CSPRNG） */
-    fun getOrCreateSendspinPrivateKey(context: Context): ByteArray {
-        val store = prefs(context)
-        val encoded = store.getString(KEY_SENDSPIN_PRIV_KEY, null)
-        if (!encoded.isNullOrEmpty()) {
-            val decoded = SendspinCrypto.base64UrlDecode(encoded)
-            if (decoded.size == 32) {
-                return decoded
-            }
-        }
-        synchronized(this) {
-            val again = store.getString(KEY_SENDSPIN_PRIV_KEY, null)
-            if (!again.isNullOrEmpty()) {
-                val decoded = SendspinCrypto.base64UrlDecode(again)
-                if (decoded.size == 32) {
-                    return decoded
-                }
-            }
-            val key = ByteArray(32)
-            random.nextBytes(key)
-            store.edit().putString(KEY_SENDSPIN_PRIV_KEY, SendspinCrypto.base64UrlEncode(key)).commit()
-            return key
-        }
-    }
-
-    /** 读取已持久化的配对记录 JSON */
-    fun getSendspinPairingsJson(context: Context): String? =
-        prefs(context).getString(KEY_SENDSPIN_PAIRINGS, null)
-
-    /** 保存已持久化的配对记录 JSON */
-    fun setSendspinPairingsJson(context: Context, raw: String) {
-        prefs(context).edit().putString(KEY_SENDSPIN_PAIRINGS, raw).apply()
-    }
-
-    /**
-     * 读取或生成 Sendspin 配对 PSK（32 字节 CSPRNG）。
-     * 规范要求 per-device 长期固定：配对 token（SP:0...）由它派生，
-     * 服务端 re-handshake 到 pairing PSK 时客户端必须仍认识它，因此必须持久化。
-     */
-    fun getOrCreateSendspinPairingPsk(context: Context): ByteArray {
-        val store = prefs(context)
-        val encoded = store.getString(KEY_SENDSPIN_PAIRING_PSK, null)
-        if (!encoded.isNullOrEmpty()) {
-            val decoded = SendspinCrypto.base64UrlDecode(encoded)
-            if (decoded.size == 32) {
-                return decoded
-            }
-        }
-        synchronized(this) {
-            val again = store.getString(KEY_SENDSPIN_PAIRING_PSK, null)
-            if (!again.isNullOrEmpty()) {
-                val decoded = SendspinCrypto.base64UrlDecode(again)
-                if (decoded.size == 32) {
-                    return decoded
-                }
-            }
-            val psk = ByteArray(32)
-            random.nextBytes(psk)
-            store.edit().putString(KEY_SENDSPIN_PAIRING_PSK, SendspinCrypto.base64UrlEncode(psk)).commit()
-            return psk
-        }
-    }
-
-    /** 重置配对：作废 pairing PSK 与全部已保存的服务端配对记录（re-pairing 前的恢复手段）。 */
-    fun resetSendspinPairing(context: Context) {
-        prefs(context).edit()
-            .remove(KEY_SENDSPIN_PAIRING_PSK)
-            .remove(KEY_SENDSPIN_PAIRINGS)
-            .commit()
     }
 
     private fun generateToken(): String {

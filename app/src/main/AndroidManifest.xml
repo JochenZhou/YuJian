@@ -19,6 +19,7 @@
     <!-- 常驻前台服务：targetSdk 34 必须显式声明 specialUse 类型权限 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- 开机自启 -->
@@ -52,6 +53,13 @@
         android:theme="@style/TvNotifyTheme">
 
         <activity
+            android:name=".SendspinActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="landscape" />
+
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
@@ -80,7 +88,7 @@
         <service
             android:name=".NotifyService"
             android:exported="true"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|mediaPlayback">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="lan_notification_banner_server" />

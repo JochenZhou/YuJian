@@ -13,6 +13,11 @@
 -keep class com.google.zxing.WriterException { *; }
 -dontwarn com.google.zxing.**
 
+# Moshi loads generated adapters reflectively; retain generated protocol adapters in release builds.
+-keep class com.sendspin.protocol.**JsonAdapter { *; }
+-keep class com.sendspin.protocol.**JsonAdapter$* { *; }
+-keep @com.squareup.moshi.JsonClass class com.sendspin.protocol.** { *; }
+
 # 保留必要的元信息，避免泛型 / 枚举 / 内部类在优化阶段被破坏
 -keepattributes *Annotation*
 -keepattributes Signature

@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - master
+      - feature/sendspin-jvm-v1.4.0
+      - feature/sendspin-auto-sync
     tags:
       - 'v*'
   pull_request:
@@ -84,12 +86,71 @@ jobs:
             echo "KEY_PASSWORD=$KEY_PASSWORD"
           } >> "$GITHUB_ENV"
 
+      - name: Run protocol and app tests
+        run: |
+          set -o pipefail
+          gradle :sendspin-protocol:test :app:testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee test-output.log
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-test-log
+          path: test-output.log
+          if-no-files-found: warn
+
+      - name: Upload unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-unit-test-reports
+          path: |
+            app/build/test-results/testDebugUnitTest/*.xml
+            third_party/sendspin-jvm/sendspin-protocol/build/test-results/test/*.xml
+          if-no-files-found: warn
+
+      - name: Run web console tests
+        run: node --test app/src/test/js/sendspin-console.test.cjs
+
+      - name: Build debug APK and run lint
+        run: gradle :app:assembleDebug :app:lintDebug --no-daemon --stacktrace
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-lint-report
+          path: app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
       # 没有配置签名 secret 时，build.gradle.kts 会自动回退 debug 签名，job 不会失败
-      - name: Run unit tests and build release APK
-        run: gradle testDebugUnitTest assembleRelease --no-daemon --stacktrace
+      - name: Build release APK
+        id: release-build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee release-build.log
+
+      - name: Upload release build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-release-build-log
+          path: release-build.log
+          if-no-files-found: warn
+
+      - name: Report release build failure
+        if: steps.release-build.outcome == 'failure'
+        run: |
+          set +e
+          grep -E '(^e: |FAILURE:|error:|What went wrong|Execution failed)' release-build.log | tail -80 | while IFS= read -r line; do
+            echo "::error::${line}"
+          done
+          exit 1
 
       # 统一输出 YuJian-release.apk
       - name: Collect APK
+        if: steps.release-build.outcome == 'success'
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -99,6 +160,7 @@ jobs:
           ls -l dist
 
       - name: Upload artifact
+        if: steps.release-build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: YuJian-release
