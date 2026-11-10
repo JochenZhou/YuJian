@@ -7,6 +7,7 @@ import com.sendspin.protocol.OutputSyncSnapshot
 import com.zqc.tvnotify.audio.PcmFrameTimeline
 import com.zqc.tvnotify.audio.PcmResampler
 import com.zqc.tvnotify.audio.PcmSynchronizer
+import com.zqc.tvnotify.audio.PcmSpliceSmoother
 import com.zqc.tvnotify.audio.PlaybackPositionTracker
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -28,16 +29,20 @@ internal class SendspinPcmPump(
         fun pauseAndFlush()
         /** Estimated latency downstream of playbackHead(), excluding this track's queued PCM. */
         fun latencyUs(): Long = 0L
+        fun minimumBufferFrames(): Int = 0
     }
 
     private val frameBytes = channels * 2
-    private val queueLimit = sampleRate * 80L / 1000
+    private val minimumFrames = output.minimumBufferFrames().coerceAtLeast(0).toLong()
+    private val startupFrames = minimumFrames
+    private val queueLimit = maxOf(sampleRate * 80L / 1000, minimumFrames * 3 / 2)
     private val positions = PlaybackPositionTracker(sampleRate)
     private val consumption = PlaybackPositionTracker(sampleRate)
     private var occupiedFrames = 0L
     private val timeline = PcmFrameTimeline(sampleRate)
     private val synchronizer = PcmSynchronizer(sampleRate, channels)
     private val resampler = PcmResampler(channels)
+    private val splices = PcmSpliceSmoother(sampleRate, channels)
     private var writtenFrames = 0L
     private var started = false
     private var firstServerUs: Long? = null
@@ -115,8 +120,8 @@ internal class SendspinPcmPump(
                 resetOutput(nowUs, "rebuffering", countResync = true)
                 return
             }
-            if (nowUs >= startUs) {
-                // Buffered PCM is ready; do not wait for more packets after its deadline.
+            if (nowUs >= startUs && writtenFrames >= startupFrames) {
+                // Respect the device's minimum preroll; an underfilled legacy mixer can pulse.
                 output.play()
                 positions.start(nowUs)
                 consumption.start(nowUs)
@@ -219,6 +224,8 @@ internal class SendspinPcmPump(
                     allowFineCorrection = mode && lastPosition.reliable)
             }
             if (decision.trimFrames > 0) {
+                resampler.reset()
+                splices.beginSplice()
                 val trim = minOf(remaining, decision.trimFrames)
                 chunkOffsetFrames += trim
                 dropped += trim
@@ -229,11 +236,15 @@ internal class SendspinPcmPump(
                 val frames = minOf(decision.silenceFrames, (queueLimit - occupiedFrames).coerceAtLeast(0L).toInt())
                 if (frames <= 0) return
                 val serverStart = serverUs - ((targetUs - predictedUs).coerceAtLeast(0L))
-                block = Block(ByteArray(frames * frameBytes), serverStart, frames, true)
+                resampler.reset()
+                splices.beginSplice()
+                val silence = splices.process(ByteArray(frames * frameBytes))
+                splices.beginSplice()
+                block = Block(silence, serverStart, frames, true)
                 return
             }
             val frames = minOf(remaining, sampleRate / 50) // Bound a correction block to 20 ms.
-            val bytes = resampler.render(pending.data, chunkOffsetFrames * frameBytes, frames, decision.rate)
+            val bytes = splices.process(resampler.render(pending.data, chunkOffsetFrames * frameBytes, frames, decision.rate))
             chunkOffsetFrames += frames
             if (chunkOffsetFrames == pending.data.size / frameBytes) chunk = null
             if (bytes.isEmpty()) return@repeat
@@ -281,6 +292,7 @@ internal class SendspinPcmPump(
         timeline.reset()
         synchronizer.reset()
         resampler.reset()
+        splices.reset()
         writtenFrames = 0L
         started = false
         firstServerUs = null

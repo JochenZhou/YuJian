@@ -20,6 +20,7 @@ class SendspinPcmPumpTest {
         var emitTimestamp = false
         var latency = 0L
         var timestampDelayUs = 0L
+        var minimumFrames = 0
         val samples = mutableListOf<Short>()
         override fun playbackHead(): Long = if (useHardwareHead && playing) {
             minOf(written, ((clockUs - startUs).coerceAtLeast(0) * 48_000 * speed / 1_000_000).toLong())
@@ -28,6 +29,7 @@ class SendspinPcmPumpTest {
             SendspinPcmPump.Timestamp(minOf(written, (clockUs - startUs - timestampDelayUs).coerceAtLeast(0) * 48_000 / 1_000_000), clockUs)
         } else null
         override fun latencyUs() = latency
+        override fun minimumBufferFrames() = minimumFrames
         override fun write(data: ByteArray, offset: Int, length: Int): Int {
             val frames = minOf(length / 2, limitFrames)
             repeat(frames) {
@@ -41,11 +43,11 @@ class SendspinPcmPumpTest {
         override fun pauseAndFlush() { playing = false; head = 0; written = 0 }
     }
 
-    private class Fixture(ready: Boolean = true) {
+    private class Fixture(ready: Boolean = true, minimumFrames: Int = 0) {
         val base = ClockSync.localMicros()
         val clock = ClockSync()
         val buffer = AudioBuffer(clock)
-        val output = Output()
+        val output = Output().apply { this.minimumFrames = minimumFrames }
         val pump = SendspinPcmPump(buffer, clock, 48_000, 1, output)
         init { if (ready) clock.processMeasurement(base, base, base, base) }
         fun add(startUs: Long, frames: Int, value: Short = 1234) {
@@ -78,14 +80,52 @@ class SendspinPcmPumpTest {
         assertEquals(1, f.output.plays)
     }
 
+    @Test fun `TV output is primed above its HAL minimum before play`() {
+        val f = Fixture(minimumFrames = 4_800) // 100 ms at 48 kHz, above the former 80 ms limit.
+        f.add(f.base + 100_000L, 9_600)
+        repeat(24) { f.pump.step(f.base) }
+        assertTrue("HAL minimum must fit within queue budget", f.output.written >= 4_800L)
+        f.pump.step(f.base + 100_000L)
+        assertTrue(f.output.playing)
+        assertEquals(1, f.output.plays)
+    }
+
+    @Test fun `short preroll waits for contiguous samples instead of starting an underrun`() {
+        val f = Fixture(minimumFrames = 4_800)
+        f.add(f.base + 100_000L, 960)
+        f.prefill(f.base)
+        f.pump.step(f.base + 100_000L)
+        assertFalse("one 20ms packet cannot prime a 100ms HAL", f.output.playing)
+        f.add(f.base + 120_000L, 8_640)
+        repeat(24) { f.pump.step(f.base + 102_000L) }
+        f.pump.step(f.base + 104_000L)
+        assertTrue(f.output.playing)
+        assertTrue(f.output.written >= 4_800L)
+    }
+
     @Test fun `late chunk is trimmed instead of replaying old content`() {
         val f = Fixture()
-        f.add(f.base - 100_000, 960, 7)
-        f.add(f.base + 100_000, 3840, 9)
+        f.add(f.base - 100_000, 960, -20_000)
+        f.add(f.base + 100_000, 3840, 20_000)
         f.prefill(f.base)
-        assertFalse(f.output.samples.contains(7.toShort()))
-        assertTrue(f.output.samples.contains(9.toShort()))
+        assertTrue("stale negative PCM must not reach the output", f.output.samples.all { it >= 0 })
+        assertTrue(f.output.samples.contains(20_000.toShort()))
         assertTrue(f.pump.snapshot.droppedFrames >= 960)
+    }
+
+    @Test fun `fresh audio fades from zero without adding output frames or changing its deadline`() {
+        val f = Fixture()
+        f.output.limitFrames = 48
+        f.add(f.base + 100_000L, 960, 20_000)
+        repeat(24) { f.pump.step(f.base) }
+        assertEquals(960L, f.output.written)
+        assertEquals(0.toShort(), f.output.samples.first())
+        assertEquals(20_000.toShort(), f.output.samples[191])
+        assertEquals(20_000.toShort(), f.output.samples.last())
+        f.pump.step(f.base + 99_000L)
+        assertFalse(f.output.playing)
+        f.pump.step(f.base + 100_000L)
+        assertTrue(f.output.playing)
     }
 
     @Test fun `partial write retains original timestamp and frame position`() {
@@ -243,12 +283,12 @@ class SendspinPcmPumpTest {
         f.pump.step(f.base + 160_000)
         f.pump.step(f.base + 200_000)
         assertTrue(f.pump.snapshot.underrunCount > 0)
-        f.add(f.base + 300_000, 960, 2)
-        f.add(f.base + 1_100_000, 1920, 4)
+        f.add(f.base + 300_000, 960, -20_000)
+        f.add(f.base + 1_100_000, 1920, 20_000)
         f.prefill(f.base + 1_000_000)
-        assertFalse(f.output.samples.contains(2.toShort()))
+        assertTrue("stale burst must not be played through the fade", f.output.samples.all { it >= 0 })
         f.pump.step(f.base + 1_100_000)
         assertTrue(f.output.playing)
-        assertEquals(4.toShort(), f.output.samples.last())
+        assertEquals(20_000.toShort(), f.output.samples.last())
     }
 }

@@ -38,6 +38,66 @@ class PlaybackPositionTrackerTest {
         assertTrue(position.reliable)
     }
 
+    @Test fun cachedHeadAtStartNeedsObservedProgressBeforeBecomingAuthoritative() {
+        val tracker = PlaybackPositionTracker(48_000)
+        tracker.start(0)
+        val initial = tracker.sample(0, 480, 480)
+        assertEquals(0L, initial.frames)
+        assertFalse(initial.reliable)
+        val cached = tracker.sample(5_000, 480, 480)
+        assertEquals(240L, cached.frames)
+        assertEquals("estimate", cached.source)
+        assertFalse(cached.reliable)
+        val advancing = tracker.sample(10_000, 960, 960)
+        assertEquals(960L, advancing.frames)
+        assertEquals("playback_head", advancing.source)
+        assertTrue(advancing.reliable)
+    }
+
+    @Test fun headChangeAtSameInstantCannotAcquireProgressQualification() {
+        val tracker = PlaybackPositionTracker(48_000)
+        tracker.start(0)
+        tracker.sample(0, 960, 0)
+        val cached = tracker.sample(0, 960, 480)
+        assertEquals(0L, cached.frames)
+        assertFalse(cached.reliable)
+        assertFalse(tracker.sample(5_000, 960, 480).reliable)
+        assertTrue(tracker.sample(10_000, 960, 960).reliable)
+    }
+
+    @Test fun resetFlushDisqualifiesPreviouslyAdvancingHead() {
+        val tracker = PlaybackPositionTracker(48_000)
+        tracker.start(0)
+        tracker.sample(0, 4800, 0)
+        assertTrue(tracker.sample(10_000, 4800, 480).reliable)
+        tracker.reset(1_000_000)
+        tracker.start(1_000_000)
+        val cached = tracker.sample(1_000_000, 480, 480)
+        assertEquals(0L, cached.frames)
+        assertFalse(cached.reliable)
+        assertFalse(tracker.sample(1_005_000, 480, 480).reliable)
+        assertTrue(tracker.sample(1_010_000, 960, 960).reliable)
+    }
+
+    @Test fun cachedHeadMayReturnToZeroBeforeNewPlaybackProgress() {
+        val tracker = PlaybackPositionTracker(48_000)
+        tracker.start(0)
+        tracker.sample(0, 480, 480)
+        assertFalse(tracker.sample(5_000, 960, 0).reliable)
+        val position = tracker.sample(10_000, 960, 480)
+        assertEquals(480L, position.frames)
+        assertTrue(position.reliable)
+    }
+
+    @Test fun invalidSameInstantHeadDoesNotPoisonProgressQualification() {
+        val tracker = PlaybackPositionTracker(48_000)
+        tracker.start(0)
+        assertFalse(tracker.sample(0, 480_000, 48_000).reliable)
+        val position = tracker.sample(10_000, 480_000, 480)
+        assertEquals(480L, position.frames)
+        assertTrue(position.reliable)
+    }
+
     @Test fun estimateFreezesAtSubmittedLimitAndNewWritesDoNotConsumeOldGap() {
         val tracker = PlaybackPositionTracker(48_000)
         tracker.start(0)

@@ -66,7 +66,16 @@ class AndroidAudioPlayer(
         require(format.bitDepth == 16 && format.channels in 1..2) { "Only mono/stereo PCM16 is supported" }
         require(format.sampleRate in 8_000..192_000) { "Unsupported PCM sample rate" }
         synchronized(lock) {
+            synchronized(ioLock) {
+                if (this.format == format && track != null) {
+                    transitionPending = true
+                    pump?.flush(ClockSync.localMicros())
+                    sync = pump?.snapshot ?: OutputSyncSnapshot(state = "buffering")
+                    return
+                }
+            }
             stopLocked()
+            transitionPending = true
             try {
                 synchronized(ioLock) {
                     this.format = format
@@ -86,7 +95,11 @@ class AndroidAudioPlayer(
 
     override fun start() {
         synchronized(lock) {
-            if (track == null || !running.compareAndSet(false, true)) return
+            synchronized(ioLock) {
+                if (track == null) return
+                transitionPending = false
+            }
+            if (!running.compareAndSet(false, true)) return
             thread = Thread({ runPump() }, "sendspin-audio").apply { isDaemon = true; start() }
         }
     }
@@ -182,8 +195,7 @@ class AndroidAudioPlayer(
         track = output
         output.setVolume(volume)
         pump = SendspinPcmPump(buffer, clock, format.sampleRate, format.channels,
-            TrackOutput(output, format.sampleRate, format.channels * 2, bufferBytes))
-        transitionPending = false
+            TrackOutput(output, format.sampleRate, format.channels * 2, bufferBytes, minBytes))
         sync = OutputSyncSnapshot(state = if (clock.isReady) "buffering" else "waiting_clock")
         Log.i(TAG, "AudioTrack configured rate=${format.sampleRate} channels=${format.channels} bufferBytes=$bufferBytes")
     }
@@ -193,7 +205,10 @@ class AndroidAudioPlayer(
         sampleRate: Int,
         frameBytes: Int,
         bufferBytes: Int,
+        minimumBytes: Int,
     ) : SendspinPcmPump.Output {
+        private val minimumFrames = minimumBytes / frameBytes
+        override fun minimumBufferFrames() = minimumFrames
         private val audioTimestamp = AudioTimestamp()
         private val bufferDurationUs = bufferBytes.toLong() * 1_000_000L / frameBytes / sampleRate
         private var latencyMethod = try { AudioTrack::class.java.getMethod("getLatency") } catch (_: Exception) { null }

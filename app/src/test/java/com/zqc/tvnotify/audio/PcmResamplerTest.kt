@@ -52,14 +52,54 @@ class PcmResamplerTest {
         }
     }
 
-    @Test fun resetAndUnityRateRemovePriorFractionalPhase() {
+    @Test fun resetRemovesPriorFractionalPhaseAndRestoresBytePreservingUnity() {
         val resampler = PcmResampler(1)
         resampler.render(pcm(1, 2, 3), 0, 3, 0.995)
         resampler.reset()
-        val input = pcm(1, 2, 3)
-        assertArrayEquals(PcmResampler(1).render(input, 0, 3, 0.995), resampler.render(input, 0, 3, 0.995))
+        val input = pcm(-32768, 0, 32767)
         assertArrayEquals(input, resampler.render(input, 0, 3, 1.0))
-        assertArrayEquals(PcmResampler(1).render(input, 0, 3, 0.995), resampler.render(input, 0, 3, 0.995))
+        assertArrayEquals(input, resampler.render(input, 0, 3, 1.0))
+        assertArrayEquals(pcm(-32768, -164, 32439), resampler.render(input, 0, 3, 0.995))
+    }
+
+    @Test fun unityAfterSlowerRateCarriesFractionalPhaseAcrossStereoPackets() {
+        val resampler = PcmResampler(2)
+        resampler.render(pcm(1000, -1000, 2000, -2000, 3000, -3000), 0, 3, 0.995)
+        assertArrayEquals(
+            pcm(3985, -3985, 4985, -4985, 5985, -5985),
+            resampler.render(pcm(4000, -4000, 5000, -5000, 6000, -6000), 0, 3, 1.0)
+        )
+        assertArrayEquals(
+            pcm(6985, -6985, 7985, -7985, 8985, -8985),
+            resampler.render(pcm(7000, -7000, 8000, -8000, 9000, -9000), 0, 3, 1.0)
+        )
+        assertArrayEquals(
+            pcm(9985, -9985, 10980, -10980, 11975, -11975),
+            resampler.render(pcm(10000, -10000, 11000, -11000, 12000, -12000), 0, 3, 0.995)
+        )
+    }
+
+    @Test fun unityAfterFasterRateInterpolatesFromLastFrameOfPreviousPacket() {
+        val resampler = PcmResampler(1)
+        assertArrayEquals(pcm(1000, 2005), resampler.render(pcm(1000, 2000, 3000), 0, 3, 1.005))
+        assertArrayEquals(pcm(3010, 4010, 5010), resampler.render(pcm(4000, 5000, 6000), 0, 3, 1.0))
+        assertArrayEquals(pcm(6010, 7010, 8010), resampler.render(pcm(7000, 8000, 9000), 0, 3, 1.0))
+        assertArrayEquals(pcm(9010, 10015, 11020), resampler.render(pcm(10000, 11000, 12000), 0, 3, 1.005))
+    }
+
+    @Test fun repeatedRateTransitionsHaveNoSampleJumpsOrAccumulatedFrameLoss() {
+        val resampler = PcmResampler(1)
+        val samples = ArrayList<Int>()
+        val rates = doubleArrayOf(0.995, 1.0, 1.005, 1.0)
+        repeat(600) { packet ->
+            val input = pcm(*IntArray(4) { (packet * 4 + it) * 10 - 12000 })
+            samples.addAll(decode(resampler.render(input, 0, 4, rates[packet % rates.size])).toList())
+        }
+        assertTrue("output frames ${samples.size}", samples.size in 2399..2401)
+        for (index in 1 until samples.size) {
+            assertTrue("sample jump at $index: ${samples[index - 1]} -> ${samples[index]}",
+                samples[index] - samples[index - 1] in 9..11)
+        }
     }
 
     @Test fun emptyInputProducesNoOutput() {

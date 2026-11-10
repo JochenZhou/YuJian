@@ -17,15 +17,30 @@ interface AudioPlayer {
     /** States: waiting_clock, buffering, playing, estimated, rebuffering, paused, idle, error. */
     val outputSync: OutputSyncSnapshot get() = OutputSyncSnapshot()
     /**
-     * Synchronously suspend consumption before a stream's network queue is cleared.
-     * The host keeps consumption suspended until configure/transition installs the new format.
+     * Synchronously suspend old output and all queue consumption before a stream boundary.
+     * Keep the gate held through [configure] and [flush]; only [start] may resume consumption.
+     * Must also work while a slow [configure] is in progress. The default is for hosts without
+     * an asynchronous consumer; playback hosts must implement this hook.
+     *
+     * The client calls this and [start] under its stream lock. Host locks must never call back
+     * into the client's stream handlers, and configure must not wait for a later start call.
      */
     fun prepareTransition() {}
+    /**
+     * Install [format] without consuming or clearing the network queue, starting output, or
+     * releasing the transition gate. May run slowly; a newer stream can supersede it in flight.
+     * Retaining a compatible output track is allowed. The client checks generation afterward.
+     */
     fun configure(format: StreamFormat)
+    /** Synchronously release the gate and start/resume, including an already-running pump. */
     fun start()
+    /** Clear queued audio/output synchronously without releasing an existing transition gate. */
     fun flush()
     fun stop()
-    /** Reconfigure for a new stream and leave the playback pump running (configure + start). */
+    /**
+     * Compatibility helper (configure + start). The protocol uses separate calls so an obsolete
+     * configure cannot start output; it never invokes this automatically-starting helper.
+     */
     fun transition(format: StreamFormat)
     /** Apply a linear gain in [0.0, 1.0] derived from the perceptual volume curve. */
     fun setVolume(gain: Float)

@@ -150,7 +150,13 @@ class SendSpinClient(
     private var clockJob: Job? = null
     private var stateJob: Job? = null
     private var diagnosticsJob: Job? = null
+    // Lock order: streamLock -> host player locks. Slow configure runs without streamLock.
+    // Every player message invalidates queued work before the next binary frame is accepted.
+    private val streamLock = Any()
+    private var streamGeneration = 0L
     private var pendingStopJob: Job? = null
+    private var lastPlayerFormat: StreamFormat? = null
+    private var configuredPlayerFormat: StreamFormat? = null
 
     private val _state = MutableStateFlow(ClientState.IDLE)
     val state: StateFlow<ClientState> = _state
@@ -558,9 +564,16 @@ class SendSpinClient(
                     if (accepted) {
                         if (!firstMeasurementCompleted) {
                             firstMeasurementCompleted = true
-                            // Only a processed burst makes the clock ready. Serialize the one-time
-                            // flush with configure/start/stop to reset any pre-clock output state.
-                            audioScope.launch { audioPlayer.flush() }
+                            // Reset pre-clock output only for the stream that queued this flush.
+                            // A blocked configure must not defer it into a newer stream/session.
+                            synchronized(streamLock) {
+                                val generation = streamGeneration
+                                audioScope.launch {
+                                    synchronized(streamLock) {
+                                        if (generation == streamGeneration) audioPlayer.flush()
+                                    }
+                                }
+                            }
                         }
                         if (_state.value == ClientState.CLOCK_SYNCING) {
                             _state.value = ClientState.STREAMING
@@ -569,7 +582,6 @@ class SendSpinClient(
                 }
             }
             is StreamStart -> {
-                if (msg.player != null) _streamFormat.value = msg.player
                 if (msg.artwork != null) _streamArtwork.value = msg.artwork
                 if (msg.visualizer != null) _visualizerStreamConfig.value = msg.visualizer
                 val artworkChannels = msg.artwork?.channels ?: emptyList()
@@ -578,24 +590,18 @@ class SendSpinClient(
                     Timber.d("SendSpinClient: stream/start artwork ch=%d source=%s %dx%d", i, ch.source, ch.width, ch.height)
                 }
                 if (msg.player != null) {
-                    // Suspend the old consumer before later binary frames can enter the queue;
-                    // async configure/transition resumes it with the new format.
-                    audioPlayer.prepareTransition()
-                    // Encoded chunks have no format generation. Clear the old stream at the
-                    // message boundary; later new-format binary frames must survive configure().
-                    audioBuffer.flush()
+                    synchronized(streamLock) {
+                        val generation = advanceStreamGenerationLocked()
+                        _streamFormat.value = msg.player
+                        lastPlayerFormat = msg.player
+                        // Pause before clearing old chunks. Configure must leave this gate held
+                        // until a generation-checked start explicitly resumes consumption.
+                        audioPlayer.prepareTransition()
+                        audioBuffer.flush()
+                        queuePlayerStartLocked(generation, msg.player, reconfigure = true)
+                    }
                     Timber.i("SendSpinClient: stream/start codec=%s", msg.player.codec)
                     sendClientState()
-                    audioScope.launch {
-                        pendingStopJob?.cancel()
-                        pendingStopJob = null
-                        if (audioPlayer.isPlaying) {
-                            audioPlayer.transition(msg.player)
-                        } else {
-                            audioPlayer.configure(msg.player)
-                            audioPlayer.start()
-                        }
-                    }
                 } else {
                     Timber.d("SendSpinClient: stream/start (artwork-only, no audio)")
                 }
@@ -604,7 +610,18 @@ class SendSpinClient(
                 val roles = msg.roles
                 val clearPlayer = roles == null || roles.any { it == "player@v1" || it == "player" }
                 Timber.d("SendSpinClient: stream/clear roles=%s", roles)
-                if (clearPlayer) audioPlayer.flush()
+                if (clearPlayer) {
+                    synchronized(streamLock) {
+                        val generation = advanceStreamGenerationLocked()
+                        audioPlayer.prepareTransition()
+                        audioPlayer.flush()
+                        // Clear is a seek within the last selected format, including after end.
+                        // Reuse a live track; reinstall it if a prior stop released the host.
+                        lastPlayerFormat?.let { format ->
+                            queuePlayerStartLocked(generation, format, reconfigure = false)
+                        }
+                    }
+                }
             }
             is StreamEnd -> {
                 val roles = msg.roles
@@ -612,19 +629,23 @@ class SendSpinClient(
                 val endArtwork = roles == null || roles.any { it == "artwork@v1" || it == "artwork" }
                 Timber.d("SendSpinClient: stream/end roles=%s", roles)
                 if (endPlayer) {
-                    _streamFormat.value = null
-                    sendClientState()
-                    audioScope.launch {
-                        pendingStopJob?.cancel()
-                        // Don't flush here — transition() and configure() flush when the next
-                        // stream/start arrives. Flushing now empties the buffer immediately,
-                        // causing underrun warnings during track handoffs.
+                    synchronized(streamLock) {
+                        val generation = advanceStreamGenerationLocked()
+                        _streamFormat.value = null
+                        // Keep already-started output draining during a natural handoff. A
+                        // pending configure is invalidated and cannot start an ended stream.
                         pendingStopJob = audioScope.launch {
                             delay(SEEK_HANDOFF_MS)
-                            pendingStopJob = null
-                            audioPlayer.stop()
+                            synchronized(streamLock) {
+                                if (generation == streamGeneration) {
+                                    pendingStopJob = null
+                                    audioPlayer.stop()
+                                    configuredPlayerFormat = null
+                                }
+                            }
                         }
                     }
+                    sendClientState()
                 }
                 if (endArtwork) {
                     _streamArtwork.value = null
@@ -954,6 +975,30 @@ class SendSpinClient(
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /** Called only with streamLock held, at the player message/session boundary. */
+    private fun advanceStreamGenerationLocked(): Long {
+        pendingStopJob?.cancel()
+        pendingStopJob = null
+        return ++streamGeneration
+    }
+
+    /** Queue format installation without holding the message-boundary lock during slow host I/O. */
+    private fun queuePlayerStartLocked(generation: Long, format: StreamFormat, reconfigure: Boolean) {
+        audioScope.launch {
+            val needsConfigure = synchronized(streamLock) {
+                if (generation != streamGeneration) return@launch
+                reconfigure || configuredPlayerFormat != format
+            }
+            if (needsConfigure) audioPlayer.configure(format)
+            synchronized(streamLock) {
+                // This describes the host's installed format even when configure became stale.
+                // The host must still be gated; only the current generation may release it.
+                if (needsConfigure) configuredPlayerFormat = format
+                if (generation == streamGeneration) audioPlayer.start()
+            }
+        }
+    }
+
     private fun clearSessionState() {
         _serverName.value = ""
         _serverId.value = ""
@@ -979,11 +1024,25 @@ class SendSpinClient(
     }
 
     private fun cleanupJobs() {
+        synchronized(streamLock) {
+            val generation = advanceStreamGenerationLocked()
+            lastPlayerFormat = null
+            _streamFormat.value = null
+            audioPlayer.prepareTransition()
+            audioBuffer.flush()
+            audioScope.launch {
+                synchronized(streamLock) {
+                    if (generation == streamGeneration) {
+                        audioPlayer.stop()
+                        configuredPlayerFormat = null
+                    }
+                }
+            }
+        }
         clockJob?.cancel(); clockJob = null
         stateJob?.cancel(); stateJob = null
         diagnosticsJob?.cancel(); diagnosticsJob = null
         resetClockState()
-        audioBuffer.flush()
         _diagnostics.value = DiagnosticsSnapshot(
             state = _state.value,
             automaticSync = automaticSync,
@@ -992,12 +1051,6 @@ class SendSpinClient(
         )
         _groupPlaybackState.value = null
         _controllerState.value = null
-        _streamFormat.value = null
-        audioScope.launch {
-            pendingStopJob?.cancel()
-            pendingStopJob = null
-            audioPlayer.stop()
-        }
     }
 
     companion object {
@@ -1005,7 +1058,7 @@ class SendSpinClient(
         private const val RECONNECT_MAX_MS  = 30_000L
         // Natural track-to-track transitions: aiosendspin sends stream/end then stream/start
         // for the next song. If stream/start arrives within this window, the pending stop is
-        // cancelled and transition() handles the handoff gaplessly.
+        // cancelled at receipt and generation-checked configure/start handles the handoff.
         // Seeks/jumps now use stream/clear instead (aiosendspin PR #237) and no longer go
         // through this path. Can be removed once aiosendspin adopts spec-compliant track
         // transitions that don't emit stream/end (see CLAUDE.md "Future simplifications").

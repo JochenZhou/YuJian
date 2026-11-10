@@ -9,16 +9,15 @@ import com.sendspin.protocol.ArtworkChannel
 import com.sendspin.protocol.AudioFormat
 import com.sendspin.protocol.ClientPreferences
 import com.sendspin.protocol.ClientState
+import com.sendspin.protocol.ClockSync
 import com.sendspin.protocol.ControllerState
 import com.sendspin.protocol.DiscoveryService
-import com.sendspin.protocol.DiagnosticsSnapshot
 import com.sendspin.protocol.JsonOptionalAdapterFactory
 import com.sendspin.protocol.OptionalRole
 import com.sendspin.protocol.JsonOptional
-import com.sendspin.protocol.ProgressInfo
 import com.sendspin.protocol.orNull
-import com.sendspin.protocol.orFallback
 import com.sendspin.protocol.SendSpinClient
+import com.sendspin.protocol.ServerHello
 import com.sendspin.protocol.ServerState
 import com.sendspin.protocol.TrackMetadataMsg
 import com.squareup.moshi.Moshi
@@ -28,7 +27,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
@@ -43,7 +44,14 @@ class SendspinRuntime private constructor(private val context: Context) {
         val album: String = "",
         val progressMs: Long = 0L,
         val durationMs: Long = 0L,
+        /** Monotonic local microseconds for the published progress, using ClockSync.localMicros(). */
+        val progressUpdatedAtUs: Long = 0L,
+        /** Effective interpolation rate, speed × 1000; zero while waiting for a valid anchor. */
+        val playbackSpeed: Int = 0,
+        /** Group/metadata playback intent for transport controls. */
         val playing: Boolean = false,
+        /** Actual audio output state, independent of playback intent and buffering. */
+        val outputPlaying: Boolean = false,
         val volume: Int = 100,
         val muted: Boolean = false,
         val playerGain: Float = 1f,
@@ -99,8 +107,15 @@ class SendspinRuntime private constructor(private val context: Context) {
     @Volatile private var endpoint = ""
     @Volatile private var activityVisible = false
     @Volatile var onOpenUiRequested: ((Boolean) -> Unit)? = null
-    @Volatile private var lastMetadata: TrackMetadataMsg? = null
-    @Volatile private var lastController: ControllerState? = null
+    private var lastMetadata: TrackMetadataMsg? = null
+    private var lastController: ControllerState? = null
+    private var progressSession: ServerHello? = null
+    private var progressSessionActive = false
+    private val progressTracker = TrackProgressTracker { timestampUs, nowUs ->
+        client?.clockSync?.let { clock ->
+            if (clock.isReady) clock.toLocalMicros(timestampUs, nowUs) else null
+        }
+    }
     @Volatile private var currentStatus = savedStatus()
 
     private fun savedStatus(state: String = "disabled"): Status {
@@ -117,7 +132,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun start() {
         if (enabled && (client != null || discoveryJob?.isActive == true)) return
         if (!Prefs.isSendspinEnabled(app)) {
-            publish(currentStatus.copy(state = "disabled", playing = false))
+            updateStatus { it.copy(state = "disabled", playing = false, outputPlaying = false, playbackSpeed = 0) }
             return
         }
         enabled = true
@@ -166,6 +181,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         synchronized(lock) {
             client?.close()
             client = null
+            resetProgressSession()
         }
         releaseMulticastLock()
         publish(savedStatus(state = "stopped"))
@@ -177,7 +193,7 @@ class SendspinRuntime private constructor(private val context: Context) {
 
     fun connect(url: String) {
         val normalized = normalizeUrl(url) ?: run {
-            publish(currentStatus.copy(state = "error", error = "请输入有效的 ws:// 或 wss:// 地址"))
+            updateStatus { it.copy(state = "error", error = "请输入有效的 ws:// 或 wss:// 地址") }
             return
         }
         enabled = true
@@ -236,14 +252,14 @@ class SendspinRuntime private constructor(private val context: Context) {
                 current.setLocalVolume(volume)
                 val gain = current.currentPlayerGain
                 current.audioPlayer.setVolume(gain)
-                publish(currentStatus.copy(volume = volume.coerceIn(0, 100), playerGain = gain))
+                updateStatus { it.copy(volume = volume.coerceIn(0, 100), playerGain = gain) }
             }
             "mute" -> {
                 if ("mute" !in playerSupported || muted == null) return false
                 current.setLocalMuted(muted)
                 val gain = current.currentPlayerGain
                 current.audioPlayer.setVolume(gain)
-                publish(currentStatus.copy(muted = muted, playerGain = gain))
+                updateStatus { it.copy(muted = muted, playerGain = gain) }
             }
             else -> return false
         }
@@ -337,24 +353,42 @@ class SendspinRuntime private constructor(private val context: Context) {
     private fun watch(instance: SendSpinClient) = synchronized(lock) {
         if (watchedClient === instance && stateJob?.isActive == true) return@synchronized
         stateJob?.cancel()
+        resetProgressSession()
         watchedClient = instance
         stateJob = scope.launch {
             launch {
-                instance.serverState.collect { state -> updateFromServerState(state) }
+                instance.serverState.collect { state -> updateFromServerState(instance, state) }
             }
             launch {
-                instance.albumArtwork.collect { bytes -> updateStatus { it.copy(artwork = bytes) } }
+                instance.albumArtwork.collect { bytes -> updateClientStatus(instance) { it.copy(artwork = bytes) } }
             }
             launch {
                 instance.streamFormat.collectLatest { format ->
+                    if (client !== instance) return@collectLatest
                     if (format != null) instance.audioPlayer.setVolume(instance.currentPlayerGain)
-                    updateStatus { it.copy(playerGain = instance.currentPlayerGain) }
+                    // Stream clear/end/start may be a seek or a handoff, not a new track.
+                    updateClientStatus(instance) { it.copy(playerGain = instance.currentPlayerGain) }
+                }
+            }
+            launch {
+                instance.groupPlaybackState.collect { state ->
+                    updateClientStatus(instance) {
+                        val nowUs = ClockSync.localMicros()
+                        if (progressSessionActive) progressTracker.setGroupPlaybackState(state, nowUs)
+                        it.withProgress(nowUs)
+                    }
+                }
+            }
+            launch {
+                while (isActive) {
+                    delay(250L)
+                    updateClientStatus(instance) { it.withProgress(ClockSync.localMicros()) }
                 }
             }
             launch {
                 instance.controllerState.collectLatest { controller ->
                     val active = controller?.supportedCommands?.toSet() ?: emptySet()
-                    updateStatus {
+                    updateClientStatus(instance) {
                         it.copy(
                             commands = active + it.playerCommands,
                             controllerCommands = active,
@@ -365,11 +399,13 @@ class SendspinRuntime private constructor(private val context: Context) {
             launch {
                 instance.diagnostics.collectLatest { diagnostics ->
                     if (client !== instance) return@collectLatest
-                    val previous = synchronized(lock) { currentStatus }
-                    val streaming = instance.state.value == ClientState.STREAMING
-                    updateStatus {
+                    var openUi = false
+                    updateClientStatus(instance) {
+                        val streaming = instance.state.value == ClientState.STREAMING
+                        val outputPlaying = streaming && diagnostics.isAudioPlaying
+                        openUi = outputPlaying && !it.outputPlaying && !activityVisible
                         val next = it.copy(
-                            playing = streaming && diagnostics.isAudioPlaying,
+                            outputPlaying = outputPlaying,
                             automaticSync = instance.currentAutomaticSync,
                             outputDelayMs = instance.currentOutputDelayMs,
                             manualOutputDelayMs = instance.currentManualOutputDelayMs,
@@ -385,9 +421,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                         )
                         if (streaming) next else next.withoutOutputTiming(instance.state.value)
                     }
-                    if (streaming && diagnostics.isAudioPlaying && !previous.playing && !activityVisible) {
-                        onOpenUiRequested?.invoke(true)
-                    }
+                    if (openUi) onOpenUiRequested?.invoke(true)
                 }
             }
             launch {
@@ -396,7 +430,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                     val controllerEnabled = "controller@v1" in activeRoles || "controller" in activeRoles
                     val playerEnabled = "player@v1" in activeRoles || "player" in activeRoles
                     val pairingRequired = "pairing@v1" in activeRoles
-                    updateStatus {
+                    updateClientStatus(instance) {
                         val controller = it.controllerCommands.takeIf { _ -> controllerEnabled } ?: emptySet()
                         val player = setOf("volume", "mute").takeIf { _ -> playerEnabled } ?: emptySet()
                         it.copy(
@@ -432,11 +466,11 @@ class SendspinRuntime private constructor(private val context: Context) {
                         ClientState.ERROR -> "error"
                         ClientState.DISCONNECTED -> "disconnected"
                     }
-                    updateStatus {
+                    updateClientStatus(instance) {
                         val next = it.copy(
                             state = label,
                             server = instance.serverName.value,
-                            playing = state == ClientState.STREAMING && instance.audioPlayer.isPlaying,
+                            outputPlaying = state == ClientState.STREAMING && instance.audioPlayer.isPlaying,
                             error = error,
                         )
                         if (state == ClientState.STREAMING) next else next.withoutOutputTiming(state)
@@ -447,7 +481,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     }
 
     private fun Status.withoutOutputTiming(state: ClientState): Status = copy(
-        playing = false,
+        outputPlaying = false,
         clockReady = false,
         clockUncertaintyMs = 0.0,
         syncState = when (state) {
@@ -458,47 +492,71 @@ class SendspinRuntime private constructor(private val context: Context) {
         syncErrorMs = null,
     )
 
-    private fun updateFromServerState(message: ServerState) {
-        val previousMetadata = lastMetadata
-        val incomingMetadata = message.metadata.orNull()
-        val metadataNow = when {
-            message.metadata is JsonOptional.Present && incomingMetadata == null -> null
-            incomingMetadata != null -> mergeMetadata(previousMetadata, incomingMetadata)
-            else -> previousMetadata
-        }
-        lastMetadata = metadataNow
-
-        val incomingController = message.controller.orNull()
-        val controllerNow = when {
-            message.controller is JsonOptional.Present && incomingController == null -> null
-            incomingController != null -> incomingController
-            else -> lastController
-        }
-        lastController = controllerNow
-
-        val existing = currentStatus
-        val controllerCommands = controllerNow?.supportedCommands?.toSet()
-            ?: if (message.controller is JsonOptional.Present) emptySet() else existing.controllerCommands
-        val progress = metadataNow?.progress?.orNull()
-        publish(
+    private fun updateFromServerState(instance: SendSpinClient, message: ServerState) {
+        updateClientStatus(instance) { existing ->
+            if (!progressSessionActive) return@updateClientStatus existing
+            val nowUs = ClockSync.localMicros()
+            val metadata = message.metadata
+            if (metadata is JsonOptional.Present) {
+                val incoming = metadata.value
+                if (progressTracker.update(incoming, nowUs)) {
+                    lastMetadata = incoming?.let { mergeMetadata(lastMetadata, it) }
+                }
+            }
+            val controller = message.controller
+            if (controller is JsonOptional.Present) lastController = controller.value
+            val controllerCommands = lastController?.supportedCommands?.toSet()
+                ?: if (message.controller is JsonOptional.Present) emptySet() else existing.controllerCommands
             existing.copy(
-                title = metadataNow?.title?.orNull().orEmpty(),
-                artist = metadataNow?.artist?.orNull().orEmpty(),
-                album = metadataNow?.album?.orNull().orEmpty(),
-                progressMs = when {
-                    progress != null -> progress.trackProgress
-                    metadataNow == null || metadataNow.progress is JsonOptional.Present -> 0L
-                    else -> existing.progressMs
-                },
-                durationMs = when {
-                    progress != null -> progress.trackDuration
-                    metadataNow == null || metadataNow.progress is JsonOptional.Present -> 0L
-                    else -> existing.durationMs
-                },
+                title = lastMetadata?.title?.orNull().orEmpty(),
+                artist = lastMetadata?.artist?.orNull().orEmpty(),
+                album = lastMetadata?.album?.orNull().orEmpty(),
                 commands = controllerCommands + existing.playerCommands,
                 controllerCommands = controllerCommands,
-            )
+            ).withProgress(nowUs)
+        }
+    }
+
+    private fun Status.withProgress(nowUs: Long): Status {
+        val progress = progressTracker.snapshot(nowUs)
+        return copy(
+            progressMs = progress.progressMs,
+            durationMs = progress.durationMs,
+            progressUpdatedAtUs = progress.progressUpdatedAtUs,
+            playbackSpeed = progress.playbackSpeed,
+            playing = progressSessionActive && progress.playing,
         )
+    }
+
+    private fun resetProgressSession() {
+        lastMetadata = null
+        lastController = null
+        progressTracker.reset()
+        progressSession = null
+        progressSessionActive = false
+    }
+
+    /** Every collector checks the live session while holding the same lock as metadata/tick updates. */
+    private fun updateClientStatus(instance: SendSpinClient, transform: (Status) -> Status) {
+        updateStatus { previous ->
+            if (client !== instance || watchedClient !== instance) return@updateStatus previous
+            val hello = instance.serverHello.value
+            val active = hello != null && instance.state.value in setOf(ClientState.CLOCK_SYNCING, ClientState.STREAMING)
+            var existing = previous
+            if (progressSession !== hello || progressSessionActive != active) {
+                resetProgressSession()
+                progressSession = hello
+                progressSessionActive = active
+                existing = existing.copy(
+                    title = "", artist = "", album = "", artwork = null,
+                    progressMs = 0L, durationMs = 0L, progressUpdatedAtUs = 0L,
+                    playbackSpeed = 0, playing = false, outputPlaying = false,
+                    controllerCommands = emptySet(), commands = existing.playerCommands,
+                )
+                if (active) progressTracker.setGroupPlaybackState(instance.groupPlaybackState.value, ClockSync.localMicros())
+            }
+            transform(existing).withProgress(ClockSync.localMicros())
+        }
     }
 
     private fun mergeMetadata(previous: TrackMetadataMsg?, incoming: TrackMetadataMsg): TrackMetadataMsg {
@@ -512,7 +570,8 @@ class SendspinRuntime private constructor(private val context: Context) {
             artworkUrl = merge(incoming.artworkUrl, previous?.artworkUrl ?: JsonOptional.Absent),
             year = merge(incoming.year, previous?.year ?: JsonOptional.Absent),
             track = merge(incoming.track, previous?.track ?: JsonOptional.Absent),
-            progress = merge(incoming.progress, previous?.progress ?: JsonOptional.Absent),
+            // Progress is owned by the tracker together with its original timestamp.
+            progress = JsonOptional.Absent,
         )
     }
 

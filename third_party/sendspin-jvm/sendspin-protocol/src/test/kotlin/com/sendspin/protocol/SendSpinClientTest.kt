@@ -16,6 +16,7 @@ import org.junit.Test
 import java.nio.ByteBuffer
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class SendSpinClientTest {
     private val clients = mutableListOf<SendSpinClient>()
@@ -233,11 +234,11 @@ class SendSpinClientTest {
             assertEquals(0, client.audioBuffer.size)
             val binary = ByteBuffer.allocate(14).put(BINARY_TYPE_AUDIO).putLong(200L).putInt(0).put(2).array()
             client.handleBinaryMessage(binary.toByteString())
-            assertEquals(0, player.transitions)
+            assertEquals(0, player.startedFormats.size)
             assertTrue(player.transitionPending)
             assertEquals(1, client.audioBuffer.size)
             allowConfigure.countDown()
-            await { player.transitions == 1 }
+            await { player.startedFormats.size == 1 }
             assertFalse(player.transitionPending)
             assertTrue(player.isPlaying)
             assertEquals(1, client.audioBuffer.size)
@@ -245,6 +246,264 @@ class SendSpinClientTest {
         } finally {
             allowConfigure.countDown()
         }
+    }
+
+    @Test
+    fun `superseded configure never starts or drains a newer format`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        val configuringA = CountDownLatch(1)
+        val allowA = CountDownLatch(1)
+        val configuringC = CountDownLatch(1)
+        val allowC = CountDownLatch(1)
+        player.beforeConfigure = { format ->
+            when (format.sampleRate) {
+                44_100 -> { configuringA.countDown(); allowA.await() }
+                96_000 -> { configuringC.countDown(); allowC.await() }
+            }
+        }
+        val consumed = CopyOnWriteArrayList<Pair<Int, Long>>()
+        player.onStart = { format ->
+            client.audioBuffer.take()?.let { consumed += format.sampleRate to it.serverTimestampMicros }
+        }
+        try {
+            startStream(client, 44_100)
+            assertTrue(configuringA.await(3, TimeUnit.SECONDS))
+            startStream(client, 48_000)
+            audioFrame(client, 200L)
+            startStream(client, 96_000)
+            audioFrame(client, 300L)
+            allowA.countDown()
+            assertTrue(configuringC.await(3, TimeUnit.SECONDS))
+            assertTrue("Obsolete configure must leave the host gated", player.transitionPending)
+            assertTrue("Obsolete format must not start", player.startedFormats.isEmpty())
+            assertTrue("New-format frames must not be drained by an obsolete player", consumed.isEmpty())
+            assertEquals(300L, client.audioBuffer.peek()!!.serverTimestampMicros)
+            allowC.countDown()
+            await { player.startedFormats.size == 1 }
+            assertEquals(listOf(96_000), player.startedFormats.map { it.sampleRate })
+            assertEquals(listOf(96_000 to 300L), consumed.toList())
+            assertEquals(0, player.transitions)
+        } finally {
+            allowA.countDown()
+            allowC.countDown()
+        }
+    }
+
+    @Test
+    fun `queued initial clock flush cannot discard frames from a later stream`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        val configuringA = CountDownLatch(1)
+        val allowA = CountDownLatch(1)
+        val configuringB = CountDownLatch(1)
+        val allowB = CountDownLatch(1)
+        player.beforeConfigure = { format ->
+            when (format.sampleRate) {
+                44_100 -> { configuringA.countDown(); allowA.await() }
+                48_000 -> { configuringB.countDown(); allowB.await() }
+            }
+        }
+        try {
+            startStream(client, 44_100)
+            assertTrue(configuringA.await(3, TimeUnit.SECONDS))
+            repeat(ClockSyncConfig.PROBES_PER_BURST) { validReply(client) }
+            assertTrue(client.clockSync.isReady)
+            startStream(client, 48_000)
+            val timestamp = ClockSync.localMicros() + 1_000_000L
+            audioFrame(client, timestamp)
+            allowA.countDown()
+            assertTrue(configuringB.await(3, TimeUnit.SECONDS))
+            assertEquals("A first-clock flush belongs only to the stream that queued it", 1, client.audioBuffer.size)
+            assertEquals(timestamp, client.audioBuffer.peek()!!.serverTimestampMicros)
+        } finally {
+            allowA.countDown()
+            allowB.countDown()
+        }
+    }
+
+    @Test
+    fun `player end invalidates blocked configure without restarting ended audio`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        val configuring = CountDownLatch(1)
+        val allowConfigure = CountDownLatch(1)
+        player.beforeConfigure = { configuring.countDown(); allowConfigure.await() }
+        try {
+            startStream(client)
+            assertTrue(configuring.await(3, TimeUnit.SECONDS))
+            client.handleTextMessage("""{"type":"stream/end","payload":{"roles":["player@v1"]}}""")
+            assertEquals(null, client.streamFormat.value)
+            allowConfigure.countDown()
+            await { player.stops > 0 }
+            assertTrue("End must invalidate configure already in progress", player.startedFormats.isEmpty())
+            assertFalse(player.isPlaying)
+        } finally {
+            allowConfigure.countDown()
+        }
+    }
+
+    @Test
+    fun `player clear replaces blocked configure and keeps frames received after clear`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        val configuring = CountDownLatch(1)
+        val allowConfigure = CountDownLatch(1)
+        player.beforeConfigure = { configuring.countDown(); allowConfigure.await() }
+        val startedTimestamps = CopyOnWriteArrayList<Long?>()
+        player.onStart = { startedTimestamps += client.audioBuffer.peek()?.serverTimestampMicros }
+        try {
+            startStream(client)
+            assertTrue(configuring.await(3, TimeUnit.SECONDS))
+            audioFrame(client, 100L)
+            client.handleTextMessage("""{"type":"stream/clear","payload":{"roles":["player@v1"]}}""")
+            assertTrue(player.transitionPending)
+            assertEquals(0, client.audioBuffer.size)
+            audioFrame(client, 200L)
+            allowConfigure.countDown()
+            await { startedTimestamps.isNotEmpty() }
+            delay(50L)
+            assertEquals(listOf(200L), startedTimestamps.toList())
+            assertEquals(200L, client.audioBuffer.peek()!!.serverTimestampMicros)
+            assertFalse(player.transitionPending)
+            assertTrue(player.isPlaying)
+        } finally {
+            allowConfigure.countDown()
+        }
+    }
+
+    @Test
+    fun `end then clear cancels old stop and resumes a paused pump without rebuilding`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        startStream(client)
+        await { player.startedFormats.size == 1 }
+        val configured = player.configuredFormats.size
+        client.handleTextMessage("""{"type":"stream/end","payload":{}}""")
+        player.isPlaying = false
+        client.handleTextMessage("""{"type":"stream/clear","payload":{}}""")
+        audioFrame(client, 200L)
+        await { player.startedFormats.size == 2 }
+        delay(650L)
+        assertEquals("Clear must invalidate the end timer", 0, player.stops)
+        assertEquals(configured, player.configuredFormats.size)
+        assertTrue(player.isPlaying)
+        assertFalse(player.transitionPending)
+        assertEquals(200L, client.audioBuffer.peek()!!.serverTimestampMicros)
+    }
+
+    @Test
+    fun `clear after completed end reinstalls the released format`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        startStream(client)
+        await { player.startedFormats.size == 1 }
+        client.handleTextMessage("""{"type":"stream/end","payload":{}}""")
+        await { player.stops == 1 }
+        client.handleTextMessage("""{"type":"stream/clear","payload":{}}""")
+        await { player.startedFormats.size == 2 }
+        assertEquals(listOf(48_000, 48_000), player.configuredFormats.map { it.sampleRate })
+        assertTrue(player.isPlaying)
+    }
+
+    @Test
+    fun `new start cancels an end stop at receipt even while configure is blocked`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        startStream(client)
+        await { player.startedFormats.size == 1 }
+        client.handleTextMessage("""{"type":"stream/end","payload":{}}""")
+        delay(100L)
+        val configuring = CountDownLatch(1)
+        val allowConfigure = CountDownLatch(1)
+        player.beforeConfigure = { configuring.countDown(); allowConfigure.await() }
+        try {
+            startStream(client, 96_000)
+            assertTrue(configuring.await(3, TimeUnit.SECONDS))
+            audioFrame(client, 300L)
+            delay(550L)
+            assertEquals(0, player.stops)
+            allowConfigure.countDown()
+            await { player.startedFormats.size == 2 }
+            delay(100L)
+            assertEquals(0, player.stops)
+            assertEquals(96_000, player.startedFormats.last().sampleRate)
+            assertEquals(300L, client.audioBuffer.peek()!!.serverTimestampMicros)
+        } finally {
+            allowConfigure.countDown()
+        }
+    }
+
+    @Test
+    fun `non-player messages leave pending player configure intact`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        val configuring = CountDownLatch(1)
+        val allowConfigure = CountDownLatch(1)
+        player.beforeConfigure = { configuring.countDown(); allowConfigure.await() }
+        try {
+            startStream(client)
+            assertTrue(configuring.await(3, TimeUnit.SECONDS))
+            audioFrame(client, 200L)
+            client.handleTextMessage("""{"type":"stream/start","payload":{"artwork":{"channels":[]}}}""")
+            client.handleTextMessage("""{"type":"stream/clear","payload":{"roles":["artwork@v1"]}}""")
+            client.handleTextMessage("""{"type":"stream/end","payload":{"roles":["visualizer@v1"]}}""")
+            allowConfigure.countDown()
+            await { player.startedFormats.size == 1 }
+            assertEquals(48_000, client.streamFormat.value!!.sampleRate)
+            assertEquals(200L, client.audioBuffer.peek()!!.serverTimestampMicros)
+            assertEquals(0, player.flushes)
+            assertEquals(0, player.stops)
+        } finally {
+            allowConfigure.countDown()
+        }
+    }
+
+    @Test
+    fun `non-player clear does not cancel a player end stop`() = runBlocking {
+        val player = TrackingPlayer()
+        val client = client(player = player)
+        startStream(client)
+        await { player.startedFormats.size == 1 }
+        client.handleTextMessage("""{"type":"stream/end","payload":{"roles":["player"]}}""")
+        client.handleTextMessage("""{"type":"stream/clear","payload":{"roles":["artwork"]}}""")
+        await { player.stops == 1 }
+        assertFalse(player.isPlaying)
+    }
+
+    @Test
+    fun `session cleanup invalidates blocked configure before it can restart playback`() = runBlocking {
+        for (cleanup in listOf<(SendSpinClient) -> Unit>(
+            { it.disconnect() },
+            { it.onServerSocketClosed(1000, "test") },
+            { it.onServerSocketError(IllegalStateException("test")) },
+        )) {
+            val player = TrackingPlayer()
+            val client = client(player = player)
+            val configuring = CountDownLatch(1)
+            val allowConfigure = CountDownLatch(1)
+            player.beforeConfigure = { configuring.countDown(); allowConfigure.await() }
+            try {
+                startStream(client)
+                assertTrue(configuring.await(3, TimeUnit.SECONDS))
+                cleanup(client)
+                allowConfigure.countDown()
+                await { player.stops > 0 }
+                assertTrue("Cleanup must prevent obsolete configure from starting", player.startedFormats.isEmpty())
+                assertFalse(player.isPlaying)
+                assertEquals(0, client.audioBuffer.size)
+            } finally {
+                allowConfigure.countDown()
+            }
+        }
+    }
+
+    private fun startStream(client: SendSpinClient, sampleRate: Int = 48_000) {
+        client.handleTextMessage("""{"type":"stream/start","payload":{"player":{"codec":"pcm","sample_rate":$sampleRate,"channels":2,"bit_depth":16}}}""")
+    }
+
+    private fun audioFrame(client: SendSpinClient, timestamp: Long) {
+        client.handleBinaryMessage(ByteBuffer.allocate(14).put(BINARY_TYPE_AUDIO).putLong(timestamp).putInt(0).put(7).array().toByteString())
     }
 
     private fun client(
@@ -259,7 +518,10 @@ class SendSpinClientTest {
             manufacturer = "Test",
             productName = "Test",
             softwareVersion = "test",
-            audioPlayerFactory = { _, _ -> player },
+            audioPlayerFactory = { buffer, _ ->
+                if (player is TrackingPlayer) player.onFlush = { buffer.flush() }
+                player
+            },
             reconnectEnabled = false,
             settingsStore = store,
         ).also { clients += it }
@@ -305,14 +567,27 @@ class SendSpinClientTest {
         @Volatile var transitions = 0
         @Volatile var snapshot = OutputSyncSnapshot()
         @Volatile var transitionPending = false
+        val configuredFormats = CopyOnWriteArrayList<StreamFormat>()
+        val startedFormats = CopyOnWriteArrayList<StreamFormat>()
+        @Volatile private var format: StreamFormat? = null
         var onPrepare: (() -> Unit)? = null
-        var beforeConfigure: (() -> Unit)? = null
+        var beforeConfigure: ((StreamFormat) -> Unit)? = null
+        var onStart: ((StreamFormat) -> Unit)? = null
         override val outputSync: OutputSyncSnapshot get() = snapshot
         override fun prepareTransition() { transitionPending = true; onPrepare?.invoke() }
-        override fun configure(format: StreamFormat) { beforeConfigure?.invoke(); transitionPending = false }
-        override fun start() { isPlaying = true }
-        override fun flush() { flushes++ }
-        override fun stop() { isPlaying = false; snapshot = OutputSyncSnapshot(); stops++ }
+        override fun configure(format: StreamFormat) {
+            beforeConfigure?.invoke(format)
+            this.format = format
+            configuredFormats += format
+        }
+        override fun start() {
+            transitionPending = false
+            isPlaying = true
+            format?.let { onStart?.invoke(it); startedFormats += it }
+        }
+        var onFlush: (() -> Unit)? = null
+        override fun flush() { onFlush?.invoke(); flushes++ }
+        override fun stop() { isPlaying = false; format = null; snapshot = OutputSyncSnapshot(); stops++ }
         override fun transition(format: StreamFormat) { configure(format); start(); transitions++ }
         override fun setVolume(gain: Float) {}
     }

@@ -118,6 +118,14 @@ class PlaybackPositionTracker(private val sampleRate: Int) {
                 headFrames
             } else null
         }
+        if (!headAdvanced && raw == 0L) {
+            // A post-flush cache can appear before the new zero counter. It never qualified,
+            // so let the real counter establish its own baseline without treating this as a wrap.
+            headRaw = 0
+            headFrames = 0
+            headActiveUs = activeUs
+            return null
+        }
         val delta = if (raw >= headRaw) {
             raw - headRaw
         } else if (headRaw >= 0xf000_0000L && raw <= 0x0fff_ffffL) {
@@ -125,10 +133,15 @@ class PlaybackPositionTracker(private val sampleRate: Int) {
         } else return null
         if (headFrames > Long.MAX_VALUE - delta) return null
         val frames = headFrames + delta
-        if (frames > written || !plausible(delta, activeUs - headActiveUs)) return null
+        val elapsed = activeUs - headActiveUs
+        if (frames > written || !plausible(delta, elapsed)) return null
+        // The jitter allowance alone cannot prove progress at reset/start. Remember a plausible
+        // same-instant cached value, but require a later advancing observation before using it.
+        if (elapsed <= 0 && headAdvanced) return null
         headRaw = raw
         headFrames = frames
         headActiveUs = activeUs
+        if (elapsed <= 0) return null
         headAdvanced = true
         headAdvanceUs = activeUs
         return frames

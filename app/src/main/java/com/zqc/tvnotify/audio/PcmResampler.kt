@@ -30,8 +30,11 @@ class PcmResampler(private val channels: Int) {
         val byteCount = sourceFrames.toLong() * frameBytes
         require(offsetBytes.toLong() + byteCount <= data.size)
         if (sourceFrames == 0) return ByteArray(0)
-        if (rate == 1.0) {
-            reset()
+        if (rate == 1.0 && phaseQ == 0L) {
+            // An integer phase needs no lookahead, including the final frame. Keep the last
+            // sample available when a later rate change needs interpolation across this boundary.
+            for (channel in 0 until channels) previous[channel] = sample(data, offsetBytes, sourceFrames - 1, channel)
+            hasPrevious = true
             return data.copyOfRange(offsetBytes, offsetBytes + byteCount.toInt())
         }
 
