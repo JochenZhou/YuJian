@@ -3,7 +3,7 @@ package com.zqc.tvnotify
 /**
  * 玉简内置手机/电脑 Web 控制台单页 HTML。
  * 纯内联 CSS + 原生 JavaScript，零外部 CDN 依赖，在局域网离线环境下 100% 可靠秒开。
- * 深度联动「修仙玉简」与「现代深色 tvOS」双主题，支持双向实时同步切换。
+ * 深度联动 9 大主题并针对手机窄屏单页长滚动进行了防溢出与触控对齐优化，支持双向实时同步切换。
  */
 object WebConsoleHtml {
 
@@ -20,7 +20,7 @@ object WebConsoleHtml {
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>玉简 · 控制台</title>
 <style>
 /* 修仙玉简主题（默认） */
@@ -135,57 +135,123 @@ body[data-theme="gamer"] {
   --danger: #ff5566;
   --warn: #f5c84c;
 }
-* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
-body { background: var(--bg); color: var(--text); padding: 16px; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; transition: background 0.25s, color 0.25s; }
-.container { max-width: 680px; margin: 0 auto; }
-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 0 18px; border-bottom: 1px solid var(--card-stroke); margin-bottom: 16px; }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand-icon { width: 34px; height: 34px; border-radius: 8px; background: var(--card-bg); border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; font-size: 18px; transition: border-color 0.25s; }
-.brand h1 { font-size: 18px; font-weight: 700; color: #fff; letter-spacing: 0.5px; }
-.brand .sub { font-size: 11px; color: var(--text-muted); }
-.version-badge { font-size: 11px; color: var(--accent); background: var(--accent-glow); padding: 3px 8px; border-radius: 12px; border: 1px solid var(--accent); }
-.status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--accent); background: rgba(54, 209, 168, 0.1); padding: 4px 10px; border-radius: 16px; border: 1px solid var(--card-stroke); margin-bottom: 16px; }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
-.card { background: var(--card-bg); border: 1px solid var(--card-stroke); border-radius: 14px; padding: 16px; margin-bottom: 16px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); transition: background 0.25s, border-color 0.25s; }
-.card-title { font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; }
-.form-group { margin-bottom: 12px; }
-label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 5px; }
-input[type="text"], input[type="number"], select, textarea {
-  width: 100%; background: rgba(0,0,0,0.35); border: 1px solid var(--card-stroke); color: #fff;
-  border-radius: 8px; padding: 9px 12px; font-size: 13.5px; outline: none; transition: border-color 0.2s;
+/* 方块世界（我的世界像素风） */
+body[data-theme="minecraft"] {
+  --bg: #121612;
+  --card-bg: #1d221d;
+  --card-stroke: #3b4739;
+  --text: #f3f7ef;
+  --text-muted: #a0b39a;
+  --accent: #55cc44;
+  --accent-glow: rgba(85, 204, 68, 0.25);
+  --btn-bg: #2a3229;
+  --btn-stroke: #4d5c49;
+  --danger: #ff5555;
+  --warn: #ffaa00;
 }
+body[data-theme="minecraft"] .brand h1,
+body[data-theme="minecraft"] .card-title,
+body[data-theme="minecraft"] button,
+body[data-theme="minecraft"] .version-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+body[data-theme="minecraft"] .card,
+body[data-theme="minecraft"] .brand-icon,
+body[data-theme="minecraft"] .status-pill,
+body[data-theme="minecraft"] .version-badge,
+body[data-theme="minecraft"] input,
+body[data-theme="minecraft"] select,
+body[data-theme="minecraft"] textarea,
+body[data-theme="minecraft"] button,
+body[data-theme="minecraft"] .checkbox-item,
+body[data-theme="minecraft"] .details-box,
+body[data-theme="minecraft"] .code-box,
+body[data-theme="minecraft"] .history-btn,
+body[data-theme="minecraft"] .copy-btn {
+  border-radius: 2px;
+  border-width: 2px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+html, body { max-width: 100%; overflow-x: hidden; }
+body { background: var(--bg); color: var(--text); padding: 14px 12px calc(24px + env(safe-area-inset-bottom)); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; transition: background 0.25s, color 0.25s; }
+.container { width: 100%; max-width: 680px; margin: 0 auto; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 10px 0 16px; border-bottom: 1px solid var(--card-stroke); margin-bottom: 14px; }
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
+.brand > div { min-width: 0; }
+.brand-icon { flex-shrink: 0; width: 34px; height: 34px; border-radius: 8px; background: var(--card-bg); border: 1px solid var(--accent); display: flex; align-items: center; justify-content: center; font-size: 18px; transition: border-color 0.25s; }
+.brand h1 { font-size: 17px; font-weight: 700; color: #fff; letter-spacing: 0.4px; overflow-wrap: anywhere; }
+.brand .sub { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.version-badge { flex-shrink: 0; font-size: 11px; color: var(--accent); background: var(--accent-glow); padding: 3px 8px; border-radius: 12px; border: 1px solid var(--accent); }
+.status-pill { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; max-width: 100%; font-size: 12px; color: var(--accent); background: rgba(54, 209, 168, 0.1); padding: 7px 12px; border-radius: 12px; border: 1px solid var(--card-stroke); margin-bottom: 14px; }
+.status-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.card { background: var(--card-bg); border: 1px solid var(--card-stroke); border-radius: 14px; padding: 15px; margin-bottom: 14px; box-shadow: 0 4px 16px rgba(0,0,0,0.25); transition: background 0.25s, border-color 0.25s; overflow: hidden; }
+.card-title { font-size: 14px; font-weight: 600; color: var(--accent); margin-bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+.form-group { margin-bottom: 12px; min-width: 0; }
+label { display: block; font-size: 12px; color: var(--text-muted); margin-bottom: 5px; overflow-wrap: anywhere; }
+input[type="text"], input[type="number"], select, textarea {
+  display: block; width: 100%; max-width: 100%; min-width: 0; min-height: 44px;
+  background: rgba(0,0,0,0.35); border: 1px solid var(--card-stroke); color: #fff;
+  border-radius: 8px; padding: 10px 12px; font-size: 16px; line-height: 1.35; outline: none; transition: border-color 0.2s;
+}
+select { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 28px; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 8px var(--accent-glow); }
-textarea { resize: vertical; min-height: 60px; }
-.row { display: flex; gap: 10px; }
-.col { flex: 1; }
-.checkbox-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 12px 0; }
-.checkbox-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--card-stroke); cursor: pointer; }
-.checkbox-item input { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
-.btn-group { display: flex; gap: 10px; margin-top: 14px; }
+input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; }
+textarea { resize: vertical; min-height: 72px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
+.col { flex: 1 1 0; min-width: 0; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: end; }
+.grid-2 .form-group { margin-bottom: 0; }
+.grid-params { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.grid-params .form-group { margin-bottom: 0; }
+.checkbox-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.checkbox-item { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 44px; margin-bottom: 0; font-size: 13px; color: var(--text); background: rgba(0,0,0,0.2); padding: 8px 10px; border-radius: 8px; border: 1px solid var(--card-stroke); cursor: pointer; }
+.checkbox-item span { min-width: 0; overflow-wrap: anywhere; }
+.checkbox-item input { flex-shrink: 0; accent-color: var(--accent); width: 18px; height: 18px; cursor: pointer; }
 button {
-  flex: 1; padding: 11px 16px; border-radius: 8px; font-size: 13.5px; font-weight: 600; cursor: pointer;
+  min-height: 44px; padding: 10px 14px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;
   transition: all 0.2s; outline: none; border: 1px solid transparent; text-align: center;
+  max-width: 100%; line-height: 1.3; white-space: normal; word-break: break-word;
 }
 .btn-primary { background: var(--accent); color: #0a1315; border-color: var(--accent); font-weight: 700; }
 .btn-primary:active { opacity: 0.85; transform: scale(0.98); }
 .btn-secondary { background: var(--btn-bg); color: #fff; border-color: var(--btn-stroke); }
 .btn-secondary:active { background: var(--card-stroke); }
-.details-toggle { font-size: 12px; color: var(--accent); cursor: pointer; text-decoration: underline; margin-bottom: 10px; display: inline-block; }
+.btn-full { display: block; width: 100%; }
+.btn-group { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.btn-group > button { flex: 1 1 140px; min-width: 0; }
+.grid-2 > button { width: 100%; min-width: 0; }
+.sendspin-controls { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+.sendspin-controls > button { width: 100%; min-width: 0; padding: 10px 6px; font-size: 13px; }
+.sync-status-box { font-size: 12.5px; color: var(--text-muted); margin-top: 10px; padding: 8px 10px; background: rgba(0,0,0,0.22); border: 1px solid var(--card-stroke); border-radius: 8px; overflow-wrap: anywhere; line-height: 1.45; }
+.details-toggle { font-size: 12.5px; color: var(--accent); cursor: pointer; text-decoration: underline; margin-bottom: 10px; display: inline-block; padding: 4px 0; }
 .details-box { display: none; background: rgba(0,0,0,0.2); border: 1px dashed var(--card-stroke); padding: 12px; border-radius: 8px; margin-bottom: 12px; }
-.history-item { padding: 10px; border-bottom: 1px solid var(--card-stroke); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.history-item { padding: 10px 2px; border-bottom: 1px solid var(--card-stroke); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
 .history-item:last-child { border-bottom: none; }
-.history-info { flex: 1; }
-.history-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; align-items: center; margin-bottom: 3px; }
-.history-level { font-size: 10px; padding: 1px 5px; border-radius: 4px; font-weight: bold; }
+.history-info { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.history-meta { font-size: 11px; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin-bottom: 4px; }
+.history-level { font-size: 10px; padding: 1px 6px; border-radius: 4px; font-weight: bold; }
 .level-info { background: rgba(54,209,168,0.2); color: var(--accent); }
 .level-warn { background: rgba(255,192,67,0.2); color: var(--warn); }
 .level-error { background: rgba(255,92,92,0.2); color: var(--danger); }
-.history-title { font-weight: 600; color: #fff; font-size: 13px; }
-.history-text { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
-.history-btn { font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--btn-bg); border: 1px solid var(--btn-stroke); color: #fff; cursor: pointer; white-space: nowrap; }
-.code-box { background: rgba(0,0,0,0.45); border: 1px solid var(--card-stroke); border-radius: 8px; padding: 10px; font-family: monospace; font-size: 11.5px; color: #b7e3d8; word-break: break-all; position: relative; }
-.copy-btn { position: absolute; right: 8px; top: 8px; font-size: 10.5px; padding: 3px 7px; background: var(--btn-bg); border: 1px solid var(--card-stroke); color: var(--accent); border-radius: 5px; cursor: pointer; }
-.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(16,32,36,0.95); border: 1px solid var(--accent); color: #fff; padding: 8px 16px; border-radius: 20px; font-size: 12.5px; z-index: 999; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+.history-title { font-weight: 600; color: #fff; font-size: 13.5px; overflow-wrap: anywhere; }
+.history-text { font-size: 12.5px; color: var(--text-muted); margin-top: 2px; overflow-wrap: anywhere; }
+.history-btn { flex-shrink: 0; width: auto; min-height: 36px; font-size: 12px; padding: 6px 12px; border-radius: 6px; background: var(--btn-bg); border: 1px solid var(--btn-stroke); color: #fff; cursor: pointer; white-space: nowrap; }
+.code-box { background: rgba(0,0,0,0.45); border: 1px solid var(--card-stroke); border-radius: 8px; overflow: hidden; }
+.code-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--card-stroke); background: rgba(0,0,0,0.25); font-size: 11.5px; color: var(--text-muted); }
+.copy-btn { flex-shrink: 0; min-height: 32px; font-size: 11.5px; padding: 4px 12px; background: var(--btn-bg); border: 1px solid var(--btn-stroke); color: var(--accent); border-radius: 6px; cursor: pointer; }
+.code-box pre { padding: 10px 12px; margin: 0; font-family: monospace; font-size: 12px; line-height: 1.5; color: #b7e3d8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.toast { position: fixed; bottom: calc(18px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); text-align: center; background: rgba(16,32,36,0.95); border: 1px solid var(--accent); color: #fff; padding: 9px 16px; border-radius: 20px; font-size: 13px; z-index: 999; display: none; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+@media (max-width: 560px) {
+  .grid-params { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-params > .param-span-full { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .grid-2 { grid-template-columns: minmax(0, 1fr); }
+  .card { padding: 14px 12px; }
+}
+@media (max-width: 360px) {
+  .checkbox-grid { grid-template-columns: minmax(0, 1fr); }
+}
 </style>
 </head>
 <body data-theme="${theme.storageId}">
@@ -222,8 +288,8 @@ button {
       <label id="label-text">正文内容 (Text)</label>
       <textarea id="text" placeholder="输入推送文案内容...">${theme.testBannerText}</textarea>
     </div>
-    <div class="row">
-      <div class="col form-group">
+    <div class="grid-params">
+      <div class="form-group">
         <label id="label-level">分级着色 (Level)</label>
         <select id="level">
           <option value="info" selected id="opt-info">${if (theme.isXianxia) "传音 (Info)" else "普通 (Info)"}</option>
@@ -231,7 +297,7 @@ button {
           <option value="error" id="opt-error">${if (theme.isXianxia) "告急 (Error)" else "紧急 (Error)"}</option>
         </select>
       </div>
-      <div class="col form-group">
+      <div class="form-group">
         <label id="label-pos">显形方位 (Position)</label>
         <select id="position">
           <option value="" selected>默认 (跟随电视设置)</option>
@@ -243,8 +309,8 @@ button {
           <option value="bottom-left">左下角画中画 (Bottom-Left)</option>
         </select>
       </div>
-      <div class="col form-group">
-        <label>显示时长 (Duration)</label>
+      <div class="form-group param-span-full">
+        <label for="duration">显示时长 (秒)</label>
         <input type="number" id="duration" min="1" max="30" value="5">
       </div>
     </div>
@@ -260,6 +326,7 @@ button {
         <option value="matrix">💻 极客终端（黑客荧光绿 · CRT 终端蜂鸣音）</option>
         <option value="ink_light">🍵 江南宣纸（雅白宣纸 · 空谷清竹水滴音）</option>
         <option value="gamer">🏆 主机奖杯（白金流光 · 奖杯解锁升调琶音）</option>
+        <option value="minecraft">🧱 方块世界（草方块像素 · 8-bit 经验球音）</option>
       </select>
     </div>
 
@@ -302,13 +369,15 @@ button {
       <span id="card-control-title">${if (theme.isXianxia) "🎛️ 电视阵法调控" else "🎛️ 电视服务调控"}</span>
       <span style="font-size: 11.5px; color: var(--text-muted);">实时下发配置</span>
     </div>
-    <div class="row" style="align-items: center; margin-bottom: 10px;">
-      <div class="col">
-        <button id="btn-toggle-mute" class="btn-secondary" onclick="toggleMute()">
+    <div class="grid-2" style="margin-bottom: 12px;">
+      <div class="form-group">
+        <label>声音开关</label>
+        <button type="button" id="btn-toggle-mute" class="btn-secondary btn-full" onclick="toggleMute()">
           ${if (isMuted) (if (theme.isXianxia) "🔇 闭关免扰 (已开启静音)" else "🔇 静音模式 (已开启)") else (if (theme.isXianxia) "🔊 灵音畅通 (已开启声音)" else "🔊 提示音效 (已开启)")}
         </button>
       </div>
-      <div class="col">
+      <div class="form-group">
+        <label for="config-pos">默认显示方位</label>
         <select id="config-pos" onchange="changeDefaultPosition()">
           <option value="top" ${if (defaultPosition == "top") "selected" else ""}>默认方位：顶部居中 (Top)</option>
           <option value="top-right" ${if (defaultPosition == "top-right") "selected" else ""}>默认方位：右上画中画 (Top-Right)</option>
@@ -319,54 +388,57 @@ button {
         </select>
       </div>
     </div>
-    <div class="row" style="align-items: center;">
-      <div class="col">
-        <select id="config-theme" onchange="changeGlobalTheme()">
-          <option value="xiuxian" ${if (theme == Theme.XIUXIAN) "selected" else ""}>全局默认主题：🔮 修仙玉简（仙家玉磬音）</option>
-          <option value="default" ${if (theme == Theme.DEFAULT) "selected" else ""}>全局默认主题：🍎 tvOS 极简（柔和三和弦）</option>
-          <option value="palace" ${if (theme == Theme.PALACE) "selected" else ""}>全局默认主题：🏮 大唐鎏金（宫廷青铜编钟）</option>
-          <option value="cyberpunk" ${if (theme == Theme.CYBERPUNK) "selected" else ""}>全局默认主题：⚡ 赛博霓虹（科幻 HUD 脉冲音）</option>
-          <option value="wukong" ${if (theme == Theme.WUKONG) "selected" else ""}>全局默认主题：🐵 黑神话·暗金（古刹金钵低鸣）</option>
-          <option value="matrix" ${if (theme == Theme.MATRIX) "selected" else ""}>全局默认主题：💻 极客终端（CRT 终端蜂鸣音）</option>
-          <option value="ink_light" ${if (theme == Theme.INK_LIGHT) "selected" else ""}>全局默认主题：🍵 江南宣纸（空谷清竹水滴音）</option>
-          <option value="gamer" ${if (theme == Theme.GAMER) "selected" else ""}>全局默认主题：🏆 主机奖杯（奖杯解锁升调琶音）</option>
-        </select>
-      </div>
+    <div class="form-group" style="margin-bottom: 0;">
+      <label for="config-theme">全局默认主题与提示音</label>
+      <select id="config-theme" onchange="changeGlobalTheme()">
+        <option value="xiuxian" ${if (theme == Theme.XIUXIAN) "selected" else ""}>全局默认主题：🔮 修仙玉简（仙家玉磬音）</option>
+        <option value="default" ${if (theme == Theme.DEFAULT) "selected" else ""}>全局默认主题：🍎 tvOS 极简（柔和三和弦）</option>
+        <option value="palace" ${if (theme == Theme.PALACE) "selected" else ""}>全局默认主题：🏮 大唐鎏金（宫廷青铜编钟）</option>
+        <option value="cyberpunk" ${if (theme == Theme.CYBERPUNK) "selected" else ""}>全局默认主题：⚡ 赛博霓虹（科幻 HUD 脉冲音）</option>
+        <option value="wukong" ${if (theme == Theme.WUKONG) "selected" else ""}>全局默认主题：🐵 黑神话·暗金（古刹金钵低鸣）</option>
+        <option value="matrix" ${if (theme == Theme.MATRIX) "selected" else ""}>全局默认主题：💻 极客终端（CRT 终端蜂鸣音）</option>
+        <option value="ink_light" ${if (theme == Theme.INK_LIGHT) "selected" else ""}>全局默认主题：🍵 江南宣纸（空谷清竹水滴音）</option>
+        <option value="gamer" ${if (theme == Theme.GAMER) "selected" else ""}>全局默认主题：🏆 主机奖杯（奖杯解锁升调琶音）</option>
+        <option value="minecraft" ${if (theme == Theme.MINECRAFT) "selected" else ""}>全局默认主题：🧱 方块世界（8-bit 经验球音）</option>
+      </select>
     </div>
   </div>
 
   <!-- Sendspin 音乐控制 -->
   <div class="card">
     <div class="card-title"><span>Sendspin 音乐</span><span id="sendspin-state" style="font-size:12px;color:var(--text-muted)">正在检查…</span></div>
-    <div id="sendspin-track" style="font-size:17px;font-weight:600">未播放</div>
-    <div id="sendspin-artist" style="font-size:13px;color:var(--text-muted);margin-top:4px"></div>
-    <div class="btn-group" style="margin-top:12px">
-      <button class="btn-secondary" onclick="sendspinCommand('previous')">上一首</button>
-      <button class="btn-primary" onclick="sendspinCommand('play_pause')">播放 / 暂停</button>
-      <button class="btn-secondary" onclick="sendspinCommand('next')">下一首</button>
-      <button class="btn-secondary" onclick="sendspinCommand('volume_down')">音量 −</button>
-      <button class="btn-secondary" onclick="sendspinCommand('volume_up')">音量 +</button>
-      <button class="btn-secondary" onclick="sendspinCommand('mute')">静音切换</button>
+    <div id="sendspin-track" style="font-size:17px;font-weight:600;overflow-wrap:anywhere">未播放</div>
+    <div id="sendspin-artist" style="font-size:13px;color:var(--text-muted);margin-top:4px;overflow-wrap:anywhere"></div>
+    <div class="sendspin-controls">
+      <button type="button" class="btn-secondary" onclick="sendspinCommand('previous')">上一首</button>
+      <button type="button" class="btn-primary" onclick="sendspinCommand('play_pause')">播放 / 暂停</button>
+      <button type="button" class="btn-secondary" onclick="sendspinCommand('next')">下一首</button>
+      <button type="button" class="btn-secondary" onclick="sendspinCommand('volume_down')">音量 −</button>
+      <button type="button" class="btn-secondary" onclick="sendspinCommand('volume_up')">音量 +</button>
+      <button type="button" class="btn-secondary" onclick="sendspinCommand('mute')">静音切换</button>
     </div>
-    <div class="form-group" style="margin-top:10px">
-      <label for="sendspin-sync-mode">自动同步</label>
-      <select id="sendspin-sync-mode">
-        <option value="auto" selected>自动同步</option>
-        <option value="manual">手动固定补偿</option>
-      </select>
+    <div class="grid-2" style="margin-top:12px">
+      <div class="form-group">
+        <label for="sendspin-sync-mode">同步模式</label>
+        <select id="sendspin-sync-mode">
+          <option value="auto" selected>自动同步</option>
+          <option value="manual">手动固定补偿</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="sendspin-delay">手动固定补偿 (0–5000 ms，自动模式保留)</label>
+        <input id="sendspin-delay" type="number" min="0" max="5000" step="1" placeholder="例如 800" disabled>
+      </div>
     </div>
-    <div class="form-group">
-      <label for="sendspin-delay">手动固定补偿（毫秒，0–5000；自动模式保留此值）</label>
-      <input id="sendspin-delay" type="number" min="0" max="5000" step="1" placeholder="例如 800" disabled>
+    <button type="button" id="sendspin-sync-apply" class="btn-secondary btn-full" style="margin-top:10px" onclick="saveOutputDelay()">应用同步设置</button>
+    <div id="sendspin-sync" class="sync-status-box" role="status">同步：等待状态…</div>
+    <div class="form-group" style="margin-top:12px;margin-bottom:0">
+      <label for="sendspin-url">Music Assistant WebSocket 地址（默认端口 8927）</label>
+      <input id="sendspin-url" type="text" placeholder="自动发现，或 ws://music-assistant:8927/sendspin">
     </div>
-    <div class="row">
-      <button id="sendspin-sync-apply" class="btn-secondary" onclick="saveOutputDelay()">应用同步设置</button>
-    </div>
-    <div id="sendspin-sync" role="status" style="font-size:12px;color:var(--text-muted);margin-top:10px">同步：等待状态…</div>
-    <div class="form-group" style="margin-top:10px"><label>Music Assistant WebSocket 地址（默认端口 8927）</label><input id="sendspin-url" type="text" placeholder="自动发现，或 ws://music-assistant:8927/sendspin"></div>
-    <div class="row">
-      <button class="btn-secondary" onclick="saveSendspinConfig()">保存并连接</button>
-      <button class="btn-secondary" onclick="sendspinCommand('open_ui')">打开电视音乐页</button>
+    <div class="grid-2" style="margin-top:10px">
+      <button type="button" class="btn-secondary" onclick="saveSendspinConfig()">保存并连接</button>
+      <button type="button" class="btn-secondary" onclick="sendspinCommand('open_ui')">打开电视音乐页</button>
     </div>
   </div>
 
@@ -374,7 +446,7 @@ button {
   <div class="card">
     <div class="card-title">
       <span id="card-history-title">${if (theme.isXianxia) "📜 传音简录 (最近 20 条)" else "📜 通知历史 (最近 20 条)"}</span>
-      <button class="history-btn" onclick="fetchHistory()">🔄 刷新列表</button>
+      <button type="button" class="history-btn" onclick="fetchHistory()">🔄 刷新列表</button>
     </div>
     <div id="history-container">正在载入简录...</div>
   </div>
@@ -385,8 +457,11 @@ button {
       <span>💻 cURL 极速调用代码</span>
     </div>
     <div class="code-box">
-      <span class="copy-btn" onclick="copyCurl()">复制</span>
-      <pre id="curl-code" style="white-space: pre-wrap; margin: 0;"></pre>
+      <div class="code-header">
+        <span>HTTP POST JSON 示例</span>
+        <button type="button" class="copy-btn" onclick="copyCurl()">复制</button>
+      </div>
+      <pre id="curl-code"></pre>
     </div>
   </div>
 </div>
@@ -414,7 +489,8 @@ const THEME_META = {
   wukong: { emoji: "🐵", name: "黑神话·暗金", classical: true },
   matrix: { emoji: "💻", name: "极客终端", classical: false },
   ink_light: { emoji: "🍵", name: "江南宣纸", classical: true },
-  gamer: { emoji: "🏆", name: "主机奖杯", classical: false }
+  gamer: { emoji: "🏆", name: "主机奖杯", classical: false },
+  minecraft: { emoji: "🧱", name: "方块世界", classical: false }
 };
 
 function isClassicalTheme(key) {

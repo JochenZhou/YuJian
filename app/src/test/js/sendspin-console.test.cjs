@@ -147,3 +147,23 @@ test("source labels distinguish reliable playback position from estimates and un
   assert.doesNotMatch(estimate, /可靠|已同步/);
   assert.match(app.context.syncStatusText({ ...status, position_source: "unavailable", sync_error_ms: null }), /位置不可用.*偏差暂不可用/);
 });
+
+test("mobile layout CSS prevents flex/grid overflow and keeps tap targets usable", () => {
+  assert.match(html, /viewport-fit=cover/);
+  assert.match(html, /min-width:\s*0/);
+  assert.match(html, /minmax\(0,\s*1fr\)/);
+  assert.match(html, /\.sendspin-controls\s*\{/);
+  assert.match(html, /class="sendspin-controls"/);
+  assert.match(html, /flex-wrap:\s*wrap/);
+  assert.match(html, /font-size:\s*16px/);
+  assert.match(html, /\.code-header\s*\{/);
+  assert.match(html, /class="code-header"/);
+  assert.match(html, /text-overflow:\s*ellipsis/);
+  assert.doesNotMatch(html, /\.copy-btn\s*\{[^}]*position:\s*absolute/);
+});
+
+test("console exposes minecraft pixel theme option and metadata", () => {
+  assert.match(html, /body\[data-theme="minecraft"\]/);
+  assert.equal((html.match(/<option value="minecraft"[\s>]/g) || []).length, 2);
+  assert.match(html, /minecraft:\s*\{\s*emoji:\s*"🧱",\s*name:\s*"方块世界",\s*classical:\s*false\s*\}/);
+});
