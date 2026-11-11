@@ -156,6 +156,8 @@ class AndroidAudioPlayer(
                 } catch (error: Exception) {
                     synchronized(ioLock) {
                         if (!running.get()) return
+                        val outputState = try { pump?.diagnosticState(ClockSync.localMicros()) } catch (_: Exception) { "unavailable" }
+                        Log.w(TAG, "Audio output failure playState=${track?.playState} $outputState", error)
                         if (++rebuilds > MAX_REBUILDS) throw error
                         val currentFormat = format ?: throw error
                         Log.w(TAG, "Rebuilding audio output after write failure ($rebuilds/$MAX_REBUILDS)", error)
@@ -172,7 +174,7 @@ class AndroidAudioPlayer(
             Log.e(TAG, "Audio playback failed", error)
             running.set(false)
             synchronized(ioLock) {
-                sync = sync.copy(state = "error", errorMicros = null, positionSource = "unavailable")
+                sync = sync.copy(state = "error", errorMicros = null, positionSource = "unavailable", errorReason = error.message ?: error.javaClass.simpleName)
                 releaseTrackLocked()
             }
             releaseWakeLock()
@@ -207,12 +209,17 @@ class AndroidAudioPlayer(
         bufferBytes: Int,
         minimumBytes: Int,
     ) : SendspinPcmPump.Output {
-        private val minimumFrames = minimumBytes / frameBytes
-        private val capacityFrames = bufferBytes / frameBytes
+        private val requestedFrames = bufferBytes / frameBytes
+        // getBufferSizeInFrames is public since API 23. Requested bytes are not proof of the
+        // writable native size on vendor AudioTracks; never require more preroll than it reports.
+        private val capacityFrames = try { track.bufferSizeInFrames.takeIf { it > 0 } ?: requestedFrames }
+            catch (_: Exception) { requestedFrames }
+        private val minimumFrames = minOf(minimumBytes / frameBytes, capacityFrames)
+        init { Log.i(TAG, "AudioTrack native buffer requestedFrames=$requestedFrames reportedFrames=$capacityFrames minimumFrames=$minimumFrames") }
         override fun minimumBufferFrames() = minimumFrames
         override fun bufferCapacityFrames() = capacityFrames
         private val audioTimestamp = AudioTimestamp()
-        private val bufferDurationUs = bufferBytes.toLong() * 1_000_000L / frameBytes / sampleRate
+        private val bufferDurationUs = capacityFrames.toLong() * 1_000_000L / sampleRate
         private var latencyMethod = try { AudioTrack::class.java.getMethod("getLatency") } catch (_: Exception) { null }
         private var measuredLatencyUs = 0L
         private var lastLatencyUs = Long.MIN_VALUE

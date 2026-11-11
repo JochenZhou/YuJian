@@ -54,6 +54,11 @@ internal class SendspinPcmPump(
     private var block: Block? = null
     private var drySinceUs: Long? = null
     private var writeBlockedSinceUs: Long? = null
+    private var prefillFull = false
+    private var lastWriteBytes = 0
+    private var lastWriteResult = 0
+    private var playCalls = 0L
+    private var lastResetReason = "created"
     private var positionUsesTimestamp = false
     private var mode = buffer.automaticSync
     private var compensationUs = buffer.outputDelayMicros
@@ -76,6 +81,16 @@ internal class SendspinPcmPump(
     )
 
     fun step(nowUs: Long) {
+        // Prime in bounded nonblocking batches. One tiny network packet per polling sleep can
+        // miss the first-frame deadline on older TVs even though contiguous PCM is available.
+        repeat(if (started) 1 else 32) {
+            val before = writtenFrames
+            stepOnce(nowUs)
+            if (started || prefillFull || writtenFrames <= before) return
+        }
+    }
+
+    private fun stepOnce(nowUs: Long) {
         if (mode != buffer.automaticSync || compensationUs != buffer.outputDelayMicros) {
             mode = buffer.automaticSync
             compensationUs = buffer.outputDelayMicros
@@ -123,17 +138,22 @@ internal class SendspinPcmPump(
                 resetOutput(nowUs, "rebuffering", countResync = true)
                 return
             }
-            if (nowUs >= startUs && writtenFrames >= startupFrames) {
-                // Respect the device's minimum preroll; an underfilled legacy mixer can pulse.
+            if (nowUs >= startUs && writtenFrames >= minimumFrames &&
+                (writtenFrames >= startupFrames || prefillFull)) {
+                // A stopped track returning zero after valid preroll has no writable space.
+                // Its observed native capacity is authoritative if a vendor misreports the size.
                 output.play()
+                playCalls++
                 positions.start(nowUs)
                 consumption.start(nowUs)
                 lastPosition = positions.sample(nowUs, writtenFrames, output.playbackHead())
                 consumption.sample(nowUs, writtenFrames, output.playbackHead())
                 started = true
+                prefillFull = false
+                writeBlockedSinceUs = null
             }
         }
-        if (occupiedFrames >= queueLimit) {
+        if ((!started && prefillFull) || occupiedFrames >= queueLimit) {
             updatePlayingSnapshot(nowUs, latencyUs)
             return
         }
@@ -158,12 +178,19 @@ internal class SendspinPcmPump(
             val bytes = minOf(current.bytes.size - current.written, (room * frameBytes).toInt(), 8192)
                 .let { it - it % frameBytes }
             if (bytes > 0) {
+                lastWriteBytes = bytes
                 val count = output.write(current.bytes, current.written, bytes)
+                lastWriteResult = count
                 check(count >= 0) { "AudioTrack write failed: $count" }
                 check(count <= bytes && count % frameBytes == 0) { "Invalid PCM write result: $count" }
                 if (count == 0) {
-                    if (writeBlockedSinceUs == null) writeBlockedSinceUs = nowUs
-                    check(nowUs - writeBlockedSinceUs!! < 1_500_000L) { "AudioTrack write stalled" }
+                    if (!started && writtenFrames > 0L && writtenFrames >= minimumFrames) {
+                        prefillFull = true
+                        writeBlockedSinceUs = null
+                    } else {
+                        if (writeBlockedSinceUs == null) writeBlockedSinceUs = nowUs
+                        check(nowUs - writeBlockedSinceUs!! < 1_500_000L) { "AudioTrack write stalled" }
+                    }
                 } else {
                     writeBlockedSinceUs = null
                     val outputFrames = count / frameBytes
@@ -282,6 +309,15 @@ internal class SendspinPcmPump(
         resetOutput(nowUs, "paused", countResync = started || writtenFrames > 0L)
         writeBlockedSinceUs = null
     }
+    fun diagnosticState(nowUs: Long): String {
+        val first = firstServerUs
+        val deadline = first?.let { clock.toLocalMicros(it, nowUs) - compensationUs - output.latencyUs() }
+        return "started=$started playCalls=$playCalls written=$writtenFrames occupied=$occupiedFrames " +
+            "head=${output.playbackHead()} minFrames=$minimumFrames capacity=$capacityFrames " +
+            "startupFrames=$startupFrames prefillFull=$prefillFull lastWrite=$lastWriteResult/$lastWriteBytes " +
+            "blockedUs=${writeBlockedSinceUs?.let { nowUs - it }} deadlineLateUs=${deadline?.let { nowUs - it }} " +
+            "resetReason=$lastResetReason"
+    }
     fun flush(nowUs: Long) {
         resetOutput(nowUs, "buffering", countResync = started || writtenFrames > 0L)
         writeBlockedSinceUs = null
@@ -297,6 +333,8 @@ internal class SendspinPcmPump(
         resampler.reset()
         splices.reset()
         writtenFrames = 0L
+        prefillFull = false
+        lastResetReason = state
         started = false
         firstServerUs = null
         if (!keepChunk) chunk = null
