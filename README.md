@@ -1,646 +1,248 @@
-# 玉简 (YuJian) · 电视端局域网灵讯横幅
+# 玉简（YuJian）· Android TV 悬浮通知与 Sendspin 多房间音乐终端
 
-> 把电视（Android 6.0+ / API 23+）变成局域网通知屏与传音玉简：外部系统（Home Assistant、NAS、CI、树莓派……）发一个 HTTP POST，电视屏幕顶部就会飘出一条灵动横幅（修仙玉简 / tvOS 双风格），支持 16:9 静态画卷与实时监控动态流。
-
-本项目是为「电视通知栏被裁掉、`cmd notification post` 在 API 23 上不可用」这类场景写的兜底方案：不做系统通知，直接 `WindowManager` 悬浮窗自绘。整个 App 只有两个依赖（NanoHTTPD + ZXing），不引入 AndroidX，APK 体积小到可以忽略。
-
----
-
-## 📌 运行前提：开源桌面 Aerial（ADB 保活守护）
-
-> [!IMPORTANT]
-> **前置必备环境说明**：
-> Android TV（尤其是小米、红米等搭载定制 ROM 的智能电视及低内存设备）普遍具有极其严苛的后台省电与内存回收机制，常规前台服务在内存吃紧或长时间息屏待机时极易被系统强杀。
+> **一简传音，灵讯常驻；多房同频，大屏随心。**
 >
-> **本项目将开源电视桌面 Aerial 作为核心运行前提**：
-> 强烈推荐在电视端将开源电视桌面 **Aerial** 设为默认桌面协同运行。**正是依托开源桌面 Aerial 强大的 ADB 保活与守护机制，在后台服务被系统意外杀死时能够自动、快速地重新拉起玉简的 `NotifyService`**，从而彻底解决低内存电视常驻后台被杀的痛点，这是实现玉简持久在线、通知稳定送达的关键前提！
+> **玉简（YuJian / TVNotify）** 是一款专为 **Android TV / 智能电视** 打造的轻量级常驻服务应用：一边作为局域网 HTTP 悬浮通知横幅接收器（深度适配 Home Assistant、NAS 与各类自动化脚本），一边内置 **Sendspin 多房间同步音乐播放器** 与 **自适应单页 Web 控制台**，让大屏在息屏观影之余也能优雅承接家庭消息与高品质同步音乐。
 
 ---
 
-## 🌟 Home Assistant 专属集成（推荐 · 自动发现）
+## ✨ 核心特性（v1.9.0）
 
-强烈推荐配合专属 Home Assistant 自定义集成使用：
-
-👉 **集成仓库**：[ha-yujian (GitHub)](https://github.com/JochenZhou/ha-yujian)
-
-- **局域网 mDNS 自动发现**：玉简电视端开机后自动广播 `_tvnotify._tcp`。安装 `ha-yujian` 后，Home Assistant「配置 → 设备与服务」将**自动发现**局域网内的这台电视，点击「配置」即可自动绑定，**无需手动查询与填写电视 IP 及 Token**！
-- **原生通知实体与服务**：在 HA 自动化中通过 `notify.send_message` 或 `yujian.notify` 直接调用，支持标题、正文、分级着色（info / warn / error）、常驻、16:9 静态画卷与动态实时视频流、自定义提示音。
-- **在线状态感知**：自动监控电视端 HTTP 与悬浮窗服务在线状态。
-
----
-
-## 效果预览
-
-真实电视截图（小米电视 1920×1080，Android 6.0）：
-
-| `level: info` | `level: warn` | `level: error` |
-| --- | --- | --- |
-| ![info 级横幅](docs/screenshot-info.png) | ![warn 级横幅](docs/screenshot-warn.png) | ![error 级横幅](docs/screenshot-error.png) |
-
-- 描边与铃铛随 `level` 变色：`info` 白 / `warn` 琥珀 `#FFB020` / `error` 红 `#FF453A`
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                                                              │
-│        ╭────────────────────────────────────────╮            │
-│        │  🔔   洗衣机已完成                     │            │
-│        │       晾晒提醒：衣服可以收了           │            │
-│        ╰────────────────────────────────────────╯            │
-│                                                              │
-│                    （电视正在播放的内容）                    │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-```
-
-- 深色半透明圆角卡片 + 1dp 描边，宽度固定为屏宽 64%，距顶 32dp
-- 左侧矢量铃铛，右侧标题（18sp 白色粗体单行）+ 正文（15sp `#EBEBF5` 最多四行）
-- 入场：上方滑入 + 淡入 250ms `DecelerateInterpolator`；退场：向上滑出 + 淡出
-- 入场播放提示音（默认开，可按条静音）；`sticky` 常驻横幅由 `maxDuration` 兜底，也可 `POST /dismiss` 关闭
-- 通知抢占：显示中再来一条，立刻替换并重新计时，绝不排队堆积
-
-## 功能简介
-
-| 能力 | 说明 |
+| 模块 | 能力亮点 |
 | --- | --- |
-| 常驻前台服务 | 固定端口 `8791`，`START_STICKY` 保活，开机自动拉起 |
-| 局域网 HTTP 接口 | `POST /{token}/notify`，JSON 入参，token 鉴权 |
-| 内置单页 Web 控制台 | 手机浏览器扫码直达 `http://<电视IP>:8791/<token>`，秒开发送通知、查阅简录、消散横幅与调整免扰 |
-| 随机 token | 首次启动生成 8 位字母数字，持久化到 SharedPreferences，可一键重置 |
-| 悬浮窗横幅 | `SYSTEM_ALERT_WINDOW` + 自绘，不抢遥控器焦点（`FLAG_NOT_FOCUSABLE`） |
-| 六大显形方位 | 顶部居中、底部居中及四角画中画（`top-right` / `bottom-right` 等），防挡字幕与画面 |
-| 原生 TTS 语音播报 | 支持 `tts: true` 或自定义朗读文案，Android 原生引擎零依赖直接朗读灵讯 |
-| 准视频流快照轮询 | 传入 `image_interval: 1000`（毫秒），低开销定时拉取快照，无需高耗能转码 |
-| 原地刷新与排队 | 支持 `id` 相同原地平滑无闪烁更新（适合下载进度），及 `queue: true` FIFO 顺延排队 |
-| 传音简录 (历史回看) | 自动缓存最近 20 条通知记录，电视端弹窗一览错过的消息并支持一键重演 |
-| 闭关免扰 (静音模式) | 一键开启全局静音，横幅照常显化但静默无声，深夜观影不惊扰 |
-| 分级着色 | `level` = `info` / `warn` / `error`，玉简符标与描边灵动变色，布局不变 |
-| 常驻横幅 | `sticky: true` 不自动消失，靠 `maxDuration`（默认 300s）兜底，或 `POST /dismiss` 关闭 |
-| 提示音 | 入场播放 `res/raw/chord.mp3`（修仙主题专属音效，走 `STREAM_MUSIC`），请求体 `sound: false` 可单条静音 |
-| 健康探活 | `GET /health` 无需 token，返回版本、uptime、端口、横幅状态、静音状态、默认方位，供 HA availability 用 |
-| mDNS 发现 | 广播 `_tvnotify._tcp`，TXT 带 token / 版本 / 路径 / 型号（**TV 端只负责广播**） |
-| 双美学主题 | 支持「修仙玉简」与「现代深色 tvOS」一键切换，遥控器 D-Pad 细腻微缩放与灵光聚焦 |
+| **🖥️ 3 页签焦点即切 TV 主页** | 采用「**总览与互联**」「**演练与调控**」「**系统与运维**」三大页签对称双栏布局，遥控器焦点移上即刻切换，返回键先回顶栏，告别单屏多排纵深翻找。 |
+| **🎨 9 大美学主题 + 原生 DSP 音效** | 内置「修仙玉简」「tvOS 极简」「大唐鎏金」「赛博霓虹」「黑神话·暗金」「极客终端」「江南宣纸」「主机奖杯」「🧱 方块世界」，支持纯代码 44.1kHz WAV 合成专属提示音与 Canvas 矢量/像素自绘图标。 |
+| **🎵 Sendspin 多房间同步音乐** | 支持 mDNS（`_sendspin._tcp.`）自动发现 Music Assistant 或手动指定 WebSocket 地址；**默认开启自动同步**（Kalman 时钟校准 + `AudioTimestamp` 硬件反馈 + 平滑重采样拼接），亦可切换手动固定补偿（0–5000 ms）。 |
+| **💿 黑胶转盘与 LRC 同步歌词** | 配套独立全屏电视播放页：提取封面环境光晕、转动黑胶唱片，支持内嵌歌词 / 磁盘缓存 / `lrclib.net` 在线时间轴同步歌词滚动，遥控器与媒体按键直达调控。 |
+| **📱 手机自适应单页 Web 控制台** | 浏览器访问 `http://电视IP:8791/{token}` 即开，保留顺畅单页长滚动与全 9 套主题换肤；针对窄屏手机重构 `minmax(0, 1fr)` / `3×2` 遥控面板 / 防遮挡 cURL 栏，彻底告别挤压溢出。 |
+| **🖼️ 多媒体横幅与语音播报** | 支持 6 大显示方位（顶/底/四角画中画）、三级动态着色、图文、静态快照轮询、MJPEG 实时视频流、排队队列、同 `id` 原地刷新与原生中文 TTS 语音播报。 |
+| **🛡️ 局域网离线常驻** | 零外部 CDN / 零云端依赖，开机自启 + 前台保活通知 + Wi-Fi 高性能低延迟锁，并支持 GitHub Release 一键检测 OTA 升级。 |
 
 ---
 
-## 快速开始
+## 🎨 9 大主题与专属提示音一览
 
-### 0. 准备前提环境（强烈推荐）
+支持全局切换，也支持单次推送通过 `"theme"` 参数临时覆盖（亦可通过 `"mc"`、`"cyber"`、`"ink"` 等别名传参）：
 
-在电视上安装并使用开源桌面 **Aerial**，确保开启其 ADB 保活守护机制，为玉简服务长期稳定常驻保驾护航。
+| 主题 ID | 显示名称 | 视觉风格与字体 | 横幅特征 | 专属提示音 |
+| --- | --- | --- | --- | --- |
+| `xiuxian` | 🔮 修仙玉简（默认） | 玄青羊脂灵玉 · 衬线体 | 20dp 圆角 · 青玉灵纹图标 | 内置空灵玉磬音 |
+| `default` | 🍎 tvOS 极简 | 苹果暗黑毛玻璃 · 无衬线 | 15dp 圆角 · 极简纯白/彩框 | 内置柔和三和弦 |
+| `palace` | 🏮 大唐鎏金 | 玄黑朱漆赤金 · 衬线体 | 20dp 圆角 · 鎏金卷轴图标 | 合成宫廷青铜编钟 |
+| `cyberpunk` | ⚡ 赛博霓虹 | 夜之城紫黑霓虹 · 等宽体 | 8dp 硬朗切角 · 霓虹六边形 | 合成科幻 HUD 脉冲扫频 |
+| `wukong` | 🐵 黑神话·暗金 | 焦墨石板暗金 · 衬线体 | 16dp 圆角 · 金箍环图标 | 合成古刹金钵低鸣 |
+| `matrix` | 💻 极客终端 | 纯黑 CRT 荧光绿 · 等宽体 | 8dp 切角 · 终端字符图标 | 合成复古双脉冲蜂鸣 |
+| `ink_light` | 🍵 江南宣纸 | 仿古米白宣纸 · 松烟浓墨 | 20dp 圆角 · 浅色日间横幅 | 合成空谷清竹水滴音 |
+| `gamer` | 🏆 主机奖杯 | PS5 深蓝白金 · 无衬线 | 22dp 胶囊圆角 · 黄金奖杯 | 合成解锁奖杯四连琶音 |
+| `minecraft` | 🧱 方块世界 | 深石板翡翠草绿 · 等宽体 | **0dp 纯直角方块** · 8×8 像素草方块 | 合成 8-bit 经验球三连音 |
 
-### 1. 下载 APK
-
-从仓库 [Releases](../../releases) 下载 `YuJian-release.apk`，或者自己构建（见文末）。
-
-### 2. 安装
-
-```bash
-adb connect 192.168.1.23:5555     # 电视需先开启「开发者选项 → USB 调试 / 网络调试」
-adb install -r YuJian-release.apk
-```
-
-### 3. 授予悬浮窗权限（必须）
-
-横幅靠悬浮窗实现，没有这个权限什么都不会显示：
-
-```bash
-adb shell appops set com.zqc.tvnotify SYSTEM_ALERT_WINDOW allow
-```
-
-也可以打开 App 点「测试通知」（或修仙主题下的「试传一简」），会直接跳到系统授权页。
-
-### 4. 拉起服务（电视重启后一般不需要，开机广播会自动拉起）
-
-```bash
-adb shell am startservice -n com.zqc.tvnotify/.NotifyService
-```
-
-### 5. 拿到调用地址
-
-打开「玉简」，界面上会显示：
-
-```
-Token：k7m2p9x4
-调用地址：http://192.168.1.23:8791/k7m2p9x4/notify
-```
-
-旁边的二维码扫一下即可导入到手机 / HA。
-
-### 6. 发一条试试
-
-```bash
-curl -X POST http://192.168.1.23:8791/k7m2p9x4/notify \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"洗衣机已完成","text":"晾晒提醒：衣服可以收了","duration":6}'
-# 返回 {"ok":true}
-```
+> 扩展主题的提示音由 [`ThemeSoundSynth.kt`](file:///c:/Users/zhou/Desktop/项目/玉简/app/src/main/java/com/zqc/tvnotify/ThemeSoundSynth.kt) 在首次使用时纯数学合成 44.1kHz 16-bit PCM WAV 并缓存在应用 `cacheDir`，零额外安装包体积开销。
 
 ---
 
-## 接口文档
+## 🎵 Sendspin 多房间同步音乐
 
-```
-POST http://<电视IP>:8791/<token>/notify
-Content-Type: application/json
-```
-
-### 请求参数
-
-| 字段 | 类型 | 必填 | 默认 | 取值范围 | 说明 |
-| --- | --- | --- | --- | --- | --- |
-| `title` | string | 否 | `""` | — | 标题，单行，超出省略；空串则不显示标题行 |
-| `text` | string | 否 | `""` | — | 正文，最多四行，超出省略；空串则不显示正文行 |
-| `duration` | number | 否 | `5` | `1..30`（越界自动 clamp） | 横幅停留秒数；`sticky: true` 时被忽略 |
-| `level` | string | 否 | `"info"` | `info` / `warn` / `error` | 分级着色；**未知值按 `info` 处理，不报错** |
-| `sticky` | boolean | 否 | `false` | `true` / `false` | 常驻：不按 `duration` 自动消失，直到 `/dismiss` 或 `maxDuration` 到点 |
-| `maxDuration` | number | 否 | `300` | `30..3600`（越界自动 clamp） | 仅 `sticky: true` 生效，单位秒；**强制兜底** |
-| `sound` | boolean | 否 | `true` | `true` / `false` | 本条是否播放提示音 |
-| `image` | string | 否 | `null` | HTTP/HTTPS URL | 静态图片/抓拍快照 URL，右侧 16:9 画卷展示 |
-| `image_base64` | string | 否 | `null` | Base64 编码 | 图片 Base64（支持 `data:image/...;base64,` 前缀） |
-| `video` | string | 否 | `null` | HTTP/HTTPS URL | 动态视频流 URL（**MJPEG 流**，纯软解不占硬件解码器） |
-| `position` | string | 否 | 电视默认 | `top` / `bottom` / `top-right` / `bottom-right` / `top-left` / `bottom-left` | 显形方位；`top-right` / `bottom-right` 为画中画小窗 |
-| `tts` | boolean/string | 否 | `null` | `true` 或自定义文本 | 原生 TTS 语音朗读；传 `true` 自动朗读标题与正文 |
-| `image_interval` | number | 否 | `0` | 毫秒数 (>=500) | 快照定时轮询刷新间隔（毫秒），打造低开销准视频流 |
-| `id` | string | 否 | `null` | — | 通知唯一标识；同 id 原地平滑无闪烁更新并重置倒计时 |
-| `queue` | boolean | 否 | `false` | `true` / `false` | 是否排队顺延：当前已有横幅时进入 FIFO 队列，不被抢占顶替 |
-
-`title` 与 `text` 去首尾空白后**同时为空**会被拒绝——但如果带了 `image` / `image_base64` / `video` 中任意一项，只推媒体、不带文案也是合法的。
-
-**媒体回退链**：`video` → `image` / `image_base64`。MJPEG 流拉取失败会自动降级到静态图，绝不黑屏。
-
-**请求体上限 4MB**：`image_base64` 是内联 base64，体积会膨胀约 1/3，所以单张图片控制在 ~3MB 以内；更大的图请改用 `image` URL。超限会明确返回 `413`（不是被截断后报 `invalid json`）。
-
-`level` 对应的视觉效果（只改颜色，不改布局）：
-
-| `level` | 铃铛图标 | 卡片描边 |
-| --- | --- | --- |
-| `info`（默认） | 白色 | `#33FFFFFF` |
-| `warn` | 琥珀 `#FFB020` | `#66FFB020` |
-| `error` | 红 `#FF453A` | `#66FF453A` |
-
-> 为什么 `sticky` 还要有 `maxDuration`：横幅窗口是 `FLAG_NOT_TOUCHABLE` + `FLAG_NOT_FOCUSABLE`，
-> 遥控器点不到也关不掉。如果推送方崩溃、没人再调 `/dismiss`，没有兜底的横幅会永久占屏，
-> 用户只能重启电视。所以 `maxDuration` 是安全阀，不是可选项。
-
-### 响应
-
-| HTTP 状态 | 场景 | Body |
-| --- | --- | --- |
-| `200` | 校验通过 | `{"ok":true}` |
-| `400` | 内容为空 | `{"ok":false,"error":"empty content"}` |
-| `400` | 请求体不是合法 JSON | `{"ok":false,"error":"invalid json"}` |
-| `413` | 请求体超过 4MB | `{"ok":false,"error":"body too large","limit":4194304}` |
-| `404` | token 不匹配或路径非法 | `{"ok":false,"error":"not found"}` |
-| `405` | 方法不是 POST | `{"ok":false,"error":"method not allowed"}` |
-
-所有响应均为 `Content-Type: application/json; charset=utf-8`。
-
-> 设计说明：token 错误刻意返回 `404` 而不是 `403`，让扫描器无法区分「地址不存在」和「token 不对」。
-
-### cURL 示例
-
-```bash
-# 最简
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"门铃","text":"有人按门铃"}'
-
-# 指定停留 15 秒
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"下载完成","text":"Ubuntu 24.04 ISO 已就绪","duration":15}'
-
-# 天气预警：红色 + 常驻 10 分钟 + 响提示音
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"暴雨红色预警","text":"预计未来 3 小时降水量将达 100 毫米以上，请避免外出并注意地下车库进水。","level":"error","sticky":true,"maxDuration":600}'
-
-# 半夜的备份完成通知：不响
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"备份完成","text":"NAS 快照已上传","sound":false}'
-
-# 门铃抓拍（静态快照图片 URL）
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"门口访客","text":"检测到有人按响门铃","image":"http://192.168.1.100:8123/api/camera_proxy/camera.doorbell","duration":10}'
-
-# 摄像头实时视频流（动态 MJPEG 流，右侧 16:9 实时刷新画卷）
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"实时灵镜","text":"正在调取庭院实时监控画面","video":"http://192.168.1.100:8123/api/camera_proxy_stream/camera.backyard","duration":15}'
-```
+1. **接入方式**：
+   - **自动发现**：默认通过 Android NSD 自动发现局域网内 `_sendspin._tcp.` 服务并连接至 Music Assistant。
+   - **手动指定**：在 Web 控制台 Sendspin 卡片或电视播放器「设置 -> 连接 Music Assistant」中填写 `ws://<host>:8927/sendspin`（留空则恢复自动发现）。
+2. **输出同步机制（默认开启自动同步）**：
+   - 采用 Sendspin 协议内置的 Kalman 滤波时钟同步，结合 Android `AudioTrack` / `AudioTimestamp` 硬件播放位置反馈，实时计算并利用平滑重采样 / 帧插拔调节消除多房间播音偏差；
+   - 如个别电视 HDMI/回音壁链路存在固定外部延迟，可在 Web 控制台将「同步模式」切换为 **手动固定补偿**（支持 `0 ~ 5000 ms` 整数毫秒，切换回自动同步时保留手动输入值供随时恢复）。
+3. **全屏播放器交互**：
+   - 当开始播放时可配置「播放时自动打开电视音乐页」，亦可随时从主页「总览与互联」快捷卡片或 Web 控制台远程唤起 [`SendspinActivity`](file:///c:/Users/zhou/Desktop/项目/玉简/app/src/main/java/com/zqc/tvnotify/SendspinActivity.kt)。
+   - 支持遥控器方向键切换焦点（上一首 / 播放暂停 / 下一首 / 进度条快进退 / 音量弹窗 / 连接与自动弹出设置），并响应电视遥控器物理媒体键（Play / Pause / Play-Pause / Next / Previous / Stop）。
 
 ---
 
-## 接口：POST /{token}/dismiss
+## 📱 手机端 Web 控制台与二维码互联
 
-关闭当前正在显示的横幅（无论它是否 `sticky`）。**幂等**：没有横幅时也返回 `200`。
-
-```bash
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/dismiss"
-```
-
-```json
-{"ok":true,"dismissed":true}
-```
-
-| HTTP 状态 | 场景 | Body |
-| --- | --- | --- |
-| `200` | 当前有横幅，已开始退场 | `{"ok":true,"dismissed":true}` |
-| `200` | 当前没有横幅 | `{"ok":true,"dismissed":false}` |
-| `404` | token 不匹配或路径非法 | `{"ok":false,"error":"not found"}` |
-| `405` | 方法不是 POST | `{"ok":false,"error":"method not allowed"}` |
-
-> 幂等是刻意设计：HA 自动化可能重试、或者横幅已被 `maxDuration` 自动收走，
-> 这两种情况都返回 `200`，调用方不必为此写重试/容错分支。
+在电视端主页首页打开**「总览与互联」**：
+1. 扫码切换 **「Web 控制台（推荐手机操作）」**：手机浏览器直接打开 `http://<电视IP>:8791/{token}`，即可在单页内完成发信调试、位置/静音/9 主题切换、Sendspin 音乐与同步模式调节、历史消息重演以及实时生成 cURL 命令。
+2. 扫码切换 **「接口接入二维码」**：直接复制接入地址 `http://<电视IP>:8791/{token}/notify` 给 Home Assistant 或其他自动化脚本使用。
 
 ---
 
-## 接口：GET /health
+## 📡 HTTP API 接口文档（默认端口：`8791`）
 
-健康探活，**不需要 token**（Home Assistant 的 availability 探针要在拿到地址前就能用）。
+### 1. 发送悬浮通知：`POST /{token}/notify`
 
 ```bash
-curl "http://192.168.1.23:8791/health"
-```
-
-```json
-{"ok":true,"version":"1.3.0","uptime":3621,"port":8791,"banner":"showing","muted":false,"position":"top"}
-```
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `ok` | boolean | 恒为 `true`（能返回就说明服务活着） |
-| `version` | string | App 版本，当前 `1.3.0` |
-| `uptime` | number | 服务启动至今的秒数（`SystemClock.elapsedRealtime` 计算，不受系统对时跳变影响） |
-| `port` | number | 监听端口，固定 `8791` |
-| `banner` | string | `showing` 表示横幅正在显示，`idle` 表示没有横幅 |
-| `muted` | boolean | 是否处于「闭关免扰（全局静音）」模式 |
-| `position` | string | 当前电视端配置的默认横幅显形方位 |
-
-非 `GET` 返回 `405`；路径不匹配（含多段路径）仍走原有 `404` 兜底。
-
-HA 里可以这样用：
-
-```yaml
-binary_sensor:
-  - platform: rest
-    name: 玉简在线
-    resource: "http://192.168.1.23:8791/health"
-    value_template: "{{ value_json.ok }}"
-    scan_interval: 60
-```
-
----
-
-## 📱 手机端 Web 控制台与管理接口
-
-### 1. 单页 Web 控制台：`GET /{token}`
-直接在手机浏览器或扫电视右侧二维码打开：
-```
-http://<电视IP>:8791/<token>
-```
-- **纯内联零依赖**：零外部 CDN 请求，局域网离线秒开。
-- **直观传音**：在手机上直接输入标题、正文、选择方位（顶部/底部/画中画）、勾选 TTS 语音播报或快照轮询，一键发送到电视。
-- **一键消散**：随时在手机端消散电视上停留的常驻横幅。
-- **简录回看**：实时查看电视端最近 20 条传音简录，支持一键重发。
-- **阵法调控**：一键切换闭关免扰（静音模式）与更改电视默认显形方位。
-- **示例生成**：自动生成当前参数的 `cURL` 命令，方便复制到自动化脚本。
-
-### 2. 传音简录：`GET /{token}/history`
-获取最近 20 条通知的历史记录数组：
-```bash
-curl "http://192.168.1.23:8791/k7m2p9x4/history"
-```
-```json
-[
-  {
-    "id": "1730419200000",
-    "timestamp": 1730419200000,
-    "title": "洗衣机已完成",
-    "text": "晾晒提醒：衣服可以收了",
+curl -X POST "http://192.168.1.100:8791/<你的Token>/notify" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "💎 已解锁成就：洗衣完成",
+    "text": "阳台滚筒洗衣机已完成烘干流程，请及时晾晒。",
     "level": "info",
-    "position": "top",
-    "has_media": false,
-    "sticky": false,
-    "tts": "true"
-  }
-]
+    "position": "top-right",
+    "theme": "minecraft",
+    "duration": 8,
+    "tts": true
+  }'
 ```
 
-### 3. 阵法配置：`POST /{token}/config`
-动态更改闭关免扰（静音）开关或默认方位：
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+| --- | --- | :---: | --- | --- |
+| `title` | string | 否 | 主题默认标题 | 横幅主标题（`title`/`text`/`image`/`image_base64`/`video` 至少一项非空） |
+| `text` | string | 否 | `""` | 横幅正文内容 |
+| `level` | string | 否 | `"info"` | `info` / `warn` / `error` |
+| `duration` | int | 否 | `5` | 停留秒数（限制在 `1 ~ 30`） |
+| `sticky` | boolean | 否 | `false` | 是否常驻直至下次替换、达到 `maxDuration` 或调用 `/dismiss` |
+| `maxDuration` | int | 否 | `300` | 常驻模式下兜底自动关闭最大秒数（默认 300 秒） |
+| `position` | string | 否 | 跟随全局 | `top`、`bottom`、`top-left`、`top-right`、`bottom-left`、`bottom-right` |
+| `theme` | string | 否 | 跟随全局 | 单次主题覆盖：`xiuxian`、`default`、`palace`、`cyberpunk`、`wukong`、`matrix`、`ink_light`、`gamer`、`minecraft`（兼容常用别名） |
+| `sound` | boolean | 否 | `true` | 是否播放主题提示音 |
+| `tts` | boolean / string | 否 | `false` | `true` 播报横幅标题与正文，或传入自定义播报文本 |
+| `queue` | boolean | 否 | `false` | `true` 排队依次展示；`false` 立即接管替换（相同 `id` 原地刷新除外） |
+| `id` | string | 否 | 自动时间戳 | 同一 `id` 在屏幕展示中触发无闪烁原地更新（倒计时、进度、摄像头状态） |
+| `image` / `image_base64` | string | 否 | 空 | 右侧展示大图（HTTP URL 或 Base64） |
+| `image_interval` | int | 否 | `0` | 定时轮询 `image` 快照刷新间隔（`1~10` 按秒计，`>10` 按毫秒计） |
+| `video` | string | 否 | 空 | MJPEG 视频流地址（如门铃实时画面或内置 `/stream`） |
+
+### 2. 关闭当前横幅：`POST /{token}/dismiss`
+
 ```bash
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/config" \
-  -H 'Content-Type: application/json' \
-  -d '{"muted": true, "position": "top-right"}'
+curl -X POST "http://192.168.1.100:8791/<你的Token>/dismiss"
 ```
+
+### 3. 远程调控电视默认配置：`POST /{token}/config`
+
+```bash
+curl -X POST "http://192.168.1.100:8791/<你的Token>/config" \
+  -H "Content-Type: application/json" \
+  -d '{"theme": "minecraft", "position": "top-right", "muted": false}'
+```
+
+### 4. 获取最近通知历史：`GET /{token}/history`
+
+返回最近 `20` 条推送记录 JSON 数组（供 Web 控制台与外部排查联动）。
+
+### 5. Sendspin 状态查询与远程控制：`GET / POST /{token}/sendspin`
+
+- **`GET /{token}/sendspin`**：返回连接与播放状态（`state`、`connected`、`playing`、`server`、`server_url`、`client_name`、`title`、`artist`、`album`、`progress_ms`、`duration_ms`、`volume`、`muted`、`sync_mode`、`automatic_sync`、`manual_output_delay_ms`、`output_delay_ms`、`clock_ready`、`clock_uncertainty_ms`、`sync_state`、`position_source`、`sync_error_ms`、`resync_count`、`underrun_count` 等）。
+- **`POST /{token}/sendspin`**：按 `action` 分发操作：
+  - **配置修改（`action: "config"`）**：支持 `enabled`（boolean）、`auto_popup`（boolean）、`server_url`（string）、`client_name`（string）、`automatic_sync`（boolean）与 `output_delay_ms`（0–5000 整数毫秒）。
+  - **界面控制**：`{"action": "open_ui"}` 打开电视音乐页、`{"action": "close_ui"}` 关闭电视音乐页。
+  - **播控指令（`action: "command"` 或省略）**：传入 `command`（如 `play_pause`、`next`、`previous`、`volume_up`、`volume_down`、`mute`、或带 `volume` / `muted` / `position_ms`）。
+
+### 6. 服务健康探针与测试流：`GET /health`、`GET /{token}/stream`
+
 ```json
-{"ok":true,"muted":true,"position":"top-right"}
+{
+  "ok": true,
+  "version": "1.9.0",
+  "uptime": 3600,
+  "port": 8791,
+  "banner": "idle",
+  "muted": false,
+  "position": "top",
+  "theme": "xiuxian"
+}
 ```
 
 ---
 
-## 提示音
+## 🏠 Home Assistant 接入示例
 
-- 横幅**入场时播放** `app/src/main/res/raw/chord.mp3`，默认开启。
-- 走 `AudioManager.STREAM_MUSIC` 通道：电视上 `STREAM_NOTIFICATION` 经常被系统静音，用媒体通道才能真的响。
-- 单条静音：请求体加 `"sound": false`。想全部静音就在推送模板里固定加上这个字段（本项目不读系统音量、也不申请 `MODIFY_AUDIO_SETTINGS`）。
-- 提示音实例全程只创建一次，播完自动停；抢占替换时先把播放位置归零再播，不会叠出两路声音。
-- 音频设备被其他前台 App 独占时只记日志，不会崩、也不影响横幅显示。
-
----
-
-## mDNS 发现
-
-> ⚠️ **TV 端只负责广播，不做消费。** Home Assistant 侧必须有集成消费 zeroconf / mDNS 事件（例如
-> `zeroconf` 集成、或某个自定义集成监听 `_tvnotify._tcp` 的 `zeroconf_service_added` 事件）
-> 才能真正「自动发现」这台电视。只装本 App、不配 HA 的发现逻辑，什么都不会自动出现。
-
-| 项目 | 值 |
-| --- | --- |
-| 服务类型 | `_tvnotify._tcp`（完整：`_tvnotify._tcp.local`） |
-| 端口 | `8791` |
-| 实例名 | `YuJian-<token 后 4 位>`，例：`YuJian-p9x4` |
-| TXT `version` | `1.1.0` |
-| TXT `path` | `/notify`（完整的调用路径是 `/{token}/notify`） |
-| TXT `token` | 完整 token，便于 HA 自动拼出调用地址 |
-| TXT `model` | `Build.MODEL`，多台电视时人眼区分用 |
-
-```bash
-# 在局域网内验证广播是否存在（需要 avahi-utils）
-avahi-browse -rt _tvnotify._tcp
-```
-
-关于 token 明文广播的取舍：HA 要靠 TXT 里的 `token` 自动填配置，否则「发现」之后还要用户手抄一次，
-发现就没有意义了。这与 App 界面直接把带 token 的完整地址做成二维码属于同一层信任模型——
-**前提是局域网可信**。如果你的网络里有不可信设备，请不要依赖自动发现，改用固定的地址+token。
-
-Android 6.0 相关：组播需要 `MulticastLock` + `CHANGE_WIFI_MULTICAST_STATE` 权限，Manifest 里已声明，
-**不要因为「看起来冗余」而删掉**。广播端口被占用、或者没有可用网络时只记日志（`TVNotifyMdns` tag），
-HTTP 服务照常工作。
-
----
-
-## Home Assistant 接入
-
-推荐用官方集成 **[玉简 for Home Assistant](https://github.com/JochenZhou/ha-yujian)**（HACS 可装）：电视端广播 `_tvnotify._tcp.local.`，TXT 里带 token，HA 起来后**自动发现电视、自动建好配置项**，不需要手抄地址或扫码。
-
-[![一键添加到 HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JochenZhou&repository=ha-yujian&category=integration)
-[![打开 Home Assistant 添加集成](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=tvnotify)
-
-**一键安装**：点上面第一个徽章 → 浏览器跳到你的 HA 实例 → 确认仓库地址 → **ADD** → HACS 里搜索 **玉简** → 下载 → **重启 HA**。
-
-点第二个徽章可直接跳到「添加集成」配置页。
-
-装好后电视会成为一个通知实体（形如 `notify.tvnotify_tyeq`），自动化里这样用：
+在 Home Assistant `configuration.yaml` 中添加 `rest_command`：
 
 ```yaml
-automation:
-  - alias: "洗衣机完成 → 电视横幅"
-    trigger:
-      - platform: state
-        entity_id: sensor.washer_status
-        to: "finished"
-    action:
-      - action: notify.send_message
-        target:
-          entity_id: notify.tvnotify_tyeq
-        data:
-          title: 洗衣机已完成
-          message: 晾晒提醒：衣服可以收了
-```
-
-集成还带一个便捷服务 `yujian.notify`，可以带附加参数（`duration` / `level` / `sticky` / `sound`），这些参数在自动化编辑器里是下拉框、滑块和开关，可直接点选。集成在电视端服务被系统杀掉时**自动经 ADB 拉起并重试**。细节见[集成仓库 README](https://github.com/JochenZhou/ha-yujian)。
-
-### 不用集成时：直接用 HTTP
-
-任何能发 HTTP POST 的系统都能推：
-
-```bash
-curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"洗衣机已完成","text":"晾晒提醒：衣服可以收了","duration":6}'
-```
-
-### 只用 HA 内置能力（`notify.rest` 平台）
-
-不装集成、也不写代码时，可以让 HA 用内置的 `notify.rest` 平台直接 POST：
-
-```yaml
-notify:
-  - name: tv_notify
-    platform: rest
-    resource: "http://192.168.1.23:8791/k7m2p9x4/notify"
-    method: POST_JSON
-    title_param_name: title
-    message_param_name: text
-    data:
-      duration: 6
-    verify_ssl: false
-```
-
-> `data:` 里的键会原样拼进 JSON body，所以 `duration` 直接生效。
-
-### 关键点：先确保服务活着
-
-电视的省电策略可能已经把服务干掉，直接发大概率超时。集成已经处理了这一点；用 `notify.rest` 时需要在自动化里先通过 `androidtv.adb_command` 拉起服务，**delay 1 秒**等服务绑定端口，再发通知：
-
-```yaml
-automation:
-  - alias: "洗衣机完成 → 电视横幅"
-    trigger:
-      - platform: state
-        entity_id: sensor.washer_status
-        to: "finished"
-    action:
-      # 1. 先确保服务活着（幂等，重复调用安全）
-      - action: androidtv.adb_command
-        target:
-          entity_id: media_player.living_room_tv
-        data:
-          command: "am startservice -n com.zqc.tvnotify/.NotifyService"
-      # 2. 等服务绑定 8791 端口
-      - delay: "00:00:01"
-      # 3. 再推送横幅
-      - action: notify.tv_notify
-        data:
-          title: 洗衣机已完成
-          message: 晾晒提醒：衣服可以收了
-```
-
-前提：HA 已配置 [Android TV 集成](https://www.home-assistant.io/integrations/androidtv/)（需要 ADB 连接），并且电视的 ADB 授权没有被清掉。
-
-### Shell 版（不用 Android TV 集成时）
-
-```yaml
-shell_command:
-  tv_wake_notify: >-
-    adb -s 192.168.1.23:5555 shell am startservice -n com.zqc.tvnotify/.NotifyService &&
-    sleep 1 &&
-    curl -s -X POST "http://192.168.1.23:8791/k7m2p9x4/notify"
-    -H 'Content-Type: application/json'
-    -d '{"title":"{{ title }}","text":"{{ message }}"}'
+rest_command:
+  tv_notify:
+    url: "http://192.168.1.100:8791/<你的Token>/notify"
+    method: POST
+    headers:
+      Content-Type: application/json
+    payload: >-
+      {
+        "title": "{{ title | default('家庭提醒') }}",
+        "text": "{{ text | default('') }}",
+        "level": "{{ level | default('info') }}",
+        "position": "{{ position | default('') }}",
+        "theme": "{{ theme | default('') }}",
+        "duration": {{ duration | default(6) }},
+        "tts": {{ tts | default(false) | tojson }},
+        "image": "{{ image | default('') }}"
+      }
 ```
 
 ---
 
-## 自建 / 二次开发
+## 🔧 安装部署与保活建议
 
-### 环境
-
-- JDK 17
-- Gradle 8.7（AGP 8.5.2）
-- Android SDK Platform 34（`compileSdk 34`，`minSdk 23`，`targetSdk 34`）
-
-### 构建
+1. 前往 [Releases](../../releases) 下载最新 `YuJian-release.apk` 并安装至 Android TV / 电视盒子（最低兼容 Android 6.0 / API 23）。
+2. 启动后依据电视弹窗授予 **「显示在其他应用上层（SYSTEM_ALERT_WINDOW）」** 悬浮窗权限。
+3. **后台常驻保活建议（部分国产电视系统杀后台较严）**：
+   - 将玉简加入系统自启动白名单与电池无限制名单；
+   - 如配合第三方桌面（如 Aerial）或在电脑通过 ADB 授权保活，可执行：
 
 ```bash
-cp local.properties.example local.properties   # 改成自己的 sdk.dir
-gradle assembleRelease
-# 产物：app/build/outputs/apk/release/app-release.apk
+adb shell appops set com.zqc.tvnotify RUN_ANY_IN_BACKGROUND allow
+adb shell dumpsys deviceidle whitelist +com.zqc.tvnotify
 ```
-
-仓库**不含** `gradle/wrapper/gradle-wrapper.jar`（二进制不入库），因此请用本机 `gradle` 命令或 CI 里的 `gradle/actions/setup-gradle`，不要用 `./gradlew`。
-
-### 签名三级降级
-
-`app/build.gradle.kts` 按以下顺序找签名材料，全都没有时 Release 直接回退 debug 签名，保证**零配置也能出包**：
-
-1. 环境变量：`KEYSTORE_FILE` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`
-2. 本地文件：`local/release.keystore` + `local/keystore.properties`
-3. 回退：`signingConfigs.getByName("debug")`
-
-`local/keystore.properties` 格式：
-
-```properties
-storeFile=local/release.keystore
-storePassword=你的密码
-keyAlias=tvnotify
-keyPassword=你的密码
-```
-
-### 关于 R8
-
-Release 打开了 `isMinifyEnabled` + `isShrinkResources`。`proguard-rules.pro` 中已 keep `fi.iki.elonen.**`（含 `$*` 内部类）和 `com.google.zxing.**`，**不要删**——NanoHTTPD 的内部类与 ZXing 的枚举一旦被混淆/裁剪，运行时会直接 `NoClassDefFoundError`。
 
 ---
 
-## FAQ
+## 📂 项目目录结构
 
-### 横幅不出现？
-
-按顺序排查：
-
-1. **悬浮窗权限**：`adb shell appops get com.zqc.tvnotify SYSTEM_ALERT_WINDOW`，必须是 `allow`。国产 ROM 有时需要手动在设置里点一遍。
-2. **服务是否在跑**：`adb shell dumpsys activity services com.zqc.tvnotify | grep NotifyService`
-3. **端口是否监听**：`adb shell netstat -an | grep 8791`（或 `curl -v` 直接看是否 connection refused）
-4. **接口返回什么**：`curl -i`，看是 404（token 错）、405（方法错）还是 400（内容空）。
-
-### 粘性横幅怎么关掉？
-
-`sticky: true` 的横幅不按 `duration` 自动消失，两种关闭方式：
-
-1. **主动关**：`curl -X POST "http://<电视IP>:8791/<token>/dismiss"`（幂等，重复调用不会报错）；
-2. **等兜底**：`maxDuration` 到点（默认 `300` 秒，可设 `30..3600`）自动淡出。
-
-横幅窗口是 `NOT_TOUCHABLE` / `NOT_FOCUSABLE`，遥控器点不到它——这是刻意设计，避免抢走播放中 App 的焦点，
-所以关闭只能走接口或等超时。**不要**把 `maxDuration` 设得过大，否则推送方崩溃时电视会被一直占屏。
-
-### 后台被杀 / 一段时间后就没反应？
-
-Android 6.0 电视 + 小米等国产 ROM 省电策略是主因，普通前台服务虽然能提升优先级，但面对严苛的后台清理机制仍可能被休眠或强杀。常见处理与保活机制：
-
-1. **借助开源桌面 Aerial 的 ADB 保活（强烈推荐）**：
-   在电视端搭配使用开源桌面 **Aerial**，得益于 Aerial 桌面强大的 **ADB 保活机制与守护能力**，可以在后台被系统清理时自动、快速地重新拉起玉简的 `NotifyService` 服务，彻底解决低内存电视常驻服务被杀痛点，实现稳定可靠的通知弹出；
-2. **在 Home Assistant 自动化中保留拉起**：在 HA 自动化推送前执行 `am startservice`（服务启动幂等，重复调用无副作用）；
-3. **定时心跳探活**：接一个定时 ping 的自动化探活（通过 `GET /health` 接口无打扰探活，若离线则自动执行 ADB 命令拉起）。
-
-### ADB 强制拉起服务
-
-```bash
-adb shell am startservice -n com.zqc.tvnotify/.NotifyService
-# 若返回 "Not allowed to start service Intent"，说明是系统后台限制：
-adb shell am start-foreground-service -n com.zqc.tvnotify/.NotifyService
-# 查看服务日志
-adb logcat -s TVNotifyService TVNotifyHttp TVNotifyBanner
+```text
+玉简/
+├── .github/workflows/build.yml        # GitHub Actions 自动化单测、Lint 与 Release 打包
+├── third_party/sendspin-jvm/          # 内置 Kotlin Sendspin 协议模块 (:sendspin-protocol)
+└── app/
+    ├── build.gradle.kts               # minSdk 23, targetSdk 34, Java 17
+    └── src/
+        ├── main/
+        │   ├── AndroidManifest.xml
+        │   ├── assets/licenses/       # 第三方开源许可声明
+        │   ├── res/                   # 图标、chord/chord_xiuxian 默认音频与采样图
+        │   └── java/com/zqc/tvnotify/
+        │       ├── MainActivity.kt            # 顶部 3 页签焦点即切 TV 主界面与双模式二维码
+        │       ├── Theme.kt                   # 9 大主题枚举、配色/字体/圆角/双语文案系统
+        │       ├── ThemeSoundSynth.kt         # 7 款扩展主题纯代码 44.1kHz PCM WAV 声学合成器
+        │       ├── BannerController.kt        # WindowManager 悬浮窗、排队/UPSERT 与矢量/方块图标
+        │       ├── WebConsoleHtml.kt          # 手机自适应单页 Web 控制台与 9 主题实时同步
+        │       ├── NotifyService.kt           # 常驻前台服务、开机自启与 HTTP/mDNS 托管
+        │       ├── NotifyHttpServer.kt        # NanoHTTPD REST 接口 (/notify, /sendspin, /config...)
+        │       ├── NotifyHistory.kt           # 最近 20 条通知持久化历史
+        │       ├── Prefs.kt                   # Token、静音、主题、方位及 Sendspin 配置持久化
+        │       ├── SendspinActivity.kt        # 全屏电视音乐播放页（封面光晕/歌词/媒体键）
+        │       ├── SendspinPlayerViews.kt     # 自绘黑胶唱片转盘、歌词滚动视图与焦点控件
+        │       ├── SendspinRuntime.kt         # Sendspin 协议会话、时钟同步与播放状态管理
+        │       ├── SendspinPcmPump.kt         # 实时音频重采样与平滑同步输出泵
+        │       ├── AndroidAudioPlayer.kt      # AudioTrack 硬件时间戳位置采样与播放封装
+        │       ├── AndroidSendspinNsdBrowser.kt # 局域网 _sendspin._tcp mDNS 服务发现
+        │       ├── LyricsFetcher.kt           # LRC 解析器、磁盘缓存与 lrclib.net 异步歌词检索
+        │       ├── TrackProgressTracker.kt    # 基于硬件时钟的播放进度插值跟踪
+        │       ├── SendspinPrefsStore.kt      # Sendspin 同步偏好与 URL 存储助手
+        │       ├── audio/                     # PCM 帧时间轴、线性重采样、拼接平滑与同步算法
+        │       ├── AppUpdater.kt              # GitHub Release OTA 检查与 FileProvider 安装
+        │       ├── MdnsAdvertiser.kt          # 通知服务局域网 mDNS 广播
+        │       └── SafeNetworkHelper.kt / NetUtils.kt / BootReceiver.kt / ApkFileProvider.kt
+        └── test/
+            ├── java/com/zqc/tvnotify/         # JUnit 单测（主题/Tab、LRC、Sendspin 同步算法与音泵）
+            └── js/sendspin-console.test.cjs   # Node.js 控制台前端交互与手机响应式校验测试
 ```
-
-### 忘了 / 想换 Token
-
-打开 App 点「重置 Token」。服务端每个请求都会重新读 SharedPreferences，**无需重启服务**，旧地址立即返回 404。重置后记得同步改 HA 的 `resource`。
-
-### 电视 IP 变了怎么办
-
-在路由器上给电视的 MAC 做静态 DHCP 绑定，否则每次重启都要改 HA 配置和二维码。
-
-### 怎么配置自己的签名 Secrets（GitHub Actions）
-
-到 `Settings → Secrets and variables → Actions` 添加：
-
-| Secret | 内容 |
-| --- | --- |
-| `KEYSTORE_BASE64` | `base64 -w0 local/release.keystore` 的输出 |
-| `KEYSTORE_PASSWORD` | keystore 密码 |
-| `KEY_ALIAS` | key 别名 |
-| `KEY_PASSWORD` | key 密码 |
-
-四个都配了才会走正式签名；配不全就自动回退 debug 签名，CI 不会中断。
-
-```bash
-# 生成 keystore
-keytool -genkeypair -v -keystore local/release.keystore \
-  -alias tvnotify -keyalg RSA -keysize 2048 -validity 10000
-# 转 base64
-base64 -w0 local/release.keystore     # macOS: base64 -i local/release.keystore
-```
-
-### 为什么不能用系统通知？
-
-- 电视（尤其 Aerial 桌面）根本没有通知栏，遥控器无法下拉；
-- `adb shell cmd notification post` 在 Android 6.0 上不存在；
-- 即便弹出，系统通知样式也无法做成 tvOS 那种居中卡片。
 
 ---
 
-## 目录结构
+## 🛠️ 本地构建与验证
 
-```
-YuJian/
-├── .github/workflows/build.yml        # CI：Gradle 8.7 + assembleRelease + Release 挂载
-├── app/
-│   ├── build.gradle.kts               # 签名三级降级、R8、minSdk 23
-│   ├── proguard-rules.pro             # keep NanoHTTPD / ZXing
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── java/com/zqc/tvnotify/
-│       │   ├── MainActivity.kt        # 设置界面（D-Pad 焦点、二维码）
-│       │   ├── NotifyService.kt       # 前台服务、HTTP 与 mDNS 生命周期
-│       │   ├── NotifyHttpServer.kt    # NanoHTTPD 路由：notify / dismiss / health
-│       │   ├── BannerController.kt    # 悬浮窗横幅、分级着色、动画、提示音
-│       │   ├── MdnsAdvertiser.kt      # 手写 DNS-SD 广播（_tvnotify._tcp）
-│       │   ├── BootReceiver.kt        # 开机自启
-│       │   ├── Prefs.kt               # token 持久化
-│       │   └── NetUtils.kt            # 本机 IPv4 探测
-│       └── res/
-│           ├── drawable/ic_launcher.xml
-│           ├── drawable/ic_stat_notify.xml
-│           ├── raw/chord.mp3          # 横幅入场提示音
-│           └── values/{strings,styles}.xml
-├── settings.gradle.kts
-├── build.gradle.kts
-├── gradle.properties
-├── local.properties.example
-└── .gitignore
+- **Android JVM 单元测试 & 构建**：
+
+```bash
+gradle :sendspin-protocol:test :app:testDebugUnitTest
+gradle assembleDebug lintDebug
 ```
 
-## 致谢
+- **Web 控制台前端 & 手机响应式测试**：
 
-特别感谢开源电视桌面项目 **Aerial**（以及相关 Android TV 开源生态）：
-- 在电视端（特别是 Android 6.0、低内存电视或激进省电策略的电视 ROM）中，后台常驻服务极易被系统机制回收。
-- **正是感谢开源桌面 Aerial 的 ADB 保活与守护机制，才能在服务被杀时稳定重新拉起玉简服务通知**，实现通知的持久在线与可靠送达，特此致谢！
+```bash
+node --test app/src/test/js/sendspin-console.test.cjs
+```
 
-## 许可
+---
 
-MIT
+## 📄 开源许可与致谢
+
+- Sendspin 同步音频协议模块基于 `third_party/sendspin-jvm` 集成（许可见 [`app/src/main/assets/licenses/sendspin-jvm-LICENSE.txt`](file:///c:/Users/zhou/Desktop/项目/玉简/app/src/main/assets/licenses/sendspin-jvm-LICENSE.txt)）。
+- 本项目使用 [NanoHTTPD](https://github.com/NanoHttpd/nanohttpd) 提供极轻量化嵌入式 HTTP 服务，使用 [ZXing](https://github.com/zxing/zxing) 生成配网二维码，歌词在线回源支持 [lrclib.net](https://lrclib.net)。
