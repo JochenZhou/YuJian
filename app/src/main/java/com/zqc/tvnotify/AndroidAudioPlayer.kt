@@ -12,6 +12,7 @@ import com.sendspin.protocol.AudioPlayer
 import com.sendspin.protocol.ClockSync
 import com.sendspin.protocol.OutputSyncSnapshot
 import com.sendspin.protocol.StreamFormat
+import com.zqc.tvnotify.audio.AudioTrackResetPolicy
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** API-23 PCM adapter. Protocol time and the shared network queue remain owned by sendspin-jvm. */
@@ -219,6 +220,7 @@ class AndroidAudioPlayer(
         override fun minimumBufferFrames() = minimumFrames
         override fun bufferCapacityFrames() = capacityFrames
         private val audioTimestamp = AudioTimestamp()
+        private val resetPolicy = AudioTrackResetPolicy()
         private val bufferDurationUs = capacityFrames.toLong() * 1_000_000L / sampleRate
         private var latencyMethod = try { AudioTrack::class.java.getMethod("getLatency") } catch (_: Exception) { null }
         private var measuredLatencyUs = 0L
@@ -231,12 +233,22 @@ class AndroidAudioPlayer(
             } else null
         } catch (_: Exception) { null }
 
-        override fun write(data: ByteArray, offset: Int, length: Int): Int =
-            track.write(data, offset, length, AudioTrack.WRITE_NON_BLOCKING)
+        override fun write(data: ByteArray, offset: Int, length: Int): Int {
+            val count = track.write(data, offset, length, AudioTrack.WRITE_NON_BLOCKING)
+            resetPolicy.onWrite(count)
+            return count
+        }
         override fun play() = track.play()
         override fun pauseAndFlush() {
+            if (!resetPolicy.shouldPauseAndFlush(track.playState == AudioTrack.PLAYSTATE_PLAYING)) return
+            // A clock-ready flush can reach a never-started, empty track. Pausing that track
+            // makes some Android 6 vendor implementations reject every subsequent write.
+            // For real queued output discard first, then return to STOPPED for fresh preroll.
             track.pause()
             track.flush()
+            track.stop()
+            track.flush()
+            resetPolicy.onFlushed()
         }
         override fun latencyUs(): Long {
             val nowUs = ClockSync.localMicros()
