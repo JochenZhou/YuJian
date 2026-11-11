@@ -143,7 +143,11 @@ curl -X POST "http://192.168.1.100:8791/<你的Token>/config" \
 
 ## 🏠 Home Assistant 接入示例
 
-在 Home Assistant `configuration.yaml` 中添加 `rest_command`：
+> **方式一（推荐）：使用官方配套集成 [ha-yujian (GitHub)](https://github.com/JochenZhou/ha-yujian)**
+>
+> 玉简服务启动后会在局域网自动广播 `_tvnotify._tcp.local.`（TXT 中携带 `token`、`version` 等信息）。安装 `ha-yujian` 后，Home Assistant「配置 → 设备与服务」即可自动发现电视端并一键绑定，免手动填写 IP 与 Token（详细说明见 [ha-yujian README](https://github.com/JochenZhou/ha-yujian)）。
+
+**方式二：直接使用 `rest_command`**，在 Home Assistant `configuration.yaml` 中添加：
 
 ```yaml
 rest_command:

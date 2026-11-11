@@ -710,7 +710,7 @@ function buildPayload() {
 
 function updateCurlDisplay() {
   const p = buildPayload();
-  const jsonStr = JSON.stringify(p);
+  const jsonStr = JSON.stringify(p).replace(/'/g, "'\\''");
   const cmd = "curl -X POST -H \"Content-Type: application/json\" -d '" + jsonStr + "' " + NOTIFY_URL;
   document.getElementById("curl-code").textContent = cmd;
 }

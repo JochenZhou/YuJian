@@ -44,6 +44,7 @@ class MainTabThemeTest {
         assertEquals(Theme.MINECRAFT, Theme.fromRaw("mc"))
         assertEquals(Theme.MINECRAFT, Theme.fromRaw("pixel"))
         assertEquals(Theme.MINECRAFT, Theme.fromRaw("block"))
+        assertEquals(Theme.MINECRAFT, Theme.fromRaw("minecraft_pixel"))
         assertEquals("minecraft", Theme.MINECRAFT.storageId)
         assertEquals(0f, Theme.MINECRAFT.bannerCornerRadiusDp)
         assertFalse(Theme.MINECRAFT.isXianxia)
