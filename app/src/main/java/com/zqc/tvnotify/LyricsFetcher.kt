@@ -9,6 +9,9 @@ import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 
 data class LrcLine(val timeMs: Long, val text: String)
@@ -132,6 +135,11 @@ object LyricsFetcher {
     private const val MAX_DISK_CACHE_FILES = 100
     private const val USER_AGENT = "YuJian-TV/${BuildConfig.VERSION_NAME} (https://github.com/JochenZhou/YuJian)"
 
+    private val latestRequestId = AtomicLong(0L)
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "sendspin-lyrics").apply { isDaemon = true }
+    }
+
     fun fetchAsync(
         context: Context,
         title: String,
@@ -141,63 +149,100 @@ object LyricsFetcher {
         embeddedLyrics: String = "",
         onResult: (ParsedLyrics?) -> Unit
     ) {
+        val appContext = context.applicationContext
+        fetchWithCacheDirAsync(
+            cacheRootProvider = { File(appContext.cacheDir, "sendspin_lyrics") },
+            title = title,
+            artist = artist,
+            album = album,
+            durationMs = durationMs,
+            embeddedLyrics = embeddedLyrics,
+            onResult = onResult
+        )
+    }
+
+    internal fun fetchWithCacheDirAsync(
+        cacheRootProvider: () -> File,
+        title: String,
+        artist: String,
+        album: String,
+        durationMs: Long,
+        embeddedLyrics: String = "",
+        networkFetcher: (String, String, String, Long) -> String? = ::queryLrclib,
+        onResult: (ParsedLyrics?) -> Unit
+    ) {
         val cleanTitle = title.trim()
         val cleanArtist = artist.trim()
         if (cleanTitle.isEmpty()) {
+            latestRequestId.incrementAndGet()
             onResult(null)
             return
         }
 
-        // 1. 内嵌歌词优先
+        // 1. 内嵌歌词优先（纯内存解析，不触碰磁盘）
         if (embeddedLyrics.isNotBlank()) {
             val parsed = LrcParser.parse(embeddedLyrics, "embedded")
             if (parsed.lines.isNotEmpty()) {
+                latestRequestId.incrementAndGet()
                 onResult(parsed)
                 return
             }
         }
 
-        // 2. 本地磁盘缓存
+        val requestId = latestRequestId.incrementAndGet()
+        val cleanAlbum = album.trim()
         val durSec = (durationMs / 1000L).coerceAtLeast(0L)
-        val cacheDir = File(context.cacheDir, "sendspin_lyrics").apply { mkdirs() }
         val cacheKey = sha256Hex(
             "${cleanTitle.lowercase(Locale.ROOT)}|${cleanArtist.lowercase(Locale.ROOT)}|$durSec"
         )
-        val cacheFile = File(cacheDir, "$cacheKey.lrc")
-        if (cacheFile.exists()) {
+
+        // 2 & 3. 磁盘缓存读取与 lrclib.net 检索均在单线程守护线程池内串行执行
+        executor.execute {
+            if (requestId != latestRequestId.get()) return@execute
+
+            var cacheDir: File? = null
+            var cacheFile: File? = null
             try {
-                val cached = cacheFile.readText(Charsets.UTF_8)
-                val parsed = LrcParser.parse(cached, "disk_cache")
-                if (parsed.lines.isNotEmpty()) {
-                    onResult(parsed)
-                    return
+                cacheDir = cacheRootProvider().apply { mkdirs() }
+                cacheFile = File(cacheDir, "$cacheKey.lrc")
+                if (cacheFile.exists()) {
+                    val cached = cacheFile.readText(Charsets.UTF_8)
+                    val parsed = LrcParser.parse(cached, "disk_cache")
+                    if (parsed.lines.isNotEmpty()) {
+                        if (requestId == latestRequestId.get()) onResult(parsed)
+                        return@execute
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "读取本地歌词缓存失败", e)
             }
-        }
 
-        // 3. 异步网络检索 (lrclib.net)
-        Thread({
+            if (requestId != latestRequestId.get()) return@execute
+
             try {
-                val lyricsText = queryLrclib(cleanTitle, cleanArtist, album.trim(), durationMs)
+                val lyricsText = networkFetcher(cleanTitle, cleanArtist, cleanAlbum, durationMs)
                 if (!lyricsText.isNullOrBlank()) {
-                    try {
-                        cacheFile.writeText(lyricsText, Charsets.UTF_8)
-                        pruneCache(cacheDir)
-                    } catch (e: Exception) {
-                        Log.w(TAG, "写入歌词缓存失败", e)
+                    if (cacheFile != null && cacheDir != null) {
+                        try {
+                            cacheFile.writeText(lyricsText, Charsets.UTF_8)
+                            pruneCache(cacheDir)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "写入歌词缓存失败", e)
+                        }
                     }
-                    val parsed = LrcParser.parse(lyricsText, "lrclib")
-                    onResult(parsed)
-                } else {
+                    if (requestId == latestRequestId.get()) {
+                        onResult(LrcParser.parse(lyricsText, "lrclib"))
+                    }
+                } else if (requestId == latestRequestId.get()) {
                     onResult(null)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "检索歌词异常", e)
-                onResult(null)
+                if (requestId == latestRequestId.get()) {
+                    onResult(null)
+                }
             }
-        }, "sendspin-lyrics").start()
+        }
     }
 
     private fun queryLrclib(title: String, artist: String, album: String, durationMs: Long): String? {
