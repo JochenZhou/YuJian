@@ -387,7 +387,7 @@ class MainActivity : Activity() {
 
         // (e) 操作按钮第三排：符钥与系统（复制 / 重置 / 溯源关于 / 破境更新）
         val musicRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val musicButton = buildButton("♫ Sendspin 音乐") {
+        val musicButton = buildButton("Sendspin 音乐") {
             startActivity(Intent(this@MainActivity, SendspinActivity::class.java))
         }
         musicRow.addView(musicButton, weightedParams(0, gapDp = 8))
