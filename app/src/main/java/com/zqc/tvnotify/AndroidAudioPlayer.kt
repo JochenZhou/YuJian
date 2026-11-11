@@ -187,28 +187,33 @@ class AndroidAudioPlayer(
         val minBytes = AudioTrack.getMinBufferSize(format.sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
         check(minBytes > 0) { "AudioTrack rejected format: $minBytes" }
         val bufferBytes = minBytes * 2
-        // Xiaomi Android 6 does not consume the Builder(USAGE_MEDIA) track. Keep the proven legacy route.
-        @Suppress("DEPRECATION")
-        val output = AudioTrack(AudioManager.STREAM_MUSIC, format.sampleRate, channelMask,
-            AudioFormat.ENCODING_PCM_16BIT, bufferBytes, AudioTrack.MODE_STREAM)
-        if (output.state != AudioTrack.STATE_INITIALIZED) {
-            output.release()
-            error("AudioTrack initialization failed")
+        fun newNativeTrack(): AudioTrack {
+            // Xiaomi Android 6 does not consume Builder(USAGE_MEDIA) tracks.
+            @Suppress("DEPRECATION")
+            val output = AudioTrack(AudioManager.STREAM_MUSIC, format.sampleRate, channelMask,
+                AudioFormat.ENCODING_PCM_16BIT, bufferBytes, AudioTrack.MODE_STREAM)
+            if (output.state != AudioTrack.STATE_INITIALIZED) {
+                output.release()
+                error("AudioTrack initialization failed")
+            }
+            output.setVolume(volume)
+            track = output
+            return output
         }
-        track = output
-        output.setVolume(volume)
+        val output = newNativeTrack()
         pump = SendspinPcmPump(buffer, clock, format.sampleRate, format.channels,
-            TrackOutput(output, format.sampleRate, format.channels * 2, bufferBytes, minBytes))
+            TrackOutput(output, format.sampleRate, format.channels * 2, bufferBytes, minBytes, ::newNativeTrack))
         sync = OutputSyncSnapshot(state = if (clock.isReady) "buffering" else "waiting_clock")
         Log.i(TAG, "AudioTrack configured rate=${format.sampleRate} channels=${format.channels} bufferBytes=$bufferBytes")
     }
 
     private class TrackOutput(
-        private val track: AudioTrack,
+        private var track: AudioTrack,
         sampleRate: Int,
         frameBytes: Int,
         bufferBytes: Int,
         minimumBytes: Int,
+        private val recreateNativeTrack: () -> AudioTrack,
     ) : SendspinPcmPump.Output {
         private val requestedFrames = bufferBytes / frameBytes
         // getBufferSizeInFrames is public since API 23. Requested bytes are not proof of the
@@ -241,14 +246,19 @@ class AndroidAudioPlayer(
         override fun play() = track.play()
         override fun pauseAndFlush() {
             if (!resetPolicy.shouldPauseAndFlush(track.playState == AudioTrack.PLAYSTATE_PLAYING)) return
-            // A clock-ready flush can reach a never-started, empty track. Pausing that track
-            // makes some Android 6 vendor implementations reject every subsequent write.
-            // For real queued output discard first, then return to STOPPED for fresh preroll.
-            track.pause()
-            track.flush()
-            track.stop()
-            track.flush()
+            // Some Android 6 HALs defer flushing the native ring until its server runs. Reusing
+            // that stopped ring can report zero writable bytes while our new timeline is empty.
+            // Replace only the native track; preserve focus, protocol clock and pending network PCM.
+            val old = track
+            // Construct first so allocation failure leaves the old object valid for recovery.
+            val replacement = recreateNativeTrack()
+            try { old.pause() } catch (_: Exception) { }
+            old.release()
+            track = replacement
+            measuredLatencyUs = 0L
+            lastLatencyUs = Long.MIN_VALUE
             resetPolicy.onFlushed()
+            Log.i(TAG, "AudioTrack native queue replaced for timestamp re-prime")
         }
         override fun latencyUs(): Long {
             val nowUs = ClockSync.localMicros()
