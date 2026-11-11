@@ -44,7 +44,7 @@ import com.google.zxing.qrcode.QRCodeWriter
  * 2. 电视横屏双栏排版：每个页签内部均采用左右对称双栏卡片布局，在 1080p 电视大屏上一屏尽显；
  * 3. 遥控器友好交互：遥控器方向键（D-Pad）在顶部页签与各卡片按钮间平滑流转，
  *    锁定左右边界防误触越界，按返回键先回到顶部当前页签；
- * 4. 仙侠玉简美学浸润：支持「修仙玉简」「大唐鎏金」「赛博霓虹」等 8 大主题一键切换；
+ * 4. 仙侠玉简美学浸润：支持「修仙玉简」「大唐鎏金」「方块世界」等 9 大主题一键切换；
  * 5. 丰富调控：Sendspin 音乐直达、TTS 语音试诵、传音简录历史回看、默认显形方位切换、
  *    闭关免扰（静音）模式，以及双模式二维码极速互联。
  */
@@ -1340,7 +1340,10 @@ class MainActivity : Activity() {
         }.toTypedArray()
 
         AlertDialog.Builder(this)
-            .setTitle(if (theme.isXianxia) "选择法相主题（共 8 款 · 含专属提示音）" else "选择横幅与界面主题（共 8 款 · 含专属提示音）")
+            .setTitle(
+                if (theme.isXianxia) "选择法相主题（共 ${Theme.entries.size} 款 · 含专属提示音）"
+                else "选择横幅与界面主题（共 ${Theme.entries.size} 款 · 含专属提示音）"
+            )
             .setItems(labels) { _, which ->
                 val selected = allThemes[which]
                 applySelectedTheme(selected)

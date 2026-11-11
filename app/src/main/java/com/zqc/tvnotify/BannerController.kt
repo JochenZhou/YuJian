@@ -1000,7 +1000,7 @@ class BannerController(private val context: Context) {
         }
         container.background = buildBannerBackground(theme, request.level)
 
-        // 8 大主题专属法宝/徽章自绘图标
+        // 9 大主题专属法宝/徽章自绘图标
         val iconSize = dp(if (theme != Theme.DEFAULT) 36f else 30f)
         val iconParams = LinearLayout.LayoutParams(iconSize, iconSize)
         iconParams.gravity = Gravity.CENTER_VERTICAL
@@ -1029,7 +1029,13 @@ class BannerController(private val context: Context) {
             includeFontPadding = false
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(if (theme == Theme.CYBERPUNK || theme == Theme.MATRIX) 3f else 6f).toFloat()
+                cornerRadius = dp(
+                    when (theme) {
+                        Theme.MINECRAFT -> 0f
+                        Theme.CYBERPUNK, Theme.MATRIX -> 3f
+                        else -> 6f
+                    }
+                ).toFloat()
                 setColor(Color.argb(badgeFillAlpha, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
                 setStroke(dp(1f), Color.argb(badgeStrokeAlpha, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
             }
@@ -1830,7 +1836,7 @@ class BannerController(private val context: Context) {
     ).toInt()
 
     // ------------------------------------------------------------------
-    // 8 大主题专属自绘矢量图标组件
+    // 9 大主题专属自绘矢量图标组件
     // ------------------------------------------------------------------
 
     private class ThemeIconView(
@@ -1863,6 +1869,7 @@ class BannerController(private val context: Context) {
                 Theme.MATRIX -> drawMatrixTerminal(canvas, w, h)
                 Theme.INK_LIGHT -> drawInkSeal(canvas, w, h)
                 Theme.GAMER -> drawGamerTrophy(canvas, w, h)
+                Theme.MINECRAFT -> drawMinecraftBlock(canvas, w, h)
             }
         }
 
@@ -2105,6 +2112,72 @@ class BannerController(private val context: Context) {
             // 杯身中央白金星芒
             fillPaint.color = Color.WHITE
             canvas.drawCircle(cx, h * 0.34f, w * 0.065f, fillPaint)
+        }
+
+        /** 8. 方块世界：8×8 像素草方块 + 状态像素核 */
+        private fun drawMinecraftBlock(canvas: Canvas, w: Float, h: Float) {
+            val pad = w * 0.08f
+            val size = w - pad * 2f
+            val cell = size / 8f
+
+            val grassTop = Color.rgb(0x66, 0xE0, 0x52)
+            val grassMid = Color.rgb(0x55, 0xCC, 0x44)
+            val grassDark = Color.rgb(0x3B, 0x99, 0x30)
+            val dirtLight = Color.rgb(0x8F, 0x62, 0x3B)
+            val dirtMid = Color.rgb(0x70, 0x4A, 0x2A)
+            val dirtDark = Color.rgb(0x4F, 0x32, 0x1B)
+
+            val pixels = arrayOf(
+                intArrayOf(grassTop, grassTop, grassMid, grassTop, grassTop, grassMid, grassTop, grassMid),
+                intArrayOf(grassMid, grassTop, grassMid, grassMid, grassDark, grassMid, grassTop, grassMid),
+                intArrayOf(grassDark, grassMid, grassDark, dirtLight, grassDark, grassMid, grassDark, dirtMid),
+                intArrayOf(dirtMid, grassDark, dirtDark, dirtMid, dirtLight, dirtDark, grassDark, dirtLight),
+                intArrayOf(dirtLight, dirtMid, dirtLight, dirtDark, dirtMid, dirtLight, dirtMid, dirtDark),
+                intArrayOf(dirtDark, dirtLight, dirtMid, dirtMid, dirtDark, dirtLight, dirtMid, dirtLight),
+                intArrayOf(dirtMid, dirtDark, dirtLight, dirtMid, dirtLight, dirtDark, dirtMid, dirtDark),
+                intArrayOf(dirtDark, dirtMid, dirtDark, dirtLight, dirtDark, dirtMid, dirtDark, dirtDark)
+            )
+
+            fillPaint.isAntiAlias = false
+            try {
+                for (r in 0 until 8) {
+                    val top = pad + r * cell
+                    for (c in 0 until 8) {
+                        val left = pad + c * cell
+                        fillPaint.color = pixels[r][c]
+                        canvas.drawRect(left, top, left + cell + 0.5f, top + cell + 0.5f, fillPaint)
+                    }
+                }
+
+                // 右下角 3×3 像素状态框 + 通知等级像素核
+                fillPaint.color = Color.rgb(0x18, 0x20, 0x18)
+                canvas.drawRect(
+                    pad + cell * 5f,
+                    pad + cell * 5f,
+                    pad + cell * 8f,
+                    pad + cell * 8f,
+                    fillPaint
+                )
+                fillPaint.color = levelColor
+                canvas.drawRect(
+                    pad + cell * 5.6f,
+                    pad + cell * 5.6f,
+                    pad + cell * 7.4f,
+                    pad + cell * 7.4f,
+                    fillPaint
+                )
+
+                // 硬朗像素外框描边（直角无抗锯齿）
+                strokePaint.isAntiAlias = false
+                strokePaint.strokeJoin = Paint.Join.MITER
+                strokePaint.color = Color.rgb(0x22, 0x2A, 0x21)
+                strokePaint.strokeWidth = w * 0.045f
+                canvas.drawRect(pad, pad, pad + size, pad + size, strokePaint)
+            } finally {
+                fillPaint.isAntiAlias = true
+                strokePaint.isAntiAlias = true
+                strokePaint.strokeJoin = Paint.Join.ROUND
+            }
         }
     }
 }

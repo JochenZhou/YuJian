@@ -1,6 +1,7 @@
 package com.zqc.tvnotify
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,5 +35,25 @@ class MainTabThemeTest {
             assertTrue(theme.systemCardSubtitle.isNotBlank())
             assertTrue(theme.keepAliveCardTitle.isNotBlank())
         }
+    }
+
+    @Test
+    fun minecraftThemeParsesAliasesAndUsesBlockyBadgeCopy() {
+        assertEquals(9, Theme.entries.size)
+        assertEquals(Theme.MINECRAFT, Theme.fromRaw("minecraft"))
+        assertEquals(Theme.MINECRAFT, Theme.fromRaw("mc"))
+        assertEquals(Theme.MINECRAFT, Theme.fromRaw("pixel"))
+        assertEquals(Theme.MINECRAFT, Theme.fromRaw("block"))
+        assertEquals("minecraft", Theme.MINECRAFT.storageId)
+        assertEquals(0f, Theme.MINECRAFT.bannerCornerRadiusDp)
+        assertFalse(Theme.MINECRAFT.isXianxia)
+        assertFalse(Theme.MINECRAFT.isLightBanner)
+        assertEquals("[成就]", Theme.MINECRAFT.levelBadgeText(BannerLevel.INFO))
+        assertEquals("[苦力怕!]", Theme.MINECRAFT.levelBadgeText(BannerLevel.WARN))
+        assertEquals("[下界警报]", Theme.MINECRAFT.levelBadgeText(BannerLevel.ERROR))
+        assertTrue(Theme.MINECRAFT.appTitle.contains("CRAFT"))
+        assertTrue(Theme.MINECRAFT.testBannerText.isNotBlank())
+        assertTrue(Theme.MINECRAFT.controlCardSubtitle.contains("9"))
+        assertTrue(Theme.XIUXIAN.controlCardSubtitle.contains("9"))
     }
 }

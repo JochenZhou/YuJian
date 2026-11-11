@@ -10,7 +10,7 @@ enum class MainTab {
 }
 
 /**
- * 8 大主题定义：
+ * 9 大主题定义：
  * 1. [XIUXIAN]   ：🔮 修仙玉简（默认首选，青羊脂灵玉 + 仙家玉磬音）
  * 2. [DEFAULT]   ：🍎 tvOS 极简（苹果暗黑毛玻璃 + 柔和三和弦）
  * 3. [PALACE]    ：🏮 大唐鎏金（玄黑朱漆 + 赤金流光 + 宫廷青铜编钟）
@@ -19,6 +19,7 @@ enum class MainTab {
  * 6. [MATRIX]    ：💻 极客终端（纯黑 CRT + 荧光终端绿 + 复古双脉冲蜂鸣）
  * 7. [INK_LIGHT] ：🍵 江南宣纸（仿古宣纸米白横幅 + 松烟墨字 + 空谷清竹水滴音）
  * 8. [GAMER]     ：🏆 主机奖杯（PS5 深蓝流光 + 白金奖杯 + 解锁奖杯升调琶音）
+ * 9. [MINECRAFT] ：🧱 方块世界（草方块像素 + 直角方块 + 8-bit 经验球提示音）
  */
 enum class Theme(
     val storageId: String,
@@ -82,6 +83,13 @@ enum class Theme(
         shortName = "主机奖杯",
         fullName = "🏆 主机奖杯（白金流光 · 奖杯解锁升调琶音）",
         soundDesc = "解锁奖杯升调琶音"
+    ),
+    MINECRAFT(
+        storageId = "minecraft",
+        emoji = "🧱",
+        shortName = "方块世界",
+        fullName = "🧱 方块世界（草方块像素 · 8-bit 经验球音）",
+        soundDesc = "8-bit 经验球清脆提示音"
     );
 
     companion object {
@@ -104,6 +112,7 @@ enum class Theme(
                 "terminal", "hacker", "geek" -> MATRIX
                 "ink", "paper", "light", "xuan" -> INK_LIGHT
                 "ps5", "trophy", "game" -> GAMER
+                "mc", "pixel", "block", "minecraft_pixel" -> MINECRAFT
                 else -> null
             }
         }
@@ -134,6 +143,7 @@ enum class Theme(
             MATRIX -> "yujian@tv-node:~$"
             INK_LIGHT -> "玉简 · 江南尺素"
             GAMER -> "玉简 · 奖杯中枢"
+            MINECRAFT -> "YUJIAN // CRAFT_HUD"
             DEFAULT -> "玉简"
         }
 
@@ -146,6 +156,7 @@ enum class Theme(
             MATRIX -> "CRT TELEMETRY DAEMON · 局域网实时报文监控"
             INK_LIGHT -> "温润宣纸 · 尺素传情，清竹水滴入画"
             GAMER -> "TROPHY OVERLAY · 实时成就弹窗与家庭播报"
+            MINECRAFT -> "PIXEL OVERLAY · 像素方块大屏通知终端"
             DEFAULT -> "局域网通知横幅 · 电视端常驻服务"
         }
 
@@ -254,6 +265,7 @@ enum class Theme(
             MATRIX -> "SYS_NOTIFY"
             INK_LIGHT -> "尺素书函"
             GAMER -> "解锁新动态"
+            MINECRAFT -> "新物品入袋"
             DEFAULT -> "系统通知"
         }
 
@@ -266,6 +278,7 @@ enum class Theme(
             MATRIX -> "root@tv-node: 链路就绪"
             INK_LIGHT -> "江南竹韵 · 尺素传书"
             GAMER -> "🏆 已解锁奖杯：千里传音"
+            MINECRAFT -> "💎 已解锁成就：千里传音"
             DEFAULT -> "演示通知"
         }
 
@@ -278,6 +291,7 @@ enum class Theme(
             MATRIX -> "[200 OK] Telemetry stream bound on port 8989. Awaiting payload..."
             INK_LIGHT -> "清泉映竹，翰墨留香。温润宣纸横幅已在日间模式下从容铺展。"
             GAMER -> "达成白金级智能家居联动成就！所有局域网推送将以奖杯弹窗呈现。"
+            MINECRAFT -> "[经验球 +5] 方块世界像素横幅已就绪，随时接收红石与 Home Assistant 信号。"
             DEFAULT -> "这是一条来自玉简的测试横幅，Home Assistant 也可以这样推送。"
         }
 
@@ -314,8 +328,8 @@ enum class Theme(
         if (isXianxia) "阵法调控 · 法相方位" else "横幅偏好 · 显示与声音"
 
     val controlCardSubtitle: String get() =
-        if (isXianxia) "查阅最近 20 条传音简录，调控默认显形方位、闭关免扰与 8 大主题"
-        else "回看最近 20 条历史通知，切换横幅弹出位置、静音免扰与 8 款主题风格"
+        if (isXianxia) "查阅最近 20 条传音简录，调控默认显形方位、闭关免扰与 ${entries.size} 大主题"
+        else "回看最近 20 条历史通知，切换横幅弹出位置、静音免扰与 ${entries.size} 款主题风格"
 
     val controlCardHint: String get() =
         if (isXianxia) "当前法相：$fullName\n提示：短按主题按钮可列表选款，长按可直接循环切换下一法相。"
@@ -355,6 +369,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF040A06")
             INK_LIGHT -> Color.parseColor("#FF1A1815") // 徽墨宣砚深底，衬托主界面白字
             GAMER -> Color.parseColor("#FF080E1C")
+            MINECRAFT -> Color.parseColor("#FF121612")
         }
 
     val cardBg: Int
@@ -367,6 +382,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF08140C")
             INK_LIGHT -> Color.parseColor("#FF25221D")
             GAMER -> Color.parseColor("#FF101B35")
+            MINECRAFT -> Color.parseColor("#FF1D221D")
         }
 
     val cardStroke: Int
@@ -379,6 +395,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF12381E")
             INK_LIGHT -> Color.parseColor("#FF3D372E")
             GAMER -> Color.parseColor("#FF1F3463")
+            MINECRAFT -> Color.parseColor("#FF3B4739")
         }
 
     val hintColor: Int
@@ -391,6 +408,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF62B582")
             INK_LIGHT -> Color.parseColor("#FFB5ADA0")
             GAMER -> Color.parseColor("#FF8FA6CC")
+            MINECRAFT -> Color.parseColor("#FFA0B39A")
         }
 
     val accentColor: Int
@@ -403,6 +421,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF00FF66")
             INK_LIGHT -> Color.parseColor("#FFD95338") // 朱砂印泥红
             GAMER -> Color.parseColor("#FF3D8BFF")
+            MINECRAFT -> Color.parseColor("#FF55CC44") // 经典草方块翡翠绿
         }
 
     val buttonBg: Int
@@ -415,6 +434,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF0D2114")
             INK_LIGHT -> Color.parseColor("#FF302C25")
             GAMER -> Color.parseColor("#FF17264A")
+            MINECRAFT -> Color.parseColor("#FF2A3229")
         }
 
     val buttonStroke: Int
@@ -427,6 +447,7 @@ enum class Theme(
             MATRIX -> Color.parseColor("#FF1B4F2B")
             INK_LIGHT -> Color.parseColor("#FF4A4338")
             GAMER -> Color.parseColor("#FF2B4682")
+            MINECRAFT -> Color.parseColor("#FF4D5C49")
         }
 
     // ------------------------------------------------------------------
@@ -443,6 +464,7 @@ enum class Theme(
             MATRIX -> Color.argb(0xF5, 0x05, 0x12, 0x09)    // CRT 磷光暗黑
             INK_LIGHT -> Color.argb(0xF8, 0xF7, 0xF3, 0xE8) // 仿古温润宣纸白
             GAMER -> Color.argb(0xF4, 0x10, 0x1E, 0x3C)     // PS5 流光深蓝
+            MINECRAFT -> Color.argb(0xF6, 0x23, 0x29, 0x23) // 方块岩石深底
         }
 
     val bannerBackgroundEnd: Int
@@ -455,6 +477,7 @@ enum class Theme(
             MATRIX -> Color.argb(0xFA, 0x02, 0x08, 0x04)
             INK_LIGHT -> Color.argb(0xFA, 0xEB, 0xE4, 0xD3)
             GAMER -> Color.argb(0xF8, 0x07, 0x0D, 0x1C)
+            MINECRAFT -> Color.argb(0xFA, 0x14, 0x18, 0x14)
         }
 
     val bannerTitle: Int
@@ -467,6 +490,7 @@ enum class Theme(
             MATRIX -> Color.argb(0xFF, 0x4D, 0xFF, 0x94)    // 荧光终端亮绿
             INK_LIGHT -> Color.argb(0xFF, 0x22, 0x1E, 0x1A) // 松烟浓墨黑
             GAMER -> Color.argb(0xFF, 0xF5, 0xF8, 0xFF)     // 白金亮白
+            MINECRAFT -> Color.WHITE                        // 方块亮白标题
         }
 
     val bannerBodyText: Int
@@ -479,19 +503,20 @@ enum class Theme(
             MATRIX -> Color.argb(0xFF, 0x00, 0xE6, 0x5C)
             INK_LIGHT -> Color.argb(0xFF, 0x45, 0x3F, 0x37) // 淡墨正文
             GAMER -> Color.argb(0xFF, 0xD0, 0xDE, 0xF7)
+            MINECRAFT -> Color.argb(0xFF, 0xD8, 0xE8, 0xD2) // 浅苔藓绿正文
         }
 
     val bannerTitleTypeface: Typeface
         get() = when (this) {
             XIUXIAN, PALACE, WUKONG, INK_LIGHT -> Typeface.SERIF
-            CYBERPUNK, MATRIX -> Typeface.MONOSPACE
+            CYBERPUNK, MATRIX, MINECRAFT -> Typeface.MONOSPACE
             DEFAULT, GAMER -> Typeface.DEFAULT_BOLD
         }
 
     val bannerBodyTypeface: Typeface
         get() = when (this) {
             XIUXIAN, PALACE, WUKONG, INK_LIGHT -> Typeface.SERIF
-            CYBERPUNK, MATRIX -> Typeface.MONOSPACE
+            CYBERPUNK, MATRIX, MINECRAFT -> Typeface.MONOSPACE
             DEFAULT, GAMER -> Typeface.SANS_SERIF
         }
 
@@ -504,6 +529,7 @@ enum class Theme(
             CYBERPUNK, MATRIX -> 8f // 赛博与终端采用硬朗切角风格
             WUKONG -> 16f
             GAMER -> 22f // 主机胶囊圆角风
+            MINECRAFT -> 0f // 方块世界纯直角像素面板
             DEFAULT -> 15f
         }
 
@@ -542,6 +568,11 @@ enum class Theme(
             BannerLevel.INFO -> "已解锁"
             BannerLevel.WARN -> "稀有成就"
             BannerLevel.ERROR -> "高难挑战"
+        }
+        MINECRAFT -> when (level) {
+            BannerLevel.INFO -> "[成就]"
+            BannerLevel.WARN -> "[苦力怕!]"
+            BannerLevel.ERROR -> "[下界警报]"
         }
         DEFAULT -> when (level) {
             BannerLevel.INFO -> "通知"
@@ -586,6 +617,11 @@ enum class Theme(
             BannerLevel.WARN -> Color.rgb(0x52, 0xB6, 0xFF) // 白金蓝光
             BannerLevel.ERROR -> Color.rgb(0xFF, 0x55, 0x66) // 传奇赤红
         }
+        MINECRAFT -> when (level) {
+            BannerLevel.INFO -> Color.rgb(0x55, 0xFF, 0x55) // 经验球翠绿
+            BannerLevel.WARN -> Color.rgb(0xFF, 0xAA, 0x00) // 金锭琥珀
+            BannerLevel.ERROR -> Color.rgb(0xFF, 0x55, 0x55) // 红石赤红
+        }
         DEFAULT -> when (level) {
             BannerLevel.INFO -> Color.WHITE
             BannerLevel.WARN -> Color.rgb(0xFF, 0xB0, 0x20)
@@ -598,7 +634,7 @@ enum class Theme(
         val alpha = when (this) {
             DEFAULT -> if (level == BannerLevel.INFO) 0x38 else 0x70
             INK_LIGHT -> 0x99
-            CYBERPUNK, MATRIX -> 0xD8
+            CYBERPUNK, MATRIX, MINECRAFT -> 0xD8
             else -> 0xBD
         }
         return Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))

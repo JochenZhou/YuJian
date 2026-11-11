@@ -11,13 +11,14 @@ import kotlin.math.sin
 /**
  * 纯代码 PCM/WAV 数字声学合成器（零外部音频资源体积、零第三方库依赖）。
  *
- * 为 6 款扩展主题实时合成 44.1kHz 16-bit 单声道标准 WAV 音效并缓存在 cacheDir：
+ * 为 7 款扩展主题实时合成 44.1kHz 16-bit 单声道标准 WAV 音效并缓存在 cacheDir：
  * - [Theme.PALACE]    ：大唐鎏金 · 宫廷青铜编钟（浑厚基频 + 非整倍金属泛音列 + 殿堂混响）
  * - [Theme.CYBERPUNK] ：赛博霓虹 · 科幻 HUD 电子脉冲扫频音（双频上扫 Chirp + 霓虹和弦）
  * - [Theme.WUKONG]    ：黑神话·暗金 · 古刹金钵低鸣（低沉禅钟 + 2.5Hz 自然拍频余韵）
  * - [Theme.MATRIX]    ：极客终端 · 复古 CRT 终端双脉冲蜂鸣（带限方波双连 Beep-Beep）
  * - [Theme.INK_LIGHT] ：江南宣纸 · 空谷清竹水滴音（清脆竹木叩击 + 水滴上滑泛音）
  * - [Theme.GAMER]     ：主机奖杯 · 解锁奖杯四连升调琶音（D 大调璀璨白金琶音）
+ * - [Theme.MINECRAFT] ：方块世界 · 8-bit 经验球跳跃三连音（芯片方波+三角波混响落音）
  */
 object ThemeSoundSynth {
 
@@ -42,6 +43,7 @@ object ThemeSoundSynth {
                 Theme.MATRIX -> synthMatrixTerminal()
                 Theme.INK_LIGHT -> synthInkBambooDrop()
                 Theme.GAMER -> synthGamerTrophy()
+                Theme.MINECRAFT -> synthMinecraftPixel()
                 else -> return null
             }
             val wavBytes = encodePcm16MonoWav(samples, SAMPLE_RATE)
@@ -300,6 +302,54 @@ object ThemeSoundSynth {
         applyReverb(buf, delayMs1 = 54, gain1 = 0.24f, delayMs2 = 108, gain2 = 0.14f)
         applyFadeOut(buf, fadeMs = 75)
         return normalize(buf, peak = 0.88f)
+    }
+
+    /**
+     * 7. 方块世界：8-bit 经验球（XP Orb）+ 音符盒跃迁三连音
+     * A5 (880Hz) -> C#6 (1108.73Hz) -> E6 (1318.51Hz) + 八度泛音落音，带有限奇次谐波呈芯片颗粒质感。
+     */
+    private fun synthMinecraftPixel(): FloatArray {
+        val durationSec = 0.62f
+        val total = (SAMPLE_RATE * durationSec).toInt()
+        val buf = FloatArray(total)
+
+        val notes = doubleArrayOf(880.0, 1108.73, 1318.51) // A5, C#6, E6
+        val starts = doubleArrayOf(0.00, 0.082, 0.170)
+        val decays = doubleArrayOf(24.0, 21.0, 9.2)
+        val weights = doubleArrayOf(0.46, 0.50, 0.58)
+
+        for (i in 0 until total) {
+            val t = i.toDouble() / SAMPLE_RATE
+            var v = 0.0
+
+            for (n in notes.indices) {
+                if (t >= starts[n]) {
+                    val dt = t - starts[n]
+                    val f = notes[n]
+                    val attack = (dt / 0.0025).coerceAtMost(1.0)
+                    val env = attack * exp(-dt * decays[n])
+                    val phase = 2.0 * PI * f * dt
+                    // 受限奇次谐波模拟 8-bit 脉冲芯片波形，避免高频混叠刺耳
+                    val chipWave = sin(phase) * 0.68 +
+                        sin(phase * 3.0) * 0.24 +
+                        sin(phase * 5.0) * 0.12
+                    v += chipWave * env * weights[n]
+                }
+            }
+
+            // 尾音叠加亮晶经验球八度余韵 (E7 = 2637.02Hz)
+            if (t >= 0.170) {
+                val dt = t - 0.170
+                val env = (dt / 0.003).coerceAtMost(1.0) * exp(-dt * 14.0)
+                v += sin(2.0 * PI * 2637.02 * dt) * 0.16 * env
+            }
+
+            buf[i] = (v * 0.64).toFloat()
+        }
+
+        applyReverb(buf, delayMs1 = 36, gain1 = 0.16f, delayMs2 = 72, gain2 = 0.08f)
+        applyFadeOut(buf, fadeMs = 40)
+        return normalize(buf, peak = 0.85f)
     }
 
     // ------------------------------------------------------------------
