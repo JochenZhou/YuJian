@@ -3,6 +3,12 @@ package com.zqc.tvnotify
 import android.graphics.Color
 import android.graphics.Typeface
 
+enum class MainTab {
+    OVERVIEW,
+    PRACTICE,
+    SYSTEM
+}
+
 /**
  * 8 大主题定义：
  * 1. [XIUXIAN]   ：🔮 修仙玉简（默认首选，青羊脂灵玉 + 仙家玉磬音）
@@ -283,6 +289,47 @@ enum class Theme(
             "提示：重启后服务自启；推荐配合开源桌面 Aerial 的 ADB 保活守护，或执行：\n" +
                 "adb shell am startservice -n com.zqc.tvnotify/.NotifyService"
         }
+
+    fun mainTabTitle(tab: MainTab): String = when (tab) {
+        MainTab.OVERVIEW -> if (isXianxia) "灵台总览" else "总览与互联"
+        MainTab.PRACTICE -> if (isXianxia) "演法调阵" else "演练与调控"
+        MainTab.SYSTEM -> if (isXianxia) "符钥天机" else "系统与运维"
+    }
+
+    val quickActionsTitle: String get() =
+        if (isXianxia) "快捷入口 · 灵音与试炼" else "快捷入口 · 音乐与测试"
+
+    val practiceCardTitle: String get() =
+        if (isXianxia) "四大演法 · 横幅试炼" else "通知演练 · 效果预览"
+
+    val practiceCardSubtitle: String get() =
+        if (isXianxia) "一键在电视大屏上演练文字、画影、灵镜动画与灵音传诵"
+        else "一键在电视端触发文字、图片、抽帧视频与 TTS 语音播报横幅"
+
+    val practiceCardHint: String get() =
+        if (isXianxia) "秘法提示：在「试传一简」上长按遥控器确认键，可额外触发 16:9 灵镜画卷演练。"
+        else "操作提示：在「测试通知」按钮上长按遥控器确认键，可触发 16:9 多媒体画卷演示。"
+
+    val controlCardTitle: String get() =
+        if (isXianxia) "阵法调控 · 法相方位" else "横幅偏好 · 显示与声音"
+
+    val controlCardSubtitle: String get() =
+        if (isXianxia) "查阅最近 20 条传音简录，调控默认显形方位、闭关免扰与 8 大主题"
+        else "回看最近 20 条历史通知，切换横幅弹出位置、静音免扰与 8 款主题风格"
+
+    val controlCardHint: String get() =
+        if (isXianxia) "当前法相：$fullName\n提示：短按主题按钮可列表选款，长按可直接循环切换下一法相。"
+        else "当前主题：$fullName\n提示：短按主题按钮可打开列表选择，长按可快速循环切换下一主题。"
+
+    val systemCardTitle: String get() =
+        if (isXianxia) "符钥管理 · 破境溯源" else "接口管理 · 版本与关于"
+
+    val systemCardSubtitle: String get() =
+        if (isXianxia) "抄录或重铸传音符钥，感应新简破境飞升，查阅简牍溯源信息"
+        else "复制或重置接口 Token，在线检查版本更新，查看项目仓库与致谢"
+
+    val keepAliveCardTitle: String get() =
+        if (isXianxia) "护山大阵 · 常驻与保活指南" else "后台常驻 · ADB 保活说明"
 
     // ------------------------------------------------------------------
     // 前台服务通知（常驻栏）
