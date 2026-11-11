@@ -17,9 +17,9 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
-import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
@@ -48,11 +48,10 @@ class SendspinActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var header: LinearLayout
     private lateinit var stage: SendspinStageLayout
-    private lateinit var details: LinearLayout
-    private lateinit var artwork: ImageView
-    private lateinit var artworkFrame: FrameLayout
+    private lateinit var leftColumn: LinearLayout
+    private lateinit var vinylRecord: VinylRecordView
+    private lateinit var lyricsView: LyricsScrollView
     private lateinit var ambient: SendspinAmbientDrawable
-    private lateinit var artworkPlaceholder: SendspinArtworkPlaceholder
     private lateinit var status: TextView
     private lateinit var title: TextView
     private lateinit var artist: TextView
@@ -66,11 +65,11 @@ class SendspinActivity : Activity() {
     private lateinit var playPause: SendspinIconButton
     private lateinit var next: SendspinIconButton
     private lateinit var back: SendspinIconButton
-    private lateinit var lower: LinearLayout
     private lateinit var volume: TextView
     private lateinit var volumeIcon: ImageView
     private lateinit var volumeControl: SendspinFocusPill
     private lateinit var settings: SendspinFocusPill
+    private lateinit var settingsLabel: TextView
     private lateinit var theme: Theme
     private var accent = Color.WHITE
     private var playerBase = Color.BLACK
@@ -91,6 +90,9 @@ class SendspinActivity : Activity() {
     private var artworkLoading = false
     private var requestedArtwork: ByteArray? = null
     private var appliedArtwork: ByteArray? = null
+    private var lyricsGeneration = 0L
+    private var lyricsLoading = false
+    private var lastLyricsTrackKey = ""
     private var playerDialog: AlertDialog? = null
     private var volumeDialogSeek: SendspinSeekBar? = null
     private var volumeDialogLabel: TextView? = null
@@ -111,6 +113,7 @@ class SendspinActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         active = this
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         theme = Theme.current(this)
         // Keep the player's surfaces graphite, while retaining the selected theme's hue.
         playerBase = playerBlend(Color.rgb(17, 20, 25), theme.windowBg, .25f)
@@ -144,8 +147,14 @@ class SendspinActivity : Activity() {
         cancelArtworkDecode()
         artworkExecutor?.shutdownNow()
         artworkExecutor = null
-        artwork.animate().cancel()
-        artwork.alpha = 1f
+        vinylRecord.setPlaying(false)
+        lyricsView.setPlaying(false)
+        if (lyricsLoading) {
+            lyricsGeneration++
+            lyricsLoading = false
+            lyricsView.setLoading(false)
+            lastLyricsTrackKey = ""
+        }
         for (view in arrayOf(back, progress, previous, playPause, next, volumeControl, settings)) view.animate().cancel()
         playerDialog?.dismiss()
         playerDialog = null
@@ -182,7 +191,6 @@ class SendspinActivity : Activity() {
     }
 
     private fun buildUi() {
-        artworkPlaceholder = SendspinArtworkPlaceholder(this, accent)
         ambient = SendspinAmbientDrawable(playerBase, accent)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -207,41 +215,34 @@ class SendspinActivity : Activity() {
         header.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
 
-        artwork = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            contentDescription = "专辑封面"
-            setImageDrawable(artworkPlaceholder)
-        }
-        artworkFrame = FrameLayout(this).apply {
-            background = GradientDrawable().apply { setColor(Color.rgb(29, 33, 39)); cornerRadius = dp(20).toFloat() }
-            clipToOutline = true
-            elevation = dp(12).toFloat()
-            addView(artwork, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            addView(View(this@SendspinActivity).apply {
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                background = GradientDrawable().apply {
-                    setColor(Color.TRANSPARENT)
-                    cornerRadius = dp(20).toFloat()
-                    setStroke(dp(1), Color.argb(34, 255, 255, 255))
-                }
-            }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        }
-        details = LinearLayout(this).apply {
+        leftColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL
             clipChildren = false
             clipToPadding = false
         }
-        title = text("音乐，在此刻", 42f, Color.rgb(245, 247, 247), true).apply {
+        vinylRecord = VinylRecordView(this, accent)
+        leftColumn.addView(vinylRecord, LinearLayout.LayoutParams(dp(200), dp(200)))
+
+        title = text("音乐，在此刻", 26f, Color.rgb(245, 247, 247), true).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
-            setLineSpacing(0f, 1.04f)
+            setLineSpacing(0f, 1.05f)
         }
-        details.addView(title, params())
-        artist = text("从 Music Assistant 选择音乐", 20f, Color.rgb(192, 201, 204)).apply { setSingleLine(true); ellipsize = TextUtils.TruncateAt.END }
-        details.addView(artist, params(top = dp(8)))
-        album = text("", 14f, Color.rgb(138, 152, 158)).apply { setSingleLine(true); ellipsize = TextUtils.TruncateAt.END }
-        details.addView(album, params(top = dp(6)))
+        leftColumn.addView(title, params(top = dp(10)))
+        artist = text("从 Music Assistant 选择音乐", 15f, Color.rgb(192, 201, 204)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        leftColumn.addView(artist, params(top = dp(4)))
+        album = text("", 12.5f, Color.rgb(138, 152, 158)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        leftColumn.addView(album, params(top = dp(2)))
 
         timeline = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false }
         progress = SendspinSeekBar(this, accent).apply {
@@ -259,48 +260,61 @@ class SendspinActivity : Activity() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) { commitSeek() }
             })
         }
-        timeline.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(36)))
+        timeline.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(30)))
         val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(12), 0, dp(12), 0) }
-        position = text("0:00", 12f, Color.rgb(148, 163, 169)).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL); fontFeatureSettings = "'tnum'" }
-        duration = text("0:00", 12f, Color.rgb(148, 163, 169)).apply { gravity = Gravity.END; fontFeatureSettings = "'tnum'" }
+        position = text("0:00", 11.5f, Color.rgb(148, 163, 169)).apply { typeface = Typeface.create("sans-serif", Typeface.NORMAL); fontFeatureSettings = "'tnum'" }
+        duration = text("0:00", 11.5f, Color.rgb(148, 163, 169)).apply { gravity = Gravity.END; fontFeatureSettings = "'tnum'" }
         times.addView(position, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         times.addView(duration, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         timeline.addView(times)
-        details.addView(timeline, params(top = dp(20)))
+        leftColumn.addView(timeline, params(top = dp(8)))
 
-        controls = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
+        controls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            clipChildren = false
+            clipToPadding = false
+        }
+        volumeControl = SendspinFocusPill(this, accent).apply {
+            id = View.generateViewId()
+            setPadding(dp(10), 0, dp(12), 0)
+            setOnClickListener { showVolumeDialog() }
+        }
+        volumeIcon = ImageView(this).apply {
+            setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.VOLUME, Color.rgb(176, 189, 193), 18f))
+        }
+        volumeControl.addView(volumeIcon, LinearLayout.LayoutParams(dp(18), dp(18)))
+        volume = text("100%", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
+        volumeControl.addView(volume, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) })
+
         previous = iconButton(SendspinIcon.PREVIOUS, "上一首") { send("previous") }
         playPause = iconButton(SendspinIcon.PLAY, "播放", primary = true) { togglePlayback() }
         next = iconButton(SendspinIcon.NEXT, "下一首") { send("next") }
-        controls.addView(previous, LinearLayout.LayoutParams(dp(52), dp(52)))
-        controls.addView(playPause, LinearLayout.LayoutParams(dp(76), dp(76)).apply { leftMargin = dp(20); rightMargin = dp(20) })
-        controls.addView(next, LinearLayout.LayoutParams(dp(52), dp(52)))
-        details.addView(controls, params(top = dp(18)))
 
-        lower = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; clipChildren = false; clipToPadding = false }
-        volumeControl = SendspinFocusPill(this, accent).apply {
-            id = View.generateViewId()
-            setPadding(dp(12), 0, dp(14), 0)
-            setOnClickListener { showVolumeDialog() }
-        }
-        volumeIcon = ImageView(this).apply { setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.VOLUME, Color.rgb(176, 189, 193), 18f)) }
-        volumeControl.addView(volumeIcon, LinearLayout.LayoutParams(dp(20), dp(20)))
-        volume = text("音量 100%", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
-        volumeControl.addView(volume, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
-        lower.addView(volumeControl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)))
-        lower.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        settingsLabel = text("设置", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
         settings = SendspinFocusPill(this, accent).apply {
             id = View.generateViewId()
-            setPadding(dp(12), 0, dp(12), 0)
+            setPadding(dp(11), 0, dp(11), 0)
             contentDescription = "播放器设置"
-            addView(ImageView(this@SendspinActivity).apply { setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.SETTINGS, Color.rgb(176, 189, 193), 18f)) }, LinearLayout.LayoutParams(dp(20), dp(20)))
-            addView(text("设置", 12f, Color.rgb(176, 189, 193)), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(8) })
+            addView(ImageView(this@SendspinActivity).apply {
+                setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.SETTINGS, Color.rgb(176, 189, 193), 18f))
+            }, LinearLayout.LayoutParams(dp(18), dp(18)))
+            addView(settingsLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) })
             setOnClickListener { showSettingsDialog() }
         }
-        lower.addView(settings, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)).apply { leftMargin = dp(12) })
-        details.addView(lower, params(top = dp(24)))
-        stage = SendspinStageLayout(this, artworkFrame, details)
-        root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(16) })
+
+        controls.addView(volumeControl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
+        controls.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        controls.addView(previous, LinearLayout.LayoutParams(dp(46), dp(46)))
+        controls.addView(playPause, LinearLayout.LayoutParams(dp(64), dp(64)).apply { leftMargin = dp(12); rightMargin = dp(12) })
+        controls.addView(next, LinearLayout.LayoutParams(dp(46), dp(46)))
+        controls.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+        controls.addView(settings, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
+        leftColumn.addView(controls, params(top = dp(12)))
+
+        lyricsView = LyricsScrollView(this, accent)
+        stage = SendspinStageLayout(this, leftColumn, lyricsView)
+        root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(10) })
         applyLayoutMetrics(resources.configuration.screenWidthDp, resources.configuration.screenHeightDp)
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
@@ -312,35 +326,57 @@ class SendspinActivity : Activity() {
     }
 
     private fun applyLayoutMetrics(widthDp: Int, heightDp: Int) {
+        val stacked = widthDp < 680
         val compact = heightDp < 460 || widthDp < 760
-        val tiny = heightDp < 350
-        val key = "$compact/$tiny/${heightDp < 400}"
+        val tiny = heightDp < 360
+        val hideSettingsText = widthDp < 840
+        val vinylDp = when {
+            stacked && tiny -> 110
+            stacked -> 148
+            tiny -> 124
+            compact -> 164
+            else -> (heightDp * 0.37f).toInt().coerceIn(168, 250)
+        }
+        val key = "$stacked/$compact/$tiny/$hideSettingsText/$vinylDp"
         if (appliedLayout == key) return
         appliedLayout = key
-        root.setPadding(dp(if (compact) 24 else 44), dp(if (tiny) 12 else if (compact) 16 else 26), dp(if (compact) 24 else 44), dp(if (tiny) 12 else if (compact) 16 else 26))
+
+        root.setPadding(
+            dp(if (compact) 24 else 40),
+            dp(if (tiny) 10 else if (compact) 14 else 22),
+            dp(if (compact) 24 else 40),
+            dp(if (tiny) 10 else if (compact) 14 else 22)
+        )
         val headerHeight = if (tiny) 32 else if (compact) 36 else 40
         header.layoutParams.height = dp(headerHeight)
         back.layoutParams = LinearLayout.LayoutParams(dp(headerHeight), dp(headerHeight))
-        (stage.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 8 else 16)
-        title.textSize = if (tiny) 26f else if (compact && heightDp < 400) 28f else if (compact) 34f else 42f
-        artist.textSize = if (compact) 16f else 20f
-        album.textSize = if (compact) 12f else 14f
-        (artist.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (compact) 4 else 8)
-        (album.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (compact) 4 else 6)
-        (timeline.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else 20)
-        progress.layoutParams.height = dp(if (tiny) 28 else if (compact) 30 else 36)
-        position.textSize = if (compact) 11f else 12f
-        duration.textSize = if (compact) 11f else 12f
-        (controls.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (compact) 10 else 18)
-        val secondarySize = dp(if (compact) 44 else 52)
+        (stage.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 8 else 12)
+
+        vinylRecord.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
+        title.textSize = if (tiny) 19f else if (compact) 22f else 26f
+        artist.textSize = if (compact) 13.5f else 15f
+        album.textSize = if (compact) 11.5f else 12.5f
+        (title.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else 12)
+        (artist.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (compact) 2 else 4)
+        (album.layoutParams as LinearLayout.LayoutParams).topMargin = dp(2)
+        (timeline.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 6 else 10)
+        progress.layoutParams.height = dp(if (tiny) 26 else 30)
+        position.textSize = if (compact) 11f else 11.5f
+        duration.textSize = if (compact) 11f else 11.5f
+
+        (controls.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else 12)
+        val secondarySize = dp(if (tiny) 38 else if (compact) 42 else 46)
+        val primarySize = dp(if (tiny) 48 else if (compact) 54 else 64)
         previous.layoutParams = LinearLayout.LayoutParams(secondarySize, secondarySize)
         next.layoutParams = LinearLayout.LayoutParams(secondarySize, secondarySize)
-        playPause.layoutParams = LinearLayout.LayoutParams(dp(if (tiny) 52 else if (compact) 56 else 76), dp(if (tiny) 52 else if (compact) 56 else 76)).apply {
-            leftMargin = dp(if (compact) 14 else 20); rightMargin = leftMargin
+        playPause.layoutParams = LinearLayout.LayoutParams(primarySize, primarySize).apply {
+            leftMargin = dp(if (compact) 8 else 12)
+            rightMargin = leftMargin
         }
-        (lower.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 8 else if (compact) 10 else 24)
-        volumeControl.layoutParams.height = dp(if (tiny) 34 else if (compact) 36 else 42)
-        settings.layoutParams.height = volumeControl.layoutParams.height
+        val pillHeight = dp(if (tiny) 34 else if (compact) 36 else 40)
+        volumeControl.layoutParams.height = pillHeight
+        settings.layoutParams.height = pillHeight
+        settingsLabel.visibility = if (hideSettingsText) View.GONE else View.VISIBLE
         root.requestLayout()
     }
 
@@ -354,6 +390,10 @@ class SendspinActivity : Activity() {
         }
         currentStatus = state
         val connected = state.state == "connected"
+        val isPlaying = connected && state.playing
+        vinylRecord.setPlaying(isPlaying)
+        lyricsView.setPlaying(isPlaying)
+
         val statusLabel = when (state.state) {
             "connected" -> if (state.playing) "正在播放" else "已连接"
             "connecting" -> "正在连接"
@@ -386,35 +426,38 @@ class SendspinActivity : Activity() {
         val canAdjustVolume = connected && ("volume" in state.playerCommands || "mute" in state.playerCommands)
         volumeControl.isEnabled = canAdjustVolume
         volumeControl.alpha = if (canAdjustVolume) 1f else .38f
-        val volumeLabel = if (state.muted) "已静音" else "音量 ${state.volume.coerceIn(0, 100)}%"
+        val volumeLabel = if (state.muted) "静音" else "${state.volume.coerceIn(0, 100)}%"
         setTextIfChanged(volume, volumeLabel)
-        volumeControl.contentDescription = "$volumeLabel，调整音量"
+        volumeControl.contentDescription = "${if (state.muted) "已静音" else "音量 ${state.volume.coerceIn(0, 100)}%"}，调整音量"
         if (old.muted != state.muted) {
             volumeIcon.setImageDrawable(SendspinIconDrawable(this, if (state.muted) SendspinIcon.MUTED else SendspinIcon.VOLUME, Color.rgb(176, 189, 193), 18f))
         }
         updateFocusTargets()
         updateVolumeDialog(state)
         updateArtwork(state.artwork)
+        updateLyricsForTrack(state)
     }
 
     private fun updateFocusTargets() {
-        val transport = if (playPause.isEnabled) playPause.id else if (previous.isEnabled) previous.id else if (next.isEnabled) next.id else settings.id
-        back.nextFocusDownId = if (progress.isEnabled) progress.id else transport
+        val rowButtons = listOf(volumeControl, previous, playPause, next, settings)
+        val enabledRow = rowButtons.filter { it.isEnabled }
+        val defaultTransport = when {
+            playPause.isEnabled -> playPause.id
+            previous.isEnabled -> previous.id
+            next.isEnabled -> next.id
+            volumeControl.isEnabled -> volumeControl.id
+            else -> settings.id
+        }
+        back.nextFocusDownId = if (progress.isEnabled) progress.id else defaultTransport
         back.nextFocusRightId = settings.id
         progress.nextFocusUpId = back.id
-        progress.nextFocusDownId = transport
-        for (control in arrayOf(previous, playPause, next)) {
-            control.nextFocusUpId = if (progress.isEnabled) progress.id else back.id
-            control.nextFocusDownId = if (volumeControl.isEnabled) volumeControl.id else settings.id
+        progress.nextFocusDownId = defaultTransport
+        for (i in enabledRow.indices) {
+            val view = enabledRow[i]
+            view.nextFocusUpId = if (progress.isEnabled) progress.id else back.id
+            view.nextFocusLeftId = if (i > 0) enabledRow[i - 1].id else View.NO_ID
+            view.nextFocusRightId = if (i + 1 < enabledRow.size) enabledRow[i + 1].id else View.NO_ID
         }
-        previous.nextFocusRightId = if (playPause.isEnabled) playPause.id else if (next.isEnabled) next.id else settings.id
-        playPause.nextFocusLeftId = if (previous.isEnabled) previous.id else back.id
-        playPause.nextFocusRightId = if (next.isEnabled) next.id else settings.id
-        next.nextFocusLeftId = if (playPause.isEnabled) playPause.id else if (previous.isEnabled) previous.id else back.id
-        volumeControl.nextFocusUpId = transport
-        volumeControl.nextFocusRightId = settings.id
-        settings.nextFocusUpId = transport
-        settings.nextFocusLeftId = if (volumeControl.isEnabled) volumeControl.id else back.id
         if (currentFocus?.isEnabled == false && playerDialog?.isShowing != true) settings.requestFocus()
     }
 
@@ -430,7 +473,7 @@ class SendspinActivity : Activity() {
         )
     }
 
-    /** Only these two lightweight widgets change on the 125 ms visible-page tick. */
+    /** Only lightweight widgets update on the 125 ms visible-page tick. */
     private fun updateProgress() {
         val nowUs = ClockSync.localMicros()
         if (seekPending) {
@@ -444,6 +487,7 @@ class SendspinActivity : Activity() {
         val value = if (seekMaxMs > 0L) (elapsed.toDouble() / seekMaxMs * progress.max).toInt().coerceIn(0, progress.max) else 0
         if (progress.progress != value) progress.progress = value
         setTextIfChanged(position, formatTime(elapsed))
+        lyricsView.updatePosition(elapsed)
     }
 
     private fun commitSeek() {
@@ -475,9 +519,9 @@ class SendspinActivity : Activity() {
             cancelArtworkDecode()
             requestedArtwork = bytes
             appliedArtwork = null
-            artwork.animate().cancel()
-            artwork.alpha = 1f
-            artwork.setImageDrawable(artworkPlaceholder)
+            vinylRecord.setArtwork(null)
+            vinylRecord.setAccentColor(accent)
+            lyricsView.setAccentColor(accent)
             ambient.setAmbientColor(accent)
         }
         if (bytes == null || !visible || destroyed || artworkLoading || appliedArtwork === requestedArtwork) return
@@ -495,11 +539,50 @@ class SendspinActivity : Activity() {
                 // Mark corrupt data handled as well, instead of retrying it every status update.
                 appliedArtwork = snapshot
                 if (bitmap != null) {
-                    artwork.setImageBitmap(bitmap)
-                    artwork.alpha = 0f
-                    artwork.animate().alpha(1f).setDuration(220L).start()
-                    ambient.setAmbientColor(sendspinArtworkColor(bitmap, accent))
+                    val artColor = sendspinArtworkColor(bitmap, accent)
+                    vinylRecord.setArtwork(bitmap)
+                    vinylRecord.setAccentColor(artColor)
+                    lyricsView.setAccentColor(artColor)
+                    ambient.setAmbientColor(artColor)
                 }
+            }
+        }
+    }
+
+    private fun updateLyricsForTrack(state: SendspinRuntime.Status) {
+        val cleanTitle = state.title.trim()
+        if (cleanTitle.isEmpty()) {
+            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading) {
+                lyricsGeneration++
+                lyricsLoading = false
+                lastLyricsTrackKey = ""
+                lyricsView.setLoading(false)
+                lyricsView.setLyrics(null)
+            }
+            return
+        }
+        val trackKey = "$cleanTitle|${state.artist.trim()}|${state.album.trim()}"
+        if (trackKey == lastLyricsTrackKey) return
+
+        lastLyricsTrackKey = trackKey
+        val generation = ++lyricsGeneration
+        lyricsLoading = true
+        lyricsView.setLyrics(null)
+        lyricsView.setLoading(true)
+
+        LyricsFetcher.fetchAsync(
+            context = this,
+            title = cleanTitle,
+            artist = state.artist,
+            album = state.album,
+            durationMs = state.durationMs
+        ) { parsed ->
+            main.post {
+                if (destroyed || generation != lyricsGeneration) return@post
+                lyricsLoading = false
+                lyricsView.setLoading(false)
+                lyricsView.setLyrics(parsed)
+                lyricsView.updatePosition(projectedPosition())
             }
         }
     }

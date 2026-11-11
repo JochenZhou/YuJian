@@ -407,37 +407,6 @@ internal class SendspinSeekBar(context: Context, private val accent: Int) : Seek
     }
 }
 
-internal class SendspinArtworkPlaceholder(context: Context, private val accent: Int) : Drawable() {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val note = SendspinIconDrawable(context, SendspinIcon.NOTE, playerBlend(Color.rgb(143, 154, 163), accent, .2f))
-
-    override fun draw(canvas: Canvas) {
-        val cx = bounds.exactCenterX()
-        val cy = bounds.exactCenterY()
-        val size = min(bounds.width(), bounds.height()).toFloat()
-        paint.shader = LinearGradient(0f, 0f, bounds.width().toFloat(), bounds.height().toFloat(), Color.rgb(35, 40, 46), Color.rgb(22, 25, 30), Shader.TileMode.CLAMP)
-        paint.style = Paint.Style.FILL
-        canvas.drawRect(bounds, paint)
-        paint.shader = null
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = max(1f, size / 500f)
-        for (ring in 0..4) {
-            paint.color = Color.argb(10 + ring * 2, 210, 222, 227)
-            canvas.drawCircle(cx, cy, size * (.22f + ring * .044f), paint)
-        }
-        paint.style = Paint.Style.FILL
-        paint.color = playerAlpha(accent, 11)
-        canvas.drawCircle(cx, cy, size * .125f, paint)
-        val half = (size * .072f).toInt()
-        note.setBounds(cx.toInt() - half, cy.toInt() - half, cx.toInt() + half, cy.toInt() + half)
-        note.draw(canvas)
-    }
-
-    override fun setAlpha(alpha: Int) { }
-    override fun setColorFilter(colorFilter: ColorFilter?) { }
-    @Suppress("DEPRECATION") override fun getOpacity(): Int = PixelFormat.OPAQUE
-}
-
 /** Tiny sampled palette; the full artwork is never scanned on a progress update. */
 internal fun sendspinArtworkColor(bitmap: Bitmap, fallback: Int): Int {
     val sample = Bitmap.createScaledBitmap(bitmap, 24, 24, true)
