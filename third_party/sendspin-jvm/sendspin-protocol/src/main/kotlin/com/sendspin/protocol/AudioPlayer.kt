@@ -9,6 +9,7 @@ data class OutputSyncSnapshot(
     val underrunCount: Long = 0,
     val insertedFrames: Long = 0,
     val droppedFrames: Long = 0,
+    val errorReason: String? = null,
 )
 
 interface AudioPlayer {

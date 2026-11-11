@@ -7,6 +7,7 @@ on:
       - master
       - feature/sendspin-jvm-v1.4.0
       - feature/sendspin-auto-sync
+      - fix/tv-audio-startup
     tags:
       - 'v*'
   pull_request:
@@ -158,6 +159,23 @@ jobs:
           echo "Found APK: $SRC"
           cp "$SRC" dist/YuJian-release.apk
           ls -l dist
+
+      - name: Verify release APK
+        if: steps.release-build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          mkdir -p apk-verification
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/aapt" dump badging dist/YuJian-release.apk > apk-verification/badging.txt
+          "$ANDROID_SDK_ROOT/build-tools/34.0.0/apksigner" verify --verbose --print-certs dist/YuJian-release.apk > apk-verification/signature.txt
+          sha256sum dist/YuJian-release.apk > apk-verification/sha256.txt
+
+      - name: Upload APK verification
+        if: steps.release-build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: yujian-apk-verification
+          path: apk-verification/
+          if-no-files-found: error
 
       - name: Upload artifact
         if: steps.release-build.outcome == 'success'
