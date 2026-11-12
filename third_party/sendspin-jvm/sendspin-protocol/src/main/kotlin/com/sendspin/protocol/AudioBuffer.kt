@@ -51,6 +51,9 @@ class AudioBuffer(
     private val _underrunState = MutableStateFlow(false)
     val underrunState: StateFlow<Boolean> = _underrunState
 
+    /** Host-local output admission. Protocol connection and clock are unaffected. */
+    fun setAcceptingAudio(accepting: Boolean) {}
+
     // ── Write path ────────────────────────────────────────────────────────────
 
     /**
