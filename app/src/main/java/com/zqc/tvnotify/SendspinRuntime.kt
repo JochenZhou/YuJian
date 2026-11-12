@@ -72,6 +72,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         val playerCommands: Set<String> = emptySet(),
         val artwork: ByteArray? = null,
         val error: String = "",
+        val audioError: String? = null,
     )
 
     private val app = context.applicationContext
@@ -132,7 +133,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun start() {
         if (enabled && (client != null || discoveryJob?.isActive == true)) return
         if (!Prefs.isSendspinEnabled(app)) {
-            updateStatus { it.copy(state = "disabled", playing = false, outputPlaying = false, playbackSpeed = 0) }
+            updateStatus { it.copy(state = "disabled", playing = false, outputPlaying = false, playbackSpeed = 0, audioError = null) }
             return
         }
         enabled = true
@@ -412,6 +413,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                             clockReady = diagnostics.clockReady,
                             clockUncertaintyMs = diagnostics.clockUncertaintyMs,
                             syncState = diagnostics.outputSync.state,
+                            audioError = diagnostics.outputSync.errorReason,
                             positionSource = diagnostics.outputSync.positionSource,
                             syncErrorMs = diagnostics.outputSync.errorMicros?.div(1000.0),
                             resyncCount = diagnostics.outputSync.resyncCount,
@@ -482,6 +484,7 @@ class SendspinRuntime private constructor(private val context: Context) {
 
     private fun Status.withoutOutputTiming(state: ClientState): Status = copy(
         outputPlaying = false,
+        audioError = null,
         clockReady = false,
         clockUncertaintyMs = 0.0,
         syncState = when (state) {
@@ -550,7 +553,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                 existing = existing.copy(
                     title = "", artist = "", album = "", artwork = null,
                     progressMs = 0L, durationMs = 0L, progressUpdatedAtUs = 0L,
-                    playbackSpeed = 0, playing = false, outputPlaying = false,
+                    playbackSpeed = 0, playing = false, outputPlaying = false, audioError = null,
                     controllerCommands = emptySet(), commands = existing.playerCommands,
                 )
                 if (active) progressTracker.setGroupPlaybackState(instance.groupPlaybackState.value, ClockSync.localMicros())

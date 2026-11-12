@@ -259,6 +259,8 @@ class NotifyHttpServer(
         json.put("auto_popup", Prefs.isSendspinAutoPopup(context))
         json.put("connected", status.state == "connected")
         json.put("playing", status.playing)
+        json.put("output_playing", status.outputPlaying)
+        json.put("audio_error", status.audioError ?: JSONObject.NULL)
         json.put("state", status.state)
         json.put("server", status.server)
         json.put("server_url", Prefs.getSendspinServerUrl(context))
