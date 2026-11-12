@@ -100,6 +100,36 @@ class ForegroundAudioPlayerTest {
         assertEquals(0, f.output.starts)
     }
 
+    @Test fun `background and stream gate complete before slow native configure returns`() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val backgroundDone = java.util.concurrent.CountDownLatch(1)
+        val transitionDone = java.util.concurrent.CountDownLatch(1)
+        val output = Output()
+        val slow = object : AudioPlayer by output {
+            override fun configure(format: StreamFormat) {
+                entered.countDown()
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                output.configure(format)
+            }
+        }
+        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), slow)
+        player.setForeground(true)
+        val configure = Thread { player.configure(pcm); player.start() }.apply { start() }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val background = Thread { player.setForeground(false); backgroundDone.countDown() }.apply { start() }
+        val transition = Thread { player.prepareTransition(); transitionDone.countDown() }.apply { start() }
+        try {
+            assertTrue("Activity lifecycle must not wait for HAL configure", backgroundDone.await(300, java.util.concurrent.TimeUnit.MILLISECONDS))
+            assertTrue("Stream boundaries must not wait for HAL configure", transitionDone.await(300, java.util.concurrent.TimeUnit.MILLISECONDS))
+        } finally {
+            release.countDown()
+            configure.join(5_000)
+            background.join(5_000)
+            transition.join(5_000)
+        }
+    }
+
     @Test fun `a stalled configure cannot reopen output after background transition completes`() {
         val entered = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)

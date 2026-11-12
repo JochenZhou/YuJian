@@ -32,6 +32,23 @@ class ApkInstallPermissionTest {
         assertNull(shadowOf(app).nextStartedActivity)
     }
 
+    @Test fun `pending installer survives process state loss while permission settings is open`() {
+        val app = RuntimeEnvironment.getApplication()
+        val apk = File(app.cacheDir, "updates/process-return.apk").apply { parentFile!!.mkdirs(); writeText("apk") }
+        shadowOf(app.packageManager).setCanRequestPackageInstalls(false)
+        AppUpdater.installApk(app, apk)
+        shadowOf(app).nextStartedActivity
+        // Simulate process-local state loss; app-private preferences and cached APK survive.
+        val pending = AppUpdater::class.java.getDeclaredField("pendingInstall").apply { isAccessible = true }
+        pending.set(null, null)
+        shadowOf(app.packageManager).setCanRequestPackageInstalls(true)
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).create().start().resume().get()
+        AppUpdater.resumePendingInstall(activity)
+        val intent = shadowOf(app).nextStartedActivity
+        assertNotNull("An already downloaded APK must not require another download", intent)
+        assertEquals(Intent.ACTION_VIEW, intent.action)
+    }
+
     @Test fun `unknown-source denial opens settings without launching installer`() {
         val app = RuntimeEnvironment.getApplication()
         val apk = File(app.cacheDir, "updates/permission.apk").apply { parentFile!!.mkdirs(); writeText("apk") }
