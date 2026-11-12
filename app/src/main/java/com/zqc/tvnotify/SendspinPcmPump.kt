@@ -34,11 +34,21 @@ internal class SendspinPcmPump(
     }
 
     private val frameBytes = channels * 2
-    private val minimumFrames = output.minimumBufferFrames().coerceAtLeast(0).toLong()
-    private val capacityFrames = output.bufferCapacityFrames().coerceAtLeast(0).toLong()
-    // Android 6 AudioFlinger FS_FILLING waits for the allocated capacity, not getMinBufferSize.
-    private val startupFrames = maxOf(minimumFrames, capacityFrames)
-    private val queueLimit = maxOf(sampleRate * 80L / 1000, minimumFrames * 3 / 2, capacityFrames)
+    private var minimumFrames = 0L
+    private var capacityFrames = 0L
+    private var startupFrames = 0L
+    private var queueLimit = 0L
+
+    init { refreshOutputLimits() }
+
+    private fun refreshOutputLimits() {
+        minimumFrames = output.minimumBufferFrames().coerceAtLeast(0).toLong()
+        capacityFrames = output.bufferCapacityFrames().coerceAtLeast(0).toLong()
+        // Native replacement may change the capacity. FS_FILLING and flow control must use
+        // the same generation of the native buffer rather than the first track's sizing.
+        startupFrames = maxOf(minimumFrames, capacityFrames)
+        queueLimit = maxOf(sampleRate * 80L / 1000, minimumFrames * 3 / 2, capacityFrames)
+    }
     private val positions = PlaybackPositionTracker(sampleRate)
     private val consumption = PlaybackPositionTracker(sampleRate)
     private var occupiedFrames = 0L
@@ -91,6 +101,7 @@ internal class SendspinPcmPump(
     }
 
     private fun stepOnce(nowUs: Long) {
+        refreshOutputLimits()
         if (mode != buffer.automaticSync || compensationUs != buffer.outputDelayMicros) {
             mode = buffer.automaticSync
             compensationUs = buffer.outputDelayMicros
@@ -325,6 +336,7 @@ internal class SendspinPcmPump(
 
     private fun resetOutput(nowUs: Long, state: String, countResync: Boolean, keepChunk: Boolean = false) {
         output.pauseAndFlush()
+        refreshOutputLimits()
         positions.reset(nowUs)
         consumption.reset(nowUs)
         occupiedFrames = 0L

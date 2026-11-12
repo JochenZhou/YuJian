@@ -209,24 +209,30 @@ class AndroidAudioPlayer(
 
     private class TrackOutput(
         private var track: AudioTrack,
-        sampleRate: Int,
-        frameBytes: Int,
+        private val sampleRate: Int,
+        private val frameBytes: Int,
         bufferBytes: Int,
-        minimumBytes: Int,
+        private val minimumBytes: Int,
         private val recreateNativeTrack: () -> AudioTrack,
     ) : SendspinPcmPump.Output {
         private val requestedFrames = bufferBytes / frameBytes
         // getBufferSizeInFrames is public since API 23. Requested bytes are not proof of the
         // writable native size on vendor AudioTracks; never require more preroll than it reports.
-        private val capacityFrames = try { track.bufferSizeInFrames.takeIf { it > 0 } ?: requestedFrames }
-            catch (_: Exception) { requestedFrames }
-        private val minimumFrames = minOf(minimumBytes / frameBytes, capacityFrames)
-        init { Log.i(TAG, "AudioTrack native buffer requestedFrames=$requestedFrames reportedFrames=$capacityFrames minimumFrames=$minimumFrames") }
+        private var capacityFrames = requestedFrames
+        private var minimumFrames = minimumBytes / frameBytes
+        private var bufferDurationUs = requestedFrames.toLong() * 1_000_000L / sampleRate
+        init { refreshNativeSizing() }
+        private fun refreshNativeSizing() {
+            capacityFrames = try { track.bufferSizeInFrames.takeIf { it > 0 } ?: requestedFrames }
+                catch (_: Exception) { requestedFrames }
+            minimumFrames = minOf(minimumBytes / frameBytes, capacityFrames)
+            bufferDurationUs = capacityFrames.toLong() * 1_000_000L / sampleRate
+            Log.i(TAG, "AudioTrack native buffer session=${track.audioSessionId} requestedFrames=$requestedFrames reportedFrames=$capacityFrames minimumFrames=$minimumFrames")
+        }
         override fun minimumBufferFrames() = minimumFrames
         override fun bufferCapacityFrames() = capacityFrames
         private val audioTimestamp = AudioTimestamp()
         private val resetPolicy = AudioTrackResetPolicy()
-        private val bufferDurationUs = capacityFrames.toLong() * 1_000_000L / sampleRate
         private var latencyMethod = try { AudioTrack::class.java.getMethod("getLatency") } catch (_: Exception) { null }
         private var measuredLatencyUs = 0L
         private var lastLatencyUs = Long.MIN_VALUE
@@ -255,6 +261,7 @@ class AndroidAudioPlayer(
             try { old.pause() } catch (_: Exception) { }
             old.release()
             track = replacement
+            refreshNativeSizing()
             measuredLatencyUs = 0L
             lastLatencyUs = Long.MIN_VALUE
             resetPolicy.onFlushed()
