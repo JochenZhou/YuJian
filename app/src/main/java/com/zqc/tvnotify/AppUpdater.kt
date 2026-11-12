@@ -407,6 +407,8 @@ object AppUpdater {
         }, "yujian-ota-download").start()
     }
 
+    internal fun validateUpdate(context: Context, file: File): String? = null
+
     private fun isValidApk(file: File): Boolean {
         if (!file.exists() || file.length() < 300_000) return false
         return try {
