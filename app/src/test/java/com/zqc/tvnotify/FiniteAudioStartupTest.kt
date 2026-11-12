@@ -12,8 +12,8 @@ class FiniteAudioStartupTest {
     /** A streaming native queue: writes cannot consume space until play starts its clock. */
     private class FiniteOutput(
         private val nowUs: () -> Long,
-        val actualCapacityFrames: Int = 4_800,
-        private val advertisedCapacityFrames: Int = 9_600,
+        var actualCapacityFrames: Int = 4_800,
+        private var advertisedCapacityFrames: Int = 9_600,
         private val writeLimitFrames: Int = Int.MAX_VALUE,
     ) : SendspinPcmPump.Output {
         private var submittedFrames = 0L
@@ -24,6 +24,7 @@ class FiniteAudioStartupTest {
         var playing = false
             private set
         var acceptWrites = true
+        var replacementCapacityFrames: Int? = null
         var flushes = 0
             private set
         var fullZeroWrites = 0
@@ -107,6 +108,11 @@ class FiniteAudioStartupTest {
             submittedFrames = 0L
             consumedFrames = 0L
             samples.clear()
+            replacementCapacityFrames?.let { capacity ->
+                actualCapacityFrames = capacity
+                advertisedCapacityFrames = capacity
+                replacementCapacityFrames = null
+            }
             flushes++
         }
     }
@@ -288,6 +294,48 @@ class FiniteAudioStartupTest {
         assertEquals("only the explicit pause may flush", 1, f.output.flushes)
         assertEquals("only the explicit pause may re-prime", 1L, f.pump.snapshot.resyncCount)
         assertEquals(0L, f.pump.snapshot.underrunCount)
+    }
+
+    @Test(timeout = 5_000) fun `replacement with larger capacity is fully primed before resuming`() {
+        val f = Fixture(advertisedCapacityFrames = 4_800)
+        val firstUs = f.baseUs + 100_000L
+        f.offerRun(firstUs)
+        f.runThrough(firstUs + 50_000L)
+        assertHealthy(f, firstUs)
+
+        f.output.replacementCapacityFrames = 8_160
+        f.pump.pause(f.nowUs)
+        f.buffer.flush()
+        val resumedUs = f.nowUs + 100_000L
+        f.offerRun(resumedUs)
+        f.runBefore(resumedUs)
+        assertEquals("replacement must use its own native capacity", 8_160L, f.output.queuedFrames)
+        assertEquals("new output must not start before its timestamp", 1, f.output.plays.size)
+        f.runThrough(resumedUs + 50_000L)
+        assertEquals(2, f.output.plays.size)
+        assertEquals(8_160L, f.output.plays.last().queuedFrames)
+        assertTrue(f.pump.isPlaying)
+        assertEquals(1, f.output.flushes)
+    }
+
+    @Test(timeout = 5_000) fun `mode reset refreshes larger replacement capacity within the same tick`() {
+        val f = Fixture(advertisedCapacityFrames = 4_800)
+        val firstUs = f.baseUs + 100_000L
+        f.offerRun(firstUs)
+        f.runThrough(firstUs + 50_000L)
+        assertHealthy(f, firstUs)
+
+        f.buffer.flush()
+        f.output.replacementCapacityFrames = 8_160
+        f.buffer.setAutomaticSync(false)
+        val resumedUs = f.nowUs + 100_000L
+        f.offerRun(resumedUs)
+        f.runBefore(resumedUs)
+        assertEquals("mode reset must refresh startup and flow-control limits", 8_160L, f.output.queuedFrames)
+        f.runThrough(resumedUs + 50_000L)
+        assertEquals(2, f.output.plays.size)
+        assertEquals(8_160L, f.output.plays.last().queuedFrames)
+        assertEquals(1, f.output.flushes)
     }
 
     private companion object {
