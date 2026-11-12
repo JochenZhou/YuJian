@@ -15,6 +15,23 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26, 34])
 class ApkInstallPermissionTest {
+    @Test fun `return after authorization resumes installation with read grant`() {
+        val app = RuntimeEnvironment.getApplication()
+        val apk = File(app.cacheDir, "updates/return.apk").apply { parentFile!!.mkdirs(); writeText("apk") }
+        shadowOf(app.packageManager).setCanRequestPackageInstalls(false)
+        AppUpdater.installApk(app, apk)
+        shadowOf(app).nextStartedActivity
+        shadowOf(app.packageManager).setCanRequestPackageInstalls(true)
+        val activity = org.robolectric.Robolectric.buildActivity(android.app.Activity::class.java).create().start().resume().get()
+        AppUpdater.resumePendingInstall(activity)
+        val install = shadowOf(app).nextStartedActivity
+        assertEquals(Intent.ACTION_VIEW, install.action)
+        assertEquals("content", install.data!!.scheme)
+        assertTrue(install.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        AppUpdater.resumePendingInstall(activity)
+        assertNull(shadowOf(app).nextStartedActivity)
+    }
+
     @Test fun `unknown-source denial opens settings without launching installer`() {
         val app = RuntimeEnvironment.getApplication()
         val apk = File(app.cacheDir, "updates/permission.apk").apply { parentFile!!.mkdirs(); writeText("apk") }

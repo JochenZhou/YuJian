@@ -116,7 +116,8 @@ class NotifyService : Service() {
             mainHandler.post { launchSendspinActivity(automatic) }
             return
         }
-        if (automatic && !Prefs.isSendspinAutoPopup(applicationContext)) return
+        if (automatic && (!Prefs.isSendspinAutoPopup(applicationContext) ||
+                (application as? YuJianApplication)?.isAppVisible != true)) return
         val manager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val foreground = manager.runningAppProcesses.orEmpty().any {
             it.processName == packageName &&

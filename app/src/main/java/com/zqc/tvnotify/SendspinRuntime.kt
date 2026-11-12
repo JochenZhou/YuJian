@@ -427,7 +427,8 @@ class SendspinRuntime private constructor(private val context: Context) {
                     var openUi = false
                     updateClientStatus(instance) {
                         val streaming = instance.state.value == ClientState.STREAMING
-                        val outputPlaying = appVisible && streaming && diagnostics.isAudioPlaying
+                        val outputPlaying = appVisible && streaming && instance.audioPlayer.isPlaying
+                        val outputSync = instance.audioPlayer.outputSync
                         openUi = appVisible && outputPlaying && !it.outputPlaying && !activityVisible
                         val next = it.copy(
                             outputPlaying = outputPlaying,
@@ -436,14 +437,14 @@ class SendspinRuntime private constructor(private val context: Context) {
                             manualOutputDelayMs = instance.currentManualOutputDelayMs,
                             clockReady = diagnostics.clockReady,
                             clockUncertaintyMs = diagnostics.clockUncertaintyMs,
-                            syncState = diagnostics.outputSync.state,
-                            audioError = diagnostics.outputSync.errorReason,
-                            positionSource = diagnostics.outputSync.positionSource,
-                            syncErrorMs = diagnostics.outputSync.errorMicros?.div(1000.0),
-                            resyncCount = diagnostics.outputSync.resyncCount,
-                            underrunCount = diagnostics.outputSync.underrunCount,
-                            insertedFrames = diagnostics.outputSync.insertedFrames,
-                            droppedFrames = diagnostics.outputSync.droppedFrames,
+                            syncState = outputSync.state,
+                            audioError = outputSync.errorReason,
+                            positionSource = outputSync.positionSource,
+                            syncErrorMs = outputSync.errorMicros?.div(1000.0),
+                            resyncCount = outputSync.resyncCount,
+                            underrunCount = outputSync.underrunCount,
+                            insertedFrames = outputSync.insertedFrames,
+                            droppedFrames = outputSync.droppedFrames,
                         )
                         if (streaming) next else next.withoutOutputTiming(instance.state.value)
                     }

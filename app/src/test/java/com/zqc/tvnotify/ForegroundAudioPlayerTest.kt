@@ -100,6 +100,32 @@ class ForegroundAudioPlayerTest {
         assertEquals(0, f.output.starts)
     }
 
+    @Test fun `a stalled configure cannot reopen output after background transition completes`() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val output = Output()
+        val slow = object : AudioPlayer by output {
+            override fun configure(format: StreamFormat) {
+                entered.countDown()
+                check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                output.configure(format)
+            }
+        }
+        val buffer = AudioBuffer(ClockSync())
+        val player = ForegroundAudioPlayer(buffer, slow)
+        player.setForeground(true)
+        val configure = Thread { player.configure(pcm); player.start() }.apply { start() }
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        val background = Thread { player.setForeground(false) }.apply { start() }
+        release.countDown()
+        configure.join(5_000)
+        background.join(5_000)
+        assertFalse(configure.isAlive)
+        assertFalse(background.isAlive)
+        assertFalse(output.nativeOpen)
+        assertFalse(player.isPlaying)
+    }
+
     @Test fun `in-flight format transition stays gated across background and foreground`() {
         val f = Fixture()
         f.player.setForeground(true)
