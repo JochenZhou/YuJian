@@ -101,6 +101,50 @@ class ForegroundAudioPlayerTest {
         assertEquals(0, f.output.starts)
     }
 
+    @Test fun `blocked native work cannot start an obsolete stream across hide show and stop`() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val output = Output()
+        var first = true
+        val slow = object : LocalAudioPlayer by output {
+            override fun configure(format: StreamFormat) {
+                if (first) {
+                    first = false
+                    entered.countDown()
+                    check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                }
+                output.configure(format)
+            }
+        }
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), slow, executor)
+        try {
+            player.setForeground(true)
+            player.configure(pcm)
+            player.start()
+            assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            player.setForeground(false)
+            player.setForeground(true)
+            player.stop()
+            release.countDown()
+            executor.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(0, output.starts)
+            assertFalse(output.nativeOpen)
+            player.prepareTransition()
+            val next = StreamFormat("pcm", 44_100, 1, 16)
+            player.configure(next)
+            player.start()
+            executor.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            assertEquals(next, output.configured)
+            assertTrue(player.isPlaying)
+            assertEquals(1, output.starts)
+        } finally {
+            release.countDown()
+            player.close()
+            assertTrue(executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))
+        }
+    }
+
     @Test fun `resume failure can recover through same-format clear and start`() {
         val output = Output()
         var failNext = false
