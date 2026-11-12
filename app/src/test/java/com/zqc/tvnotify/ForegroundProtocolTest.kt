@@ -27,7 +27,7 @@ class ForegroundProtocolTest {
         val client = SendSpinClient(
             okHttpClient = http,
             moshi = moshi,
-            preferences = ClientPreferences(supportedOptionalRoles = setOf(OptionalRole.PLAYER)),
+            preferences = ClientPreferences(supportedFormats = listOf(AudioFormat("pcm", 2, 48_000, 16)), artworkChannels = emptyList(), supportedOptionalRoles = setOf(OptionalRole.PLAYER)),
             clientId = "visibility-test", clientName = "test", manufacturer = "test", productName = "test", softwareVersion = "test",
             audioPlayerFactory = { buffer, _ -> ForegroundAudioPlayer(buffer, Output()).also { gate = it } },
         )
