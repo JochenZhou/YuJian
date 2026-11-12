@@ -53,6 +53,7 @@ class ForegroundAudioPlayer(
             if (closed || foreground == visible) return
             foreground = visible
             revision++
+            epoch++
             resumeError = null
             delegate.setOutputEnabled(false)
             buffer.setAcceptingAudio(visible)
@@ -65,6 +66,7 @@ class ForegroundAudioPlayer(
             if (closed) return
             this.format = format
             revision++
+            epoch++
             resumeError = null
             delegate.setOutputEnabled(false)
         }
@@ -75,6 +77,7 @@ class ForegroundAudioPlayer(
         synchronized(lock) {
             if (closed) return
             startRequested = true
+            epoch++
         }
         schedule()
     }
@@ -84,6 +87,7 @@ class ForegroundAudioPlayer(
             if (closed) return
             startRequested = false
             revision++
+            epoch++
             delegate.setOutputEnabled(false)
         }
         schedule()
@@ -93,6 +97,7 @@ class ForegroundAudioPlayer(
         synchronized(lock) {
             if (closed) return
             revision++
+            epoch++
             delegate.setOutputEnabled(false)
             // Must run at the protocol boundary, never later on worker (which would drop new PCM).
             buffer.flush()
@@ -105,6 +110,7 @@ class ForegroundAudioPlayer(
             startRequested = false
             format = null
             revision++
+            epoch++
             resumeError = null
             delegate.setOutputEnabled(false)
             buffer.flush()
@@ -115,7 +121,7 @@ class ForegroundAudioPlayer(
     override fun transition(format: StreamFormat) { prepareTransition(); configure(format); start() }
 
     override fun setVolume(gain: Float) {
-        synchronized(lock) { this.gain = gain.coerceIn(0f, 1f) }
+        synchronized(lock) { this.gain = gain.coerceIn(0f, 1f); epoch++ }
         schedule()
     }
 
@@ -126,7 +132,10 @@ class ForegroundAudioPlayer(
             if (closed) return
             Desired(++epoch, revision, format.takeIf { foreground }, startRequested && foreground, gain)
         }
-        worker.execute { apply(desired) }
+        try { worker.execute { apply(desired) } }
+        catch (error: java.util.concurrent.RejectedExecutionException) {
+            if (synchronized(lock) { !closed }) throw error
+        }
     }
 
     private fun current(desired: Desired) = synchronized(lock) { !closed && desired.epoch == epoch }
