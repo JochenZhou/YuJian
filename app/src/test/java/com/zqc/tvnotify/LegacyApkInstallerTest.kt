@@ -48,9 +48,15 @@ class LegacyApkInstallerTest {
         val content = Intent(Intent.ACTION_VIEW).setDataAndType(ApkFileProvider.getUriForFile(app, source), "application/vnd.android.package-archive")
         assertNull("Reproduce OEM missing content filter", content.resolveActivity(app.packageManager))
         AppUpdater.installApk(app, source)
-        val intent = shadowOf(app).nextStartedActivity
+        val deadline = System.nanoTime() + 5_000_000_000L
+        var intent: Intent? = null
+        while (System.nanoTime() < deadline && intent == null) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            intent = shadowOf(app).nextStartedActivity
+            if (intent == null) Thread.sleep(10)
+        }
         assertNotNull(intent)
-        assertEquals("file", intent.data!!.scheme)
+        assertEquals("file", intent!!.data!!.scheme)
         val delivered = File(intent.data!!.path!!)
         assertEquals(File(app.externalCacheDir, "updates").canonicalFile, delivered.canonicalFile.parentFile)
         assertEquals("verified apk bytes", delivered.readText())

@@ -487,7 +487,43 @@ object AppUpdater {
         }, "yujian-ota-resume").start()
     }
 
-    /** Deliver an already validated APK through a temporary read grant on every supported API. */
+    /** Narrow API23 fallback for OEM installers that cannot resolve content URIs. */
+    private fun installWithLegacyFile(context: Context, apkFile: File) {
+        val app = context.applicationContext
+        Thread({
+            try {
+                val root = app.externalCacheDir ?: error("电视的应用专属外部缓存不可用")
+                val directory = File(root, "updates")
+                check(directory.isDirectory || directory.mkdirs()) { "无法创建安装缓存目录" }
+                val destination = File(directory, "YuJian-legacy-update.apk")
+                if (destination.canonicalFile != apkFile.canonicalFile) {
+                    apkFile.inputStream().use { source ->
+                        FileOutputStream(destination).use { target -> source.copyTo(target) }
+                    }
+                }
+                check(destination.isFile && destination.length() == apkFile.length() && destination.canRead()) { "安装缓存复制失败" }
+                // App-specific external cache is accessible to the system installer on API23;
+                // public storage permissions and exposing private cache directories are unnecessary.
+                mainHandler.post {
+                    try {
+                        context.startActivity(Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(Uri.fromFile(destination), "application/vnd.android.package-archive")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                        pendingPrefs(context).edit().remove(PENDING_INSTALL).apply()
+                    } catch (error: Exception) {
+                        Log.e(TAG, "Legacy installer handoff failed", error)
+                        Toast.makeText(context, "电视安装器启动失败：${error.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(TAG, "Legacy installer cache failed", error)
+                mainHandler.post { Toast.makeText(context, "准备电视安装包失败：${error.message}", Toast.LENGTH_LONG).show() }
+            }
+        }, "yujian-ota-legacy").start()
+    }
+
+    /** Prefer a temporary content read grant, with an API23-only OEM installer fallback. */
     fun installApk(context: Context, apkFile: File) {
         try {
             check(apkFile.isFile && apkFile.canRead()) { "安装包不存在或无法读取" }
@@ -506,6 +542,14 @@ object AppUpdater {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 clipData = android.content.ClipData.newRawUri("YuJian update", uri)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            // MiTV Android 6 ships an installer with only file/package filters. Prefer the
+            // protected content grant everywhere; file URIs must never escape on API 24+.
+            val fileProbe = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.fromFile(apkFile), intent.type)
+            if (Build.VERSION.SDK_INT == 23 && intent.resolveActivity(context.packageManager) == null &&
+                fileProbe.resolveActivity(context.packageManager) != null) {
+                installWithLegacyFile(context, apkFile)
+                return
             }
             context.startActivity(intent)
             pendingPrefs(context).edit().remove(PENDING_INSTALL).apply()
