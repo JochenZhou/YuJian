@@ -14,7 +14,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [23])
+@Config(sdk = [23], qualifiers = "w960dp-h540dp-xhdpi")
 class MainFocusLayoutTest {
     private fun field(activity: MainActivity, name: String): View =
         MainActivity::class.java.getDeclaredField(name).apply { isAccessible = true }.get(activity) as View
