@@ -5,7 +5,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ForegroundAudioPlayerTest {
-    private class Output : AudioPlayer {
+    private class Output : LocalAudioPlayer {
+        override fun setOutputEnabled(enabled: Boolean) { if (!enabled) isPlaying = false }
         var nativeOpen = false
         var starts = 0
         var stops = 0
@@ -25,7 +26,7 @@ class ForegroundAudioPlayerTest {
     private class Fixture {
         val buffer = AudioBuffer(ClockSync())
         val output = Output()
-        val player = ForegroundAudioPlayer(buffer, output)
+        val player = ForegroundAudioPlayer(buffer, output, java.util.concurrent.Executor { it.run() })
         fun offer(time: Long = 1L) = buffer.offer(AudioChunk(time, byteArrayOf(1, 2, 3, 4)))
     }
 
@@ -103,13 +104,13 @@ class ForegroundAudioPlayerTest {
     @Test fun `resume failure can recover through same-format clear and start`() {
         val output = Output()
         var failNext = false
-        val flaky = object : AudioPlayer by output {
+        val flaky = object : LocalAudioPlayer by output {
             override fun configure(format: StreamFormat) {
                 if (failNext) { failNext = false; error("temporary audio focus denial") }
                 output.configure(format)
             }
         }
-        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), flaky)
+        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), flaky, java.util.concurrent.Executor { it.run() })
         player.setForeground(true)
         player.configure(pcm)
         player.start()
@@ -130,14 +131,15 @@ class ForegroundAudioPlayerTest {
         val backgroundDone = java.util.concurrent.CountDownLatch(1)
         val transitionDone = java.util.concurrent.CountDownLatch(1)
         val output = Output()
-        val slow = object : AudioPlayer by output {
+        val slow = object : LocalAudioPlayer by output {
             override fun configure(format: StreamFormat) {
                 entered.countDown()
                 check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
                 output.configure(format)
             }
         }
-        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), slow)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), slow, executor)
         player.setForeground(true)
         val configure = Thread { player.configure(pcm); player.start() }.apply { start() }
         assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
@@ -151,14 +153,18 @@ class ForegroundAudioPlayerTest {
             configure.join(5_000)
             background.join(5_000)
             transition.join(5_000)
+            executor.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
+            player.close()
+            assertTrue(executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))
         }
+        assertFalse(output.nativeOpen)
     }
 
     @Test fun `a stalled configure cannot reopen output after background transition completes`() {
         val entered = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val output = Output()
-        val slow = object : AudioPlayer by output {
+        val slow = object : LocalAudioPlayer by output {
             override fun configure(format: StreamFormat) {
                 entered.countDown()
                 check(release.await(5, java.util.concurrent.TimeUnit.SECONDS))
@@ -166,7 +172,8 @@ class ForegroundAudioPlayerTest {
             }
         }
         val buffer = AudioBuffer(ClockSync())
-        val player = ForegroundAudioPlayer(buffer, slow)
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val player = ForegroundAudioPlayer(buffer, slow, executor)
         player.setForeground(true)
         val configure = Thread { player.configure(pcm); player.start() }.apply { start() }
         assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
@@ -176,8 +183,11 @@ class ForegroundAudioPlayerTest {
         background.join(5_000)
         assertFalse(configure.isAlive)
         assertFalse(background.isAlive)
+        executor.submit {}.get(5, java.util.concurrent.TimeUnit.SECONDS)
         assertFalse(output.nativeOpen)
         assertFalse(player.isPlaying)
+        player.close()
+        assertTrue(executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS))
     }
 
     @Test fun `in-flight format transition stays gated across background and foreground`() {

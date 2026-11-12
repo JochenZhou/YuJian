@@ -458,13 +458,33 @@ object AppUpdater {
     }
 
     private var pendingInstall: File? = null
+    private const val PENDING_INSTALL = "pending_update_apk"
+    private var resumingInstall = false
 
-    /** Called when the hosting activity returns from Android 8+ unknown-source settings. */
+    private fun pendingPrefs(context: Context) = context.getSharedPreferences("yujian_updater", Context.MODE_PRIVATE)
+
+    /** Restore only an updater-cache identifier, never an arbitrary persisted file path. */
     fun resumePendingInstall(activity: Activity) {
-        val file = pendingInstall ?: return
-        if (Build.VERSION.SDK_INT < 26 || !activity.packageManager.canRequestPackageInstalls()) return
-        pendingInstall = null
-        installApk(activity, file)
+        if (Build.VERSION.SDK_INT < 26 || !activity.packageManager.canRequestPackageInstalls() || resumingInstall) return
+        val name = pendingPrefs(activity).getString(PENDING_INSTALL, null) ?: return
+        if (name != File(name).name || !name.endsWith(".apk", true)) {
+            pendingPrefs(activity).edit().remove(PENDING_INSTALL).apply()
+            return
+        }
+        val file = File(activity.cacheDir, "updates/$name")
+        resumingInstall = true
+        Thread({
+            val rejection = validateUpdate(activity, file)
+            mainHandler.post {
+                resumingInstall = false
+                if (activity.isFinishing || activity.isDestroyed) return@post
+                if (rejection != null) {
+                    pendingInstall = null
+                    pendingPrefs(activity).edit().remove(PENDING_INSTALL).apply()
+                    Toast.makeText(activity, rejection, Toast.LENGTH_LONG).show()
+                } else installApk(activity, file)
+            }
+        }, "yujian-ota-resume").start()
     }
 
     /** Deliver an already validated APK through a temporary read grant on every supported API. */
@@ -473,7 +493,9 @@ object AppUpdater {
             check(apkFile.isFile && apkFile.canRead()) { "安装包不存在或无法读取" }
             val uri = ApkFileProvider.getUriForFile(context, apkFile)
             if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+                require(apkFile.canonicalFile.parentFile == File(context.cacheDir, "updates").canonicalFile) { "安装包不在内部升级缓存" }
                 pendingInstall = apkFile
+                check(pendingPrefs(context).edit().putString(PENDING_INSTALL, apkFile.name).commit()) { "无法保存待安装状态" }
                 Toast.makeText(context, "请允许玉简安装未知应用，返回后继续安装", Toast.LENGTH_LONG).show()
                 context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -486,6 +508,7 @@ object AppUpdater {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             context.startActivity(intent)
+            pendingPrefs(context).edit().remove(PENDING_INSTALL).apply()
         } catch (error: android.content.ActivityNotFoundException) {
             Log.e(TAG, "No APK installer available", error)
             Toast.makeText(context, "未找到系统安装器；请检查电视的应用安装功能", Toast.LENGTH_LONG).show()

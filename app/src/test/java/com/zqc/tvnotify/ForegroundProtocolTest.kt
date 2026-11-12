@@ -8,7 +8,8 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ForegroundProtocolTest {
-    private class Output : AudioPlayer {
+    private class Output : LocalAudioPlayer {
+        override fun setOutputEnabled(enabled: Boolean) { if (!enabled) isPlaying = false }
         override var isPlaying = false
         override val droppedDecodeFrames = 0L
         override fun configure(format: StreamFormat) {}
@@ -29,7 +30,7 @@ class ForegroundProtocolTest {
             moshi = moshi,
             preferences = ClientPreferences(supportedFormats = listOf(AudioFormat("pcm", 2, 48_000, 16)), artworkChannels = emptyList(), supportedOptionalRoles = setOf(OptionalRole.PLAYER)),
             clientId = "visibility-test", clientName = "test", manufacturer = "test", productName = "test", softwareVersion = "test",
-            audioPlayerFactory = { buffer, _ -> ForegroundAudioPlayer(buffer, Output()).also { gate = it } },
+            audioPlayerFactory = { buffer, _ -> ForegroundAudioPlayer(buffer, Output(), java.util.concurrent.Executor { it.run() }).also { gate = it } },
         )
         try {
             client.setLocalVolume(37)

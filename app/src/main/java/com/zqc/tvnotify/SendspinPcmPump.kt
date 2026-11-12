@@ -22,6 +22,7 @@ internal class SendspinPcmPump(
 ) {
     data class Timestamp(val frame: Long, val timeUs: Long)
     interface Output {
+        fun isEnabled(): Boolean = true
         fun playbackHead(): Long
         fun timestamp(): Timestamp?
         fun write(data: ByteArray, offset: Int, length: Int): Int
@@ -94,6 +95,7 @@ internal class SendspinPcmPump(
         // Prime in bounded nonblocking batches. One tiny network packet per polling sleep can
         // miss the first-frame deadline on older TVs even though contiguous PCM is available.
         repeat(if (started) 1 else 32) {
+            if (!output.isEnabled()) return
             val before = writtenFrames
             stepOnce(nowUs)
             if (started || prefillFull || writtenFrames <= before) return
@@ -101,6 +103,7 @@ internal class SendspinPcmPump(
     }
 
     private fun stepOnce(nowUs: Long) {
+        if (!output.isEnabled()) return
         refreshOutputLimits()
         if (mode != buffer.automaticSync || compensationUs != buffer.outputDelayMicros) {
             mode = buffer.automaticSync
@@ -229,6 +232,7 @@ internal class SendspinPcmPump(
     private fun prepareBlock(nowUs: Long, latencyUs: Long, queued: Long) {
         repeat(64) {
             if (chunk == null) {
+                if (!output.isEnabled()) return
                 chunk = buffer.take() ?: return
                 chunkOffsetFrames = 0
             }

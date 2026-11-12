@@ -167,6 +167,8 @@ class SendspinRuntime private constructor(private val context: Context) {
             synchronized(lock) {
                 client?.close()
                 client = null
+                localPlayer?.close()
+                localPlayer = null
             }
             endpoint = ""
             startDiscovery()
@@ -186,6 +188,8 @@ class SendspinRuntime private constructor(private val context: Context) {
         synchronized(lock) {
             client?.close()
             client = null
+            localPlayer?.close()
+            localPlayer = null
             resetProgressSession()
         }
         releaseMulticastLock()
@@ -227,6 +231,8 @@ class SendspinRuntime private constructor(private val context: Context) {
             synchronized(lock) {
                 client?.close()
                 client = null
+                localPlayer?.close()
+                localPlayer = null
             }
         }
         ensureMulticastLock()
@@ -240,6 +246,8 @@ class SendspinRuntime private constructor(private val context: Context) {
         synchronized(lock) {
             client?.close()
             client = null
+            localPlayer?.close()
+            localPlayer = null
         }
         endpoint = ""
         enabled = true
