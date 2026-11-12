@@ -114,6 +114,10 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     lint {
         // 通知栏 / TYPE_PHONE 等已废弃 API 是有意为之（电视端 API 23 兼容），不让 lint 阻断出包
         abortOnError = false
@@ -137,4 +141,5 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.robolectric:robolectric:4.13.2")
 }
