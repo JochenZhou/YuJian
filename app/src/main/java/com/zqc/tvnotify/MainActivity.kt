@@ -335,7 +335,10 @@ class MainActivity : Activity() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            // Keep the scaled end tabs inside the navigation card, not against its border.
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            clipChildren = false
+            clipToPadding = false
             background = roundedRect(
                 dp(12).toFloat(),
                 Color.argb(0x55, Color.red(theme.cardBg), Color.green(theme.cardBg), Color.blue(theme.cardBg)),
@@ -388,26 +391,9 @@ class MainActivity : Activity() {
         }
 
         val statusCard = makeCard(padH = 14, padV = 9).apply {
-            id = View.generateViewId()
-            isFocusable = true
-            isFocusableInTouchMode = false
-            val cardStates = StateListDrawable()
-            cardStates.addState(
-                intArrayOf(android.R.attr.state_focused),
-                roundedRect(dp(14).toFloat(), theme.cardBg, dp(2), theme.accentColor)
-            )
-            cardStates.addState(
-                intArrayOf(),
-                roundedRect(dp(14).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
-            )
-            background = cardStates
-            setOnClickListener {
-                if (!Settings.canDrawOverlays(this@MainActivity)) {
-                    openOverlaySettings()
-                } else {
-                    refreshUi()
-                }
-            }
+            isFocusable = false
+            isClickable = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         }
 
         val metricRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -456,7 +442,7 @@ class MainActivity : Activity() {
 
         val quickCard = makeCard(padH = 14, padV = 10)
         quickCard.addView(makeText(theme.quickActionsTitle, 12f, theme.hintColor, true))
-        val quickRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val quickRow = buildButtonRow()
         musicButton = buildButton("Sendspin 音乐") {
             startActivity(Intent(this@MainActivity, SendspinActivity::class.java))
         }.apply { id = View.generateViewId() }
@@ -483,8 +469,7 @@ class MainActivity : Activity() {
         val qrCard = makeCard(padH = 16, padV = 12).apply {
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        val tabRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val tabRow = buildButtonRow().apply {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(8))
         }
@@ -539,11 +524,7 @@ class MainActivity : Activity() {
         qrCard.addView(qrCaptionView, linearParams(topMargin = dp(8)))
         rightColumn.addView(qrCard)
 
-        statusCard.nextFocusDownId = musicButton.id
-
-        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.28f, rightWeight = 0.92f).apply {
-            tag = statusCard.id
-        }
+        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.28f, rightWeight = 0.92f)
     }
 
     private fun buildPracticePage(isWideScreen: Boolean): View {
@@ -568,12 +549,12 @@ class MainActivity : Activity() {
             showTestTtsBanner()
         }.apply { id = View.generateViewId() }
 
-        val practiceRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val practiceRow1 = buildButtonRow()
         practiceRow1.addView(testButton, weightedParams(0, gapDp = 10))
         practiceRow1.addView(imageTestButton, weightedParams(1, gapDp = 10))
         practiceCard.addView(practiceRow1, linearParams(topMargin = dp(12)))
 
-        val practiceRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val practiceRow2 = buildButtonRow()
         practiceRow2.addView(videoTestButton, weightedParams(0, gapDp = 10))
         practiceRow2.addView(ttsTestButton, weightedParams(1, gapDp = 10))
         practiceCard.addView(practiceRow2, linearParams(topMargin = dp(10)))
@@ -600,12 +581,12 @@ class MainActivity : Activity() {
             onLongClick = { cycleTheme(); true }
         ).apply { id = View.generateViewId() }
 
-        val controlRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val controlRow1 = buildButtonRow()
         controlRow1.addView(historyButton, weightedParams(0, gapDp = 10))
         controlRow1.addView(positionButton, weightedParams(1, gapDp = 10))
         controlCard.addView(controlRow1, linearParams(topMargin = dp(12)))
 
-        val controlRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val controlRow2 = buildButtonRow()
         controlRow2.addView(muteButton, weightedParams(0, gapDp = 10))
         controlRow2.addView(themeButton, weightedParams(1, gapDp = 10))
         controlCard.addView(controlRow2, linearParams(topMargin = dp(10)))
@@ -634,12 +615,12 @@ class MainActivity : Activity() {
             showAboutDialog()
         }.apply { id = View.generateViewId() }
 
-        val sysRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val sysRow1 = buildButtonRow()
         sysRow1.addView(copyButton, weightedParams(0, gapDp = 10))
         sysRow1.addView(resetButton, weightedParams(1, gapDp = 10))
         systemCard.addView(sysRow1, linearParams(topMargin = dp(12)))
 
-        val sysRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val sysRow2 = buildButtonRow()
         sysRow2.addView(updateButton, weightedParams(0, gapDp = 10))
         sysRow2.addView(aboutButton, weightedParams(1, gapDp = 10))
         systemCard.addView(sysRow2, linearParams(topMargin = dp(10)))
@@ -704,13 +685,11 @@ class MainActivity : Activity() {
         val prId = practiceTabButton.id
         val syId = systemTabButton.id
 
-        val statusCardId = overviewPage.tag as Int
-
         // 顶部主导航栏：左右锁定边界，向下精确切入当前页主控件
         overviewTabButton.nextFocusLeftId = ovId
         overviewTabButton.nextFocusUpId = ovId
         overviewTabButton.nextFocusRightId = prId
-        overviewTabButton.nextFocusDownId = statusCardId
+        overviewTabButton.nextFocusDownId = musicButton.id
 
         practiceTabButton.nextFocusLeftId = ovId
         practiceTabButton.nextFocusUpId = prId
@@ -723,7 +702,9 @@ class MainActivity : Activity() {
         systemTabButton.nextFocusDownId = copyButton.id
 
         // 各页顶部控件向上均先回到当前所属主 Tab，防止跨页触发焦点切换
-        overviewPage.findViewById<View>(statusCardId)?.nextFocusUpId = ovId
+        musicButton.nextFocusUpId = ovId
+        quickTestButton.nextFocusUpId = ovId
+        quickHistoryButton.nextFocusUpId = ovId
         haTabButton.nextFocusUpId = ovId
         tokenTabButton.nextFocusUpId = ovId
 
@@ -817,7 +798,15 @@ class MainActivity : Activity() {
         card.orientation = LinearLayout.VERTICAL
         card.setPadding(dp(padH), dp(padV), dp(padH), dp(padV))
         card.background = roundedRect(dp(14).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
+        card.clipToPadding = false
         return card
+    }
+
+    private fun buildButtonRow() = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        // Focus scaling uses the card's inner padding rather than being cut at row bounds.
+        clipChildren = false
+        clipToPadding = false
     }
 
     private fun makeText(text: String, sizeSp: Float, color: Int, bold: Boolean): TextView {
