@@ -100,6 +100,30 @@ class ForegroundAudioPlayerTest {
         assertEquals(0, f.output.starts)
     }
 
+    @Test fun `resume failure can recover through same-format clear and start`() {
+        val output = Output()
+        var failNext = false
+        val flaky = object : AudioPlayer by output {
+            override fun configure(format: StreamFormat) {
+                if (failNext) { failNext = false; error("temporary audio focus denial") }
+                output.configure(format)
+            }
+        }
+        val player = ForegroundAudioPlayer(AudioBuffer(ClockSync()), flaky)
+        player.setForeground(true)
+        player.configure(pcm)
+        player.start()
+        player.setForeground(false)
+        failNext = true
+        player.setForeground(true)
+        assertEquals("error", player.outputSync.state)
+        player.prepareTransition()
+        player.flush()
+        player.start()
+        assertTrue("Clear/start must recreate an absent native track", player.isPlaying)
+        assertNull(player.outputSync.errorReason)
+    }
+
     @Test fun `background and stream gate complete before slow native configure returns`() {
         val entered = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
