@@ -183,6 +183,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        AppUpdater.resumePendingInstall(this)
         val latestTheme = Theme.current(this)
         if (latestTheme != theme) {
             theme = latestTheme

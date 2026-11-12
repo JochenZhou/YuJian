@@ -31,7 +31,7 @@ import java.util.regex.Pattern
  * 1. 双通道检测：GitHub Releases API 优先，国内加速/CDN 兜底，免科学上网秒检；
  * 2. 智能版本比对：语义化版本号解析，避免降级或误报；
  * 3. 多镜像断点/容灾下载：官方 Release 直链 + 国内高速镜像切换，校验 ZIP/APK 魔数；
- * 4. 零依赖跨安卓版本安装：Android 6.0 (小米电视) 全局文件直装，Android 7.0+ 原生 ApkFileProvider 句柄交付。
+ * 4. Android 6.0+ 统一由只读 ApkFileProvider 交付安装包，安装前核验包名、版本与签名。
  */
 object AppUpdater {
     private const val TAG = "AppUpdater"
@@ -305,21 +305,29 @@ object AppUpdater {
         }
         layout.addView(statusView)
 
-        var cancelled = false
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
         val dialog = AlertDialog.Builder(activity)
             .setView(layout)
             .setCancelable(false)
             .setNegativeButton(if (theme.isXianxia) "作罢 (取消)" else "取消") { d, _ ->
-                cancelled = true
+                cancelled.set(true)
                 d.dismiss()
             }
             .create()
         dialog.show()
 
         Thread({
-            val cacheDir = activity.externalCacheDir ?: activity.cacheDir
-            val updateDir = File(cacheDir, "updates").apply { mkdirs() }
-            val targetApk = File(updateDir, "YuJian-v${info.versionName}.apk")
+            // Private cache is readable by the installer only through the granted provider URI.
+            val updateDir = File(activity.cacheDir, "updates")
+            if ((!updateDir.isDirectory && !updateDir.mkdirs()) || !updateDir.canWrite()) {
+                mainHandler.post {
+                    try { dialog.dismiss() } catch (_: Exception) {}
+                    isDownloading = false
+                    Toast.makeText(activity, "无法创建升级缓存，请检查可用空间", Toast.LENGTH_LONG).show()
+                }
+                return@Thread
+            }
+            val targetApk = File(updateDir, "YuJian-update.apk")
             val tempFile = File(updateDir, "YuJian-update.tmp")
 
             val downloadCandidates = listOf(
@@ -329,11 +337,12 @@ object AppUpdater {
             )
 
             var success = false
+            var failureReason = theme.downloadFailToast
             for (url in downloadCandidates) {
-                if (cancelled) break
+                if (cancelled.get()) break
                 try {
                     mainHandler.post {
-                        if (!cancelled) statusView.text = "正在拉取安装包…"
+                        if (!cancelled.get()) statusView.text = "正在拉取安装包…"
                     }
                     val conn = SafeNetworkHelper.openConnection(
                         urlStr = url,
@@ -355,7 +364,7 @@ object AppUpdater {
                         conn.inputStream.use { ins ->
                             val buffer = ByteArray(16384)
                             while (true) {
-                                if (cancelled) break
+                                if (cancelled.get()) break
                                 val count = ins.read(buffer)
                                 if (count < 0) break
                                 fos.write(buffer, 0, count)
@@ -368,7 +377,7 @@ object AppUpdater {
                                     val downloadedMb = String.format("%.2f", downloaded / (1024f * 1024f))
                                     val totalMb = if (totalLength > 0) String.format("%.2f", totalLength / (1024f * 1024f)) else "未知"
                                     mainHandler.post {
-                                        if (!cancelled) {
+                                        if (!cancelled.get()) {
                                             progressBar.progress = progressPct
                                             statusView.text = "$progressPct% ($downloadedMb MB / $totalMb MB)"
                                         }
@@ -378,17 +387,26 @@ object AppUpdater {
                         }
                     }
 
-                    if (!cancelled && tempFile.exists() && isValidApk(tempFile)) {
-                        targetApk.delete()
-                        if (tempFile.renameTo(targetApk)) {
-                            success = true
-                            break
-                        }
-                    } else {
+                    conn.disconnect()
+                    if (cancelled.get()) { tempFile.delete(); break }
+                    if (!isValidApk(tempFile) || (info.fileSize > 0 && tempFile.length() != info.fileSize)) {
+                        failureReason = "安装包校验失败：文件不完整或不是 APK"
                         tempFile.delete()
+                        continue
                     }
+                    val rejection = validateUpdate(activity, tempFile)
+                    if (rejection != null) {
+                        failureReason = rejection
+                        tempFile.delete()
+                        continue
+                    }
+                    check(!targetApk.exists() || targetApk.delete()) { "无法替换旧的升级缓存" }
+                    check(tempFile.renameTo(targetApk)) { "无法保存升级安装包" }
+                    success = true
+                    break
                 } catch (e: Exception) {
                     Log.w(TAG, "从节点 $url 下载失败: ${e.message}")
+                    failureReason = "下载或保存失败：${e.message ?: e.javaClass.simpleName}"
                     tempFile.delete()
                 }
             }
@@ -396,18 +414,32 @@ object AppUpdater {
             mainHandler.post {
                 try { dialog.dismiss() } catch (_: Exception) {}
                 isDownloading = false
-                if (cancelled) return@post
+                if (cancelled.get()) return@post
 
                 if (success && targetApk.exists()) {
                     installApk(activity, targetApk)
                 } else {
-                    Toast.makeText(activity, theme.downloadFailToast, Toast.LENGTH_LONG).show()
+                    Toast.makeText(activity, failureReason, Toast.LENGTH_LONG).show()
                 }
             }
         }, "yujian-ota-download").start()
     }
 
-    internal fun validateUpdate(context: Context, file: File): String? = null
+    @Suppress("DEPRECATION")
+    internal fun validateUpdate(context: Context, file: File): String? = try {
+        val manager = context.packageManager
+        val installed = manager.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+        val candidate = manager.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_SIGNATURES)
+        fun identity(info: android.content.pm.PackageInfo) = ApkUpdateValidator.Package(
+            info.packageName,
+            if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong(),
+            info.signatures.orEmpty().map { it.toCharsString() }.toSet(),
+        )
+        ApkUpdateValidator.rejection(identity(installed), candidate?.let(::identity))
+    } catch (error: Exception) {
+        Log.w(TAG, "APK validation failed", error)
+        "安装包校验失败：${error.message ?: error.javaClass.simpleName}"
+    }
 
     private fun isValidApk(file: File): Boolean {
         if (!file.exists() || file.length() < 300_000) return false
@@ -425,41 +457,41 @@ object AppUpdater {
         }
     }
 
-    /**
-     * 跨安卓版本唤起系统安装器：
-     * - Android 6.0 (API 23，如小米电视)：通过 setReadable(true, false) 全局可读权限并传入 file:// URI；
-     * - Android 7.0+ (API 24+)：通过原生 ApkFileProvider 传递 content:// URI 句柄；
-     * - Android 8.0+ (API 26+)：提示未知来源应用安装权限引导。
-     */
+    private var pendingInstall: File? = null
+
+    /** Called when the hosting activity returns from Android 8+ unknown-source settings. */
+    fun resumePendingInstall(activity: Activity) {
+        val file = pendingInstall ?: return
+        if (Build.VERSION.SDK_INT < 26 || !activity.packageManager.canRequestPackageInstalls()) return
+        pendingInstall = null
+        installApk(activity, file)
+    }
+
+    /** Deliver an already validated APK through a temporary read grant on every supported API. */
     fun installApk(context: Context, apkFile: File) {
-        if (!apkFile.exists()) {
-            Toast.makeText(context, "安装包不存在", Toast.LENGTH_SHORT).show()
-            return
-        }
-        apkFile.setReadable(true, false)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (!context.packageManager.canRequestPackageInstalls()) {
-                Toast.makeText(context, "请在随后弹出的系统设置中允许「安装未知应用」", Toast.LENGTH_LONG).show()
-            }
-        }
-
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                val contentUri = ApkFileProvider.getUriForFile(context, apkFile)
-                setDataAndType(contentUri, "application/vnd.android.package-archive")
-            } else {
-                setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive")
-            }
-        }
-
         try {
+            check(apkFile.isFile && apkFile.canRead()) { "安装包不存在或无法读取" }
+            val uri = ApkFileProvider.getUriForFile(context, apkFile)
+            if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+                pendingInstall = apkFile
+                Toast.makeText(context, "请允许玉简安装未知应用，返回后继续安装", Toast.LENGTH_LONG).show()
+                context.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return
+            }
+            pendingInstall = null
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                clipData = android.content.ClipData.newRawUri("YuJian update", uri)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
             context.startActivity(intent)
-        } catch (e: Exception) {
-            Log.e(TAG, "启动系统安装器失败", e)
-            Toast.makeText(context, "无法唤起安装器: ${e.message}", Toast.LENGTH_LONG).show()
+        } catch (error: android.content.ActivityNotFoundException) {
+            Log.e(TAG, "No APK installer available", error)
+            Toast.makeText(context, "未找到系统安装器；请检查电视的应用安装功能", Toast.LENGTH_LONG).show()
+        } catch (error: Exception) {
+            Log.e(TAG, "APK installer handoff failed", error)
+            Toast.makeText(context, "安装交接失败：${error.message}。安卓 6 请同时检查系统「允许未知来源」设置", Toast.LENGTH_LONG).show()
         }
     }
 }

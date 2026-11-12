@@ -52,6 +52,8 @@ class SendspinRuntime private constructor(private val context: Context) {
         val playing: Boolean = false,
         /** Actual audio output state, independent of playback intent and buffering. */
         val outputPlaying: Boolean = false,
+        /** App-hidden local suppression, independent of MA group playback and user mute. */
+        val outputSuspended: Boolean = false,
         val volume: Int = 100,
         val muted: Boolean = false,
         val playerGain: Float = 1f,
@@ -107,6 +109,8 @@ class SendspinRuntime private constructor(private val context: Context) {
     @Volatile private var enabled = false
     @Volatile private var endpoint = ""
     @Volatile private var activityVisible = false
+    @Volatile private var appVisible = (app as? YuJianApplication)?.isAppVisible == true
+    private var localPlayer: ForegroundAudioPlayer? = null
     @Volatile var onOpenUiRequested: ((Boolean) -> Unit)? = null
     private var lastMetadata: TrackMetadataMsg? = null
     private var lastController: ControllerState? = null
@@ -191,6 +195,23 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun setActivityVisible(visible: Boolean) {
         activityVisible = visible
     }
+
+    /** Local-only output gate. No Sendspin controller commands or user volume/mute writes. */
+    fun setAppVisible(visible: Boolean) {
+        synchronized(lock) {
+            appVisible = visible
+            localPlayer?.setForeground(visible)
+        }
+        updateStatus { previous ->
+            if (!visible) previous.withLocalOutputGate()
+            else previous.copy(outputSuspended = false, outputPlaying = false, syncState = "buffering", syncErrorMs = null, positionSource = "unavailable")
+        }
+    }
+
+    private fun Status.withLocalOutputGate(): Status = if (appVisible || !enabled) copy(outputSuspended = false) else copy(
+        outputSuspended = true, outputPlaying = false, syncState = "background_suspended",
+        positionSource = "unavailable", syncErrorMs = null, audioError = null,
+    )
 
     fun connect(url: String) {
         val normalized = normalizeUrl(url) ?: run {
@@ -338,7 +359,10 @@ class SendspinRuntime private constructor(private val context: Context) {
             productName = "YuJian TV",
             softwareVersion = BuildConfig.VERSION_NAME,
             audioPlayerFactory = { buffer, clock ->
-                AndroidAudioPlayer(app, buffer, clock, audioManager)
+                ForegroundAudioPlayer(buffer, AndroidAudioPlayer(app, buffer, clock, audioManager)).also {
+                    localPlayer = it
+                    it.setForeground(appVisible)
+                }
             },
             settingsStore = settingsStore,
         ).also { created ->
@@ -403,8 +427,8 @@ class SendspinRuntime private constructor(private val context: Context) {
                     var openUi = false
                     updateClientStatus(instance) {
                         val streaming = instance.state.value == ClientState.STREAMING
-                        val outputPlaying = streaming && diagnostics.isAudioPlaying
-                        openUi = outputPlaying && !it.outputPlaying && !activityVisible
+                        val outputPlaying = appVisible && streaming && diagnostics.isAudioPlaying
+                        openUi = appVisible && outputPlaying && !it.outputPlaying && !activityVisible
                         val next = it.copy(
                             outputPlaying = outputPlaying,
                             automaticSync = instance.currentAutomaticSync,
@@ -423,7 +447,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                         )
                         if (streaming) next else next.withoutOutputTiming(instance.state.value)
                     }
-                    if (openUi) onOpenUiRequested?.invoke(true)
+                    if (openUi && appVisible) onOpenUiRequested?.invoke(true)
                 }
             }
             launch {
@@ -583,7 +607,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         // 并发下会相互覆盖（诊断流的 playing 更新能把状态流的 connected 退回旧值），
         // 读改写必须在同一锁内完成。
         synchronized(lock) {
-            currentStatus = status
+            currentStatus = status.withLocalOutputGate()
         }
         listeners.toList().forEach { callback -> main.post { callback(currentStatus) } }
     }
@@ -591,7 +615,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     /** Thread-safe incremental update of [currentStatus]. */
     private fun updateStatus(transform: (Status) -> Status) {
         val next = synchronized(lock) {
-            currentStatus = transform(currentStatus)
+            currentStatus = transform(currentStatus).withLocalOutputGate()
             currentStatus
         }
         listeners.toList().forEach { callback -> main.post { callback(next) } }
