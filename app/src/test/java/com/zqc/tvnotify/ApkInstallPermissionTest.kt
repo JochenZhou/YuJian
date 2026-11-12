@@ -16,7 +16,7 @@ import java.io.File
 @Config(sdk = [26, 34])
 class ApkInstallPermissionTest {
     @Test fun `unknown-source denial opens settings without launching installer`() {
-        val app = RuntimeEnvironment.getApplication<Application>()
+        val app = RuntimeEnvironment.getApplication()
         val apk = File(app.cacheDir, "updates/permission.apk").apply { parentFile!!.mkdirs(); writeText("apk") }
         shadowOf(app.packageManager).setCanRequestPackageInstalls(false)
         AppUpdater.installApk(app, apk)

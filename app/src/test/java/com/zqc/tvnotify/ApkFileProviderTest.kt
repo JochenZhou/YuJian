@@ -14,7 +14,7 @@ import java.io.File
 @Config(sdk = [23])
 class ApkFileProviderTest {
     @Test fun `provider opens the exact shared private cache APK read-only`() {
-        val app = RuntimeEnvironment.getApplication<Application>()
+        val app = RuntimeEnvironment.getApplication()
         val file = File(app.cacheDir, "updates/provider.apk").apply { parentFile!!.mkdirs(); writeText("private") }
         val uri = ApkFileProvider.getUriForFile(app, file)
         assertEquals("private", app.contentResolver.openInputStream(uri)!!.bufferedReader().use { it.readText() })
@@ -25,7 +25,7 @@ class ApkFileProviderTest {
     }
 
     @Test fun `provider refuses files outside the updates directory`() {
-        val app = RuntimeEnvironment.getApplication<Application>()
+        val app = RuntimeEnvironment.getApplication()
         val file = File(app.cacheDir, "private-token.txt").apply { writeText("secret") }
         try {
             ApkFileProvider.getUriForFile(app, file)
