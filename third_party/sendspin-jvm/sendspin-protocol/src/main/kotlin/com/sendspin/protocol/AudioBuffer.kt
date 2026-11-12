@@ -51,8 +51,16 @@ class AudioBuffer(
     private val _underrunState = MutableStateFlow(false)
     val underrunState: StateFlow<Boolean> = _underrunState
 
-    /** Host-local output admission. Protocol connection and clock are unaffected. */
-    fun setAcceptingAudio(accepting: Boolean) {}
+    private var acceptingAudio = true
+
+    /** Host-local output admission. Atomic with offer; does not alter clock or underrun stats. */
+    fun setAcceptingAudio(accepting: Boolean) {
+        synchronized(lock) {
+            acceptingAudio = accepting
+            queue.clear()
+            _underrunState.value = false
+        }
+    }
 
     // ── Write path ────────────────────────────────────────────────────────────
 
@@ -63,6 +71,7 @@ class AudioBuffer(
      */
     fun offer(chunk: AudioChunk) {
         synchronized(lock) {
+            if (!acceptingAudio) return
             // Before seeding, the server and local monotonic clocks can have unrelated epochs.
             // Keep the queue bounded by capacity without rejecting against an unknown offset.
             if (clockSync.isReady) {
