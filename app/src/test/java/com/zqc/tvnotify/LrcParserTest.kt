@@ -3,6 +3,7 @@ package com.zqc.tvnotify
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -164,5 +165,154 @@ class LrcParserTest {
         } finally {
             tempDir.deleteRecursively()
         }
+    }
+
+    @Test
+    fun fallsBackAcrossSourcesUpgradesPlainToSyncedAndRespectsCancellation() {
+        val invoked = ArrayList<String>()
+        val syncedUpgradeSources = listOf(
+            LyricSourceSpec("lrclib") { _, _, _, _, _ ->
+                invoked.add("lrclib")
+                "第一行纯文本\n第二行纯文本"
+            },
+            LyricSourceSpec("qq") { _, _, _, _, _ ->
+                invoked.add("qq")
+                null
+            },
+            LyricSourceSpec("kugou") { _, _, _, _, _ ->
+                invoked.add("kugou")
+                "[00:05.00]素胚勾勒出青花笔锋浓转淡"
+            },
+            LyricSourceSpec("netease") { _, _, _, _, _ ->
+                invoked.add("netease")
+                "[00:05.00]不应触发"
+            }
+        )
+        val upgraded = LyricsFetcher.resolveFromProviders("青花瓷", "周杰伦", "", 239_000L, syncedUpgradeSources)
+        assertNotNull(upgraded)
+        assertEquals("kugou", upgraded!!.source)
+        assertEquals(listOf("lrclib", "qq", "kugou"), invoked)
+
+        invoked.clear()
+        val plainOnlyFallbackSources = listOf(
+            LyricSourceSpec("lrclib") { _, _, _, _, _ ->
+                invoked.add("lrclib")
+                "Pure text line 1\nPure text line 2"
+            },
+            LyricSourceSpec("qq") { _, _, _, _, _ ->
+                invoked.add("qq")
+                null
+            },
+            LyricSourceSpec("lyrics_ovh", plainOnly = true) { _, _, _, _, _ ->
+                invoked.add("lyrics_ovh")
+                "Should skip when plain fallback already exists"
+            }
+        )
+        val plainOutcome = LyricsFetcher.resolveFromProviders("Track", "Artist", "", 180_000L, plainOnlyFallbackSources)
+        assertNotNull(plainOutcome)
+        assertEquals("plain", plainOutcome!!.source)
+        assertEquals(listOf("lrclib", "qq"), invoked)
+
+        invoked.clear()
+        val cancelled = AtomicBoolean(false)
+        val cancelSources = listOf(
+            LyricSourceSpec("lrclib") { _, _, _, _, _ ->
+                invoked.add("lrclib")
+                cancelled.set(true)
+                null
+            },
+            LyricSourceSpec("qq") { _, _, _, _, _ ->
+                invoked.add("qq")
+                "[00:01.00]Skipped"
+            }
+        )
+        val aborted = LyricsFetcher.resolveFromProviders("Track", "Artist", "", 180_000L, cancelSources) { cancelled.get() }
+        assertNull(aborted)
+        assertEquals(listOf("lrclib"), invoked)
+    }
+
+    @Test
+    fun filtersInstrumentalAndPlaceholderLyricsAcrossProviders() {
+        assertNull(LyricsFetcher.parseLrclibGetResponse("""{"instrumental":true,"syncedLyrics":"[00:01.00]Hum"}"""))
+        assertNull(LyricsFetcher.parseLrclibGetResponse("""{"instrumental":false,"plainLyrics":null,"syncedLyrics":null}"""))
+        assertNull(
+            LyricsFetcher.parseNeteaseLyricResponse(
+                """{"pureMusic":true,"lrc":{"lyric":"[00:00.00] 作曲 : Yiruma\n[00:05.00]纯音乐，请欣赏\n"}}"""
+            )
+        )
+        assertNull(
+            LyricsFetcher.parseNeteaseLyricResponse(
+                """{"nolyric":true,"lrc":{"lyric":"[00:00.00] 纯音乐，请欣赏"}}"""
+            )
+        )
+        assertNull(
+            LyricsFetcher.extractUsableLyrics("[00:00.00]River Flows In You - Yiruma\n[00:05.00]纯音乐，请欣赏")
+        )
+    }
+
+    @Test
+    fun parsesProviderSearchMatchesBase64BomAndHtmlEntities() {
+        val qqSearchJson = """
+            {
+              "code": 0,
+              "data": {
+                "song": {
+                  "list": [
+                    {"songmid": "wrong_dur", "songname": "青花瓷", "interval": 95, "singer": [{"name": "周杰伦"}]},
+                    {"songmid": "wrong_art", "songname": "青花瓷", "interval": 239, "singer": [{"name": "上海音乐出版社"}]},
+                    {"songmid": "002qU5aY3Qu24y", "songname": "青花瓷", "interval": 239, "singer": [{"name": "周杰伦"}]}
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+        assertEquals(listOf("002qU5aY3Qu24y"), LyricsFetcher.selectQqCandidateMids(qqSearchJson, "青花瓷", "周杰伦", 239L))
+
+        val qqLyricJson = """{"retcode":0,"code":0,"lyric":"[00:12.00]Don&apos;t stop &quot;believing&quot; &amp; shine"}"""
+        val qqLrc = LyricsFetcher.parseQqLyricResponse(qqLyricJson)
+        assertEquals("[00:12.00]Don't stop \"believing\" & shine", qqLrc)
+
+        val kugouSearchJson = """
+            {
+              "status": 200,
+              "candidates": [
+                {"id": "clip", "accesskey": "k0", "song": "青花瓷", "singer": "周杰伦", "duration": 33000},
+                {"id": "52241228", "accesskey": "KEY123", "song": "青花瓷", "singer": "周杰伦", "duration": 239000}
+              ]
+            }
+        """.trimIndent()
+        assertEquals(
+            listOf("52241228" to "KEY123"),
+            LyricsFetcher.selectKugouCandidates(kugouSearchJson, "青花瓷", "周杰伦", 239L)
+        )
+
+        val kugouDownloadJson = """
+            {"status":200,"content":"77u/W2lkOiQwMDAwMDAwMF0NClt0aTrpnZLoirHnk7ddDQpbMDA6MjEuNTVd57Sg6IOa5Yu+5YuS5Ye66Z2S6Iqx56yU6ZSL5rWT6L2s5rehDQo="}
+        """.trimIndent()
+        val kugouDecoded = LyricsFetcher.parseKugouDownloadResponse(kugouDownloadJson)
+        assertNotNull(kugouDecoded)
+        val parsedKugou = LrcParser.parse(kugouDecoded!!, "kugou")
+        assertTrue(parsedKugou.synced)
+        assertEquals(1, parsedKugou.lines.size)
+        assertEquals(21_550L, parsedKugou.lines[0].timeMs)
+        assertEquals("素胚勾勒出青花笔锋浓转淡", parsedKugou.lines[0].text)
+
+        val neteaseSearchJson = """
+            {
+              "result": {
+                "songs": [
+                  {"id": 1978148402, "name": "青花瓷", "duration": 236199, "artists": [{"name": "上海音乐出版社"}]},
+                  {"id": 3381543730, "name": "青花瓷（正式版）", "duration": 95037, "artists": [{"name": "周杰伦."}]},
+                  {"id": 66842, "name": "十年", "duration": 205423, "artists": [{"name": "陈奕迅"}]}
+                ]
+              }
+            }
+        """.trimIndent()
+        assertTrue(LyricsFetcher.selectNeteaseCandidateIds(neteaseSearchJson, "青花瓷", "周杰伦", 239L).isEmpty())
+        assertEquals(listOf(66842L), LyricsFetcher.selectNeteaseCandidateIds(neteaseSearchJson, "十年", "陈奕迅", 205L))
+
+        val ovhPlain = LyricsFetcher.parseLyricsOvhResponse("""{"lyrics":"Look at the stars\nLook how they shine"}""")
+        assertNotNull(ovhPlain)
+        assertFalse(LrcParser.parse(ovhPlain!!, "lyrics_ovh").synced)
     }
 }

@@ -45,7 +45,8 @@ object SafeNetworkHelper {
         connectTimeoutMs: Int,
         readTimeoutMs: Int,
         userAgent: String,
-        acceptHeader: String
+        acceptHeader: String,
+        extraHeaders: Map<String, String> = emptyMap()
     ): HttpURLConnection {
         var currentUrl = urlStr
         for (hop in 0..3) {
@@ -56,6 +57,7 @@ object SafeNetworkHelper {
                 instanceFollowRedirects = true
                 setRequestProperty("User-Agent", userAgent)
                 setRequestProperty("Accept", acceptHeader)
+                extraHeaders.forEach { (key, value) -> setRequestProperty(key, value) }
             }
             if (conn is HttpsURLConnection) {
                 if (!warnedInsecureTls) {
@@ -94,6 +96,7 @@ object SafeNetworkHelper {
             readTimeout = readTimeoutMs
             setRequestProperty("User-Agent", userAgent)
             setRequestProperty("Accept", acceptHeader)
+            extraHeaders.forEach { (key, value) -> setRequestProperty(key, value) }
         }
         if (conn is HttpsURLConnection) {
             conn.sslSocketFactory = permissiveSslContext.socketFactory

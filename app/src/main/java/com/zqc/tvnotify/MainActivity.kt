@@ -22,6 +22,7 @@ import android.provider.Settings
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
@@ -254,7 +255,7 @@ class MainActivity : Activity() {
         practicePage = buildPracticePage(isWideScreen)
         systemPage = buildSystemPage(isWideScreen)
 
-        wireMainTabNavigation()
+        wireMainTabNavigation(isWideScreen)
 
         contentContainer.addView(overviewPage, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         contentContainer.addView(practicePage, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -678,7 +679,7 @@ class MainActivity : Activity() {
         background = roundedRect(dp(8).toFloat(), Color.argb(0x36, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
     }
 
-    private fun wireMainTabNavigation() {
+    private fun wireMainTabNavigation(isWideScreen: Boolean) {
         val ovId = overviewTabButton.id
         val prId = practiceTabButton.id
         val syId = systemTabButton.id
@@ -708,15 +709,121 @@ class MainActivity : Activity() {
 
         testButton.nextFocusUpId = prId
         imageTestButton.nextFocusUpId = prId
-        imageTestButton.nextFocusRightId = historyButton.id
-        ttsTestButton.nextFocusRightId = muteButton.id
         historyButton.nextFocusUpId = prId
-        historyButton.nextFocusLeftId = imageTestButton.id
         positionButton.nextFocusUpId = prId
-        muteButton.nextFocusLeftId = ttsTestButton.id
 
         copyButton.nextFocusUpId = syId
         resetButton.nextFocusUpId = syId
+
+        // 页内与跨页左右流转：页内最右按右切下一页，最左按左切上一页
+        musicButton.nextFocusRightId = quickTestButton.id
+        quickTestButton.nextFocusLeftId = musicButton.id
+        quickTestButton.nextFocusRightId = quickHistoryButton.id
+        quickHistoryButton.nextFocusLeftId = quickTestButton.id
+        haTabButton.nextFocusRightId = tokenTabButton.id
+        tokenTabButton.nextFocusLeftId = haTabButton.id
+
+        testButton.nextFocusRightId = imageTestButton.id
+        imageTestButton.nextFocusLeftId = testButton.id
+        videoTestButton.nextFocusRightId = ttsTestButton.id
+        ttsTestButton.nextFocusLeftId = videoTestButton.id
+        historyButton.nextFocusRightId = positionButton.id
+        positionButton.nextFocusLeftId = historyButton.id
+        muteButton.nextFocusRightId = themeButton.id
+        themeButton.nextFocusLeftId = muteButton.id
+
+        copyButton.nextFocusRightId = resetButton.id
+        resetButton.nextFocusLeftId = copyButton.id
+        updateButton.nextFocusRightId = aboutButton.id
+        aboutButton.nextFocusLeftId = updateButton.id
+
+        bindDirectionalEdge(musicButton)
+        bindDirectionalEdge(resetButton)
+        bindDirectionalEdge(aboutButton)
+        bindDirectionalEdge(tokenTabButton, onRightTab = MainTab.PRACTICE, onRightTarget = { testButton })
+
+        if (isWideScreen) {
+            quickHistoryButton.nextFocusRightId = haTabButton.id
+            haTabButton.nextFocusLeftId = quickHistoryButton.id
+
+            imageTestButton.nextFocusRightId = historyButton.id
+            historyButton.nextFocusLeftId = imageTestButton.id
+            ttsTestButton.nextFocusRightId = muteButton.id
+            muteButton.nextFocusLeftId = ttsTestButton.id
+
+            bindDirectionalEdge(testButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            bindDirectionalEdge(videoTestButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            bindDirectionalEdge(positionButton, onRightTab = MainTab.SYSTEM, onRightTarget = { copyButton })
+            bindDirectionalEdge(themeButton, onRightTab = MainTab.SYSTEM, onRightTarget = { updateButton })
+
+            bindDirectionalEdge(copyButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { positionButton })
+            bindDirectionalEdge(updateButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { themeButton })
+        } else {
+            bindDirectionalEdge(quickHistoryButton, onRightTab = MainTab.PRACTICE, onRightTarget = { testButton })
+            bindDirectionalEdge(haTabButton)
+
+            bindDirectionalEdge(testButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            bindDirectionalEdge(videoTestButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            bindDirectionalEdge(historyButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            bindDirectionalEdge(muteButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+
+            bindDirectionalEdge(imageTestButton, onRightTab = MainTab.SYSTEM, onRightTarget = { copyButton })
+            bindDirectionalEdge(ttsTestButton, onRightTab = MainTab.SYSTEM, onRightTarget = { updateButton })
+            bindDirectionalEdge(positionButton, onRightTab = MainTab.SYSTEM, onRightTarget = { copyButton })
+            bindDirectionalEdge(themeButton, onRightTab = MainTab.SYSTEM, onRightTarget = { updateButton })
+
+            bindDirectionalEdge(copyButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { imageTestButton })
+            bindDirectionalEdge(updateButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { ttsTestButton })
+        }
+    }
+
+    private fun bindDirectionalEdge(
+        button: Button,
+        onLeftTab: MainTab? = null,
+        onLeftTarget: (() -> Button)? = null,
+        onRightTab: MainTab? = null,
+        onRightTarget: (() -> Button)? = null
+    ) {
+        if (onLeftTab == null && button.nextFocusLeftId == View.NO_ID) {
+            button.nextFocusLeftId = button.id
+        }
+        if (onRightTab == null && button.nextFocusRightId == View.NO_ID) {
+            button.nextFocusRightId = button.id
+        }
+        button.setOnKeyListener { _, keyCode, event ->
+            if (event.action != KeyEvent.ACTION_DOWN) return@setOnKeyListener false
+            when {
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT && onLeftTab != null && onLeftTarget != null -> {
+                    if (event.repeatCount == 0) {
+                        switchMainTabToControl(onLeftTab, onLeftTarget())
+                    }
+                    true
+                }
+                keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && onRightTab != null && onRightTarget != null -> {
+                    if (event.repeatCount == 0) {
+                        switchMainTabToControl(onRightTab, onRightTarget())
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun switchMainTabToControl(targetTab: MainTab, targetControl: View) {
+        // Show the destination page and move focus BEFORE hiding the previous page, so ViewRoot
+        // does not temporarily fall back to the top tab bar and re-trigger selectMainTab.
+        when (targetTab) {
+            MainTab.OVERVIEW -> overviewPage.visibility = View.VISIBLE
+            MainTab.PRACTICE -> practicePage.visibility = View.VISIBLE
+            MainTab.SYSTEM -> systemPage.visibility = View.VISIBLE
+        }
+        activeMainTab = targetTab
+        updateMainTabButtonStyles()
+        targetControl.requestFocus()
+        overviewPage.visibility = if (targetTab == MainTab.OVERVIEW) View.VISIBLE else View.GONE
+        practicePage.visibility = if (targetTab == MainTab.PRACTICE) View.VISIBLE else View.GONE
+        systemPage.visibility = if (targetTab == MainTab.SYSTEM) View.VISIBLE else View.GONE
     }
 
     private fun selectMainTab(tab: MainTab) {
@@ -796,6 +903,7 @@ class MainActivity : Activity() {
         card.orientation = LinearLayout.VERTICAL
         card.setPadding(dp(padH), dp(padV), dp(padH), dp(padV))
         card.background = roundedRect(dp(14).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
+        card.clipChildren = false
         card.clipToPadding = false
         return card
     }
