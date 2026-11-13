@@ -286,6 +286,7 @@ class MainFocusLayoutTest {
             pressDpadEdge(activity, "themeButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.SYSTEM, "updateButton")
             pressDpadEdge(activity, "updateButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.PRACTICE, "themeButton")
 
+            selectTab(activity, MainTab.SYSTEM)
             assertTrue(resetButton.requestFocus())
             assertFalse(resetButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 0)))
             assertTrue(aboutButton.requestFocus())
