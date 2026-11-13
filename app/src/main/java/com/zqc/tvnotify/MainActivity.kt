@@ -448,7 +448,6 @@ class MainActivity : Activity() {
         }.apply { id = View.generateViewId() }
         quickTestButton = buildButton(
             label = theme.testButtonText,
-            isPrimary = true,
             onClick = { showTestBanner() },
             onLongClick = { showTestMediaBanner() }
         ).apply { id = View.generateViewId() }
@@ -534,7 +533,6 @@ class MainActivity : Activity() {
 
         testButton = buildButton(
             label = theme.testButtonText,
-            isPrimary = true,
             padV = 13,
             onClick = { showTestBanner() },
             onLongClick = { showTestMediaBanner() }
@@ -602,7 +600,7 @@ class MainActivity : Activity() {
         val systemCard = makeCard(padH = 18, padV = 16)
         buildSectionHeader(systemCard, theme.systemCardTitle, theme.systemCardSubtitle)
 
-        copyButton = buildButton(theme.copyButtonText, isPrimary = true, padV = 13) {
+        copyButton = buildButton(theme.copyButtonText, padV = 13) {
             copyCallUrl()
         }.apply { id = View.generateViewId() }
         resetButton = buildButton(theme.resetButtonText, padV = 13) {
@@ -857,18 +855,10 @@ class MainActivity : Activity() {
 
     private fun buildButton(
         label: String,
-        isPrimary: Boolean = false,
         padV: Int = 9,
         onLongClick: (() -> Boolean)? = null,
         onClick: () -> Unit
     ): Button {
-        val normalStroke = if (isPrimary) theme.accentColor else theme.buttonStroke
-        val normalBg = if (isPrimary) {
-            Color.argb(0x38, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
-        } else {
-            theme.buttonBg
-        }
-
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
@@ -880,7 +870,7 @@ class MainActivity : Activity() {
         )
         states.addState(
             intArrayOf(),
-            roundedRect(dp(9).toFloat(), normalBg, dp(1), normalStroke)
+            roundedRect(dp(9).toFloat(), theme.buttonBg, dp(1), theme.buttonStroke)
         )
 
         val button = Button(this)
@@ -1388,21 +1378,28 @@ class MainActivity : Activity() {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
+    internal class RoundedSurfaceDrawable(
+        radiusPx: Float,
+        val fillColor: Int,
+        val strokeWidthPx: Int,
+        val strokeColor: Int
+    ) : GradientDrawable() {
+        init {
+            shape = RECTANGLE
+            cornerRadius = radiusPx
+            setColor(fillColor)
+            if (strokeWidthPx > 0) {
+                setStroke(strokeWidthPx, strokeColor)
+            }
+        }
+    }
+
     private fun roundedRect(
         radiusPx: Float,
         fillColor: Int,
         strokeWidthPx: Int,
         strokeColor: Int
-    ): GradientDrawable {
-        val drawable = GradientDrawable()
-        drawable.shape = GradientDrawable.RECTANGLE
-        drawable.cornerRadius = radiusPx
-        drawable.setColor(fillColor)
-        if (strokeWidthPx > 0) {
-            drawable.setStroke(strokeWidthPx, strokeColor)
-        }
-        return drawable
-    }
+    ): RoundedSurfaceDrawable = RoundedSurfaceDrawable(radiusPx, fillColor, strokeWidthPx, strokeColor)
 
     private fun dp(value: Int): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP,

@@ -35,4 +35,17 @@ class LyricsEmptyStateTest {
         view.setLoading(false)
         assertEquals("暂无歌词", drawnText(view))
     }
+
+    @Test fun `no audio selected and empty parsed lyrics show unavailable rather than instrumental`() {
+        val view = LyricsScrollView(RuntimeEnvironment.getApplication(), Color.CYAN)
+        view.setPlaying(false)
+        val initialText = drawnText(view)
+        assertEquals("暂无歌词", initialText)
+        assertFalse(initialText.contains("纯音乐"))
+
+        view.setLyrics(ParsedLyrics(synced = false, lines = emptyList(), source = "empty"))
+        val emptyParsedText = drawnText(view)
+        assertEquals("暂无歌词", emptyParsedText)
+        assertFalse(emptyParsedText.contains("纯音乐"))
+    }
 }
