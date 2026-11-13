@@ -847,7 +847,7 @@ internal class LyricsScrollView(context: Context, initialAccent: Int) : View(con
 
         emptyTextPaint.color = Color.rgb(166, 182, 185)
         emptyTextPaint.alpha = 205
-        val label = if (loading) "正在检索歌词…" else "纯音乐 · 暂无歌词"
+        val label = if (loading) "正在检索歌词…" else "暂无歌词"
         canvas.drawText(label, cx, cy + context.playerDp(42f), emptyTextPaint)
 
         if (animateBars) {

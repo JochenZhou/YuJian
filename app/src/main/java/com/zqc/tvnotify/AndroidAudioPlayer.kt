@@ -21,7 +21,7 @@ class AndroidAudioPlayer(
     private val buffer: AudioBuffer,
     private val clock: ClockSync,
     private val audioManager: AudioManager,
-) : AudioPlayer {
+) : LocalAudioPlayer {
     companion object {
         private const val TAG = "YuJianAudio"
         private const val POLL_MS = 2L
@@ -36,6 +36,9 @@ class AndroidAudioPlayer(
     @Volatile private var pump: SendspinPcmPump? = null
     @Volatile private var focusGranted = false
     @Volatile private var transitionPending = false
+    @Volatile private var outputEnabled = false
+
+    override fun setOutputEnabled(enabled: Boolean) { outputEnabled = enabled }
     @Volatile private var volume = 1f
     @Volatile private var sync = OutputSyncSnapshot()
     private var thread: Thread? = null
@@ -50,7 +53,7 @@ class AndroidAudioPlayer(
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                     focusGranted = false
                     // Discard paused track/pending PCM; a later gain re-primes against live time.
-                    pump?.pause(ClockSync.localMicros())
+                    if (outputEnabled) pump?.pause(ClockSync.localMicros())
                     sync = pump?.snapshot ?: OutputSyncSnapshot(state = "paused")
                 }
             }
@@ -58,7 +61,7 @@ class AndroidAudioPlayer(
         Log.i(TAG, "Audio focus change=$change granted=$focusGranted running=${running.get()}")
     }
 
-    override val isPlaying: Boolean get() = running.get() && focusGranted && pump?.isPlaying == true
+    override val isPlaying: Boolean get() = outputEnabled && running.get() && focusGranted && pump?.isPlaying == true
     override val droppedDecodeFrames: Long get() = sync.droppedFrames
     override val outputSync: OutputSyncSnapshot get() = sync
 
@@ -141,7 +144,7 @@ class AndroidAudioPlayer(
             while (running.get() && !Thread.currentThread().isInterrupted) {
                 try {
                     synchronized(ioLock) {
-                        if (running.get() && focusGranted && !transitionPending) {
+                        if (running.get() && outputEnabled && focusGranted && !transitionPending) {
                             val scheduler = pump ?: return
                             val nowUs = ClockSync.localMicros()
                             scheduler.step(nowUs)
@@ -157,6 +160,7 @@ class AndroidAudioPlayer(
                 } catch (error: Exception) {
                     synchronized(ioLock) {
                         if (!running.get()) return
+                        if (!outputEnabled) return@synchronized
                         val outputState = try { pump?.diagnosticState(ClockSync.localMicros()) } catch (_: Exception) { "unavailable" }
                         Log.w(TAG, "Audio output failure playState=${track?.playState} $outputState", error)
                         if (++rebuilds > MAX_REBUILDS) throw error
@@ -207,7 +211,7 @@ class AndroidAudioPlayer(
         Log.i(TAG, "AudioTrack configured rate=${format.sampleRate} channels=${format.channels} bufferBytes=$bufferBytes")
     }
 
-    private class TrackOutput(
+    private inner class TrackOutput(
         private var track: AudioTrack,
         private val sampleRate: Int,
         private val frameBytes: Int,
@@ -229,6 +233,7 @@ class AndroidAudioPlayer(
             bufferDurationUs = capacityFrames.toLong() * 1_000_000L / sampleRate
             Log.i(TAG, "AudioTrack native buffer session=${track.audioSessionId} requestedFrames=$requestedFrames reportedFrames=$capacityFrames minimumFrames=$minimumFrames")
         }
+        override fun isEnabled() = outputEnabled
         override fun minimumBufferFrames() = minimumFrames
         override fun bufferCapacityFrames() = capacityFrames
         private val audioTimestamp = AudioTimestamp()
@@ -245,12 +250,14 @@ class AndroidAudioPlayer(
         } catch (_: Exception) { null }
 
         override fun write(data: ByteArray, offset: Int, length: Int): Int {
+            if (!outputEnabled) return 0
             val count = track.write(data, offset, length, AudioTrack.WRITE_NON_BLOCKING)
             resetPolicy.onWrite(count)
             return count
         }
-        override fun play() = track.play()
+        override fun play() { if (outputEnabled) track.play() }
         override fun pauseAndFlush() {
+            if (!outputEnabled) return
             if (!resetPolicy.shouldPauseAndFlush(track.playState == AudioTrack.PLAYSTATE_PLAYING)) return
             // Some Android 6 HALs defer flushing the native ring until its server runs. Reusing
             // that stopped ring can report zero writable bytes while our new timeline is empty.

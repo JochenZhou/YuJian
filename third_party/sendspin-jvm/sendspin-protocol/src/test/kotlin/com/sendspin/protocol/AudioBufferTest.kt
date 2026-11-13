@@ -25,6 +25,24 @@ class AudioBufferTest {
         buffer = AudioBuffer(clockSync, capacity = 8)
     }
 
+    @Test fun `disabled local output atomically clears and rejects audio without underrun`() {
+        val now = ClockSync.localMicros()
+        buffer.offer(chunk(now))
+        buffer.setAcceptingAudio(false)
+        buffer.offer(chunk(now + 100_000))
+        assertEquals(0, buffer.size)
+        assertFalse(buffer.underrunState.value)
+        assertEquals(0L, buffer.lateChunks)
+        buffer.flush()
+        buffer.offer(chunk(now + 200_000))
+        assertEquals(0, buffer.size)
+        buffer.setAcceptingAudio(true)
+        val fresh = chunk(now + 300_000)
+        buffer.offer(fresh)
+        assertSame(fresh, buffer.take())
+        assertNull(buffer.take())
+    }
+
     // ── Basic ordering ────────────────────────────────────────────────────────
 
     @Test

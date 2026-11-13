@@ -47,8 +47,8 @@ android {
         // 红米电视 Android 6.0，API 23 是硬底线；targetSdk 34 只是为了通过商店/安装器检查
         minSdk = 23
         targetSdk = 34
-        versionCode = 47
-        versionName = "1.9.1"
+        versionCode = 48
+        versionName = "1.9.2"
         // 不引入 support 库，矢量图交给系统渲染（API 21+ 原生支持 VectorDrawable）
         vectorDrawables.useSupportLibrary = false
         // 仅保留中英文语言资源，剔除第三方库自带的多国语言包缩减体积
@@ -114,6 +114,10 @@ android {
         jvmTarget = "17"
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     lint {
         // 通知栏 / TYPE_PHONE 等已废弃 API 是有意为之（电视端 API 23 兼容），不让 lint 阻断出包
         abortOnError = false
@@ -137,4 +141,5 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }

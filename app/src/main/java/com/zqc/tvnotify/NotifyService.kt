@@ -88,7 +88,7 @@ class NotifyService : Service() {
     private var sendspinRuntime: SendspinRuntime? = null
     @Volatile private var lastMediaForeground = false
     private val sendspinStatusListener: (SendspinRuntime.Status) -> Unit = { status ->
-        if (Build.VERSION.SDK_INT >= 29) updateForegroundTypes(status.playing)
+        if (Build.VERSION.SDK_INT >= 29) updateForegroundTypes(status.outputPlaying)
     }
 
     override fun onCreate() {
@@ -116,7 +116,8 @@ class NotifyService : Service() {
             mainHandler.post { launchSendspinActivity(automatic) }
             return
         }
-        if (automatic && !Prefs.isSendspinAutoPopup(applicationContext)) return
+        if (automatic && (!Prefs.isSendspinAutoPopup(applicationContext) ||
+                (application as? YuJianApplication)?.isAppVisible != true)) return
         val manager = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
         val foreground = manager.runningAppProcesses.orEmpty().any {
             it.processName == packageName &&
@@ -159,10 +160,10 @@ class NotifyService : Service() {
         try {
             val notification = buildNotification()
             if (Build.VERSION.SDK_INT >= 34) {
-                val playing = sendspinRuntime?.status()?.playing == true
+                val playing = sendspinRuntime?.status()?.outputPlaying == true
                 val type = FGS_TYPE_LAN or if (playing) FGS_TYPE_MEDIA else 0
                 startForeground(NOTIFICATION_ID, notification, type)
-            } else if (Build.VERSION.SDK_INT >= 29 && sendspinRuntime?.status()?.playing == true) {
+            } else if (Build.VERSION.SDK_INT >= 29 && sendspinRuntime?.status()?.outputPlaying == true) {
                 startForeground(NOTIFICATION_ID, notification, FGS_TYPE_MEDIA)
             } else {
                 startForeground(NOTIFICATION_ID, notification)

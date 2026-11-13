@@ -567,6 +567,9 @@ function updateSyncInput() {
   sendspinAddressEditVersion++;
 }));
 function syncStatusText(status) {
+  if (status.output_suspended || status.sync_state === "background_suspended") {
+    return "后台：本机音频已挂起 · 同步组按 MA 状态继续播放";
+  }
   const source = String(status.position_source || "unavailable").toLowerCase();
   const sourceLabel = source.includes("timestamp") ? "可靠时间戳"
     : source.includes("head") ? "可靠播放位置"

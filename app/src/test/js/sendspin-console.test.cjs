@@ -137,6 +137,14 @@ test("edits made during an in-flight save remain dirty after success", async () 
   assert.equal(app.element("sendspin-delay").value, "1100");
 });
 
+test("background suspension is shown as local-only rather than playback failure", () => {
+  const app = harness();
+  const text = app.context.syncStatusText({ playing: true, output_playing: false, output_suspended: true, clock_ready: true, sync_state: "background_suspended" });
+  assert.match(text, /后台.*本机.*挂起/);
+  assert.match(text, /同步组.*继续/);
+  assert.doesNotMatch(text, /异常|偏差|可靠/);
+});
+
 test("source labels distinguish reliable playback position from estimates and unavailable", () => {
   const app = harness();
   const status = { clock_ready: true, sync_state: "playing", resync_count: 2, underrun_count: 3 };

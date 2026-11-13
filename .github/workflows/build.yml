@@ -8,6 +8,7 @@ on:
       - feature/sendspin-jvm-v1.4.0
       - feature/sendspin-auto-sync
       - fix/tv-audio-startup
+      - fix/foreground-audio-and-ota
     tags:
       - 'v*'
   pull_request:

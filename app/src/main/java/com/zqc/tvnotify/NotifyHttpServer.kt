@@ -260,6 +260,7 @@ class NotifyHttpServer(
         json.put("connected", status.state == "connected")
         json.put("playing", status.playing)
         json.put("output_playing", status.outputPlaying)
+        json.put("output_suspended", status.outputSuspended)
         json.put("audio_error", status.audioError ?: JSONObject.NULL)
         json.put("state", status.state)
         json.put("server", status.server)
