@@ -31,7 +31,7 @@ import java.util.regex.Pattern
  * 1. 双通道检测：GitHub Releases API 优先，国内加速/CDN 兜底，免科学上网秒检；
  * 2. 智能版本比对：语义化版本号解析，避免降级或误报；
  * 3. 多镜像断点/容灾下载：官方 Release 直链 + 国内高速镜像切换，校验 ZIP/APK 魔数；
- * 4. Android 6.0+ 统一由只读 ApkFileProvider 交付安装包，安装前核验包名、版本与签名。
+ * 4. Android 6.0+ 优先由只读 ApkFileProvider 交付安装包，仅支持 file:// 的 API 23 电视回退至内部缓存目录穿透授权，安装前核验包名、版本与签名。
  */
 object AppUpdater {
     private const val TAG = "AppUpdater"
@@ -487,23 +487,62 @@ object AppUpdater {
         }, "yujian-ota-resume").start()
     }
 
+    /** Prepare an internal-cache APK with world-traverse dirs (+x) and world-read file (+r) for API 23 file:// installers. */
+    internal fun prepareLegacyApkFile(context: Context, apkFile: File): File {
+        val app = context.applicationContext
+        val directory = File(app.cacheDir, "updates")
+        check(directory.isDirectory || directory.mkdirs()) { "无法创建安装缓存目录" }
+        val canonicalDir = directory.canonicalFile
+        val canonicalSource = apkFile.canonicalFile
+        val legacyCopy = File(directory, "YuJian-legacy-update.apk")
+        val destination = if (canonicalSource.parentFile == canonicalDir) {
+            if (apkFile.name != legacyCopy.name && legacyCopy.exists()) {
+                legacyCopy.setWritable(true, true)
+                legacyCopy.delete()
+            }
+            apkFile
+        } else {
+            legacyCopy.also { target ->
+                if (target.exists()) {
+                    target.setWritable(true, true)
+                    check(target.delete()) { "无法清理旧安装缓存" }
+                }
+                apkFile.inputStream().use { source ->
+                    FileOutputStream(target).use { out -> source.copyTo(out) }
+                }
+            }
+        }
+        val dataRoot = app.applicationInfo?.dataDir?.let(::File) ?: app.cacheDir.parentFile
+        val canonicalRoot = dataRoot?.canonicalFile
+        val canonicalCache = app.cacheDir.canonicalFile
+        val rootCandidates = listOfNotNull(canonicalRoot, canonicalCache.parentFile, canonicalCache).toSet()
+        val lineage = mutableListOf<File>()
+        var cursor: File? = canonicalDir
+        while (cursor != null) {
+            lineage.add(cursor)
+            if (cursor in rootCandidates) break
+            cursor = cursor.parentFile
+        }
+        val dirs = linkedSetOf<File>().apply {
+            listOfNotNull(dataRoot, canonicalRoot, app.cacheDir, canonicalCache, directory, canonicalDir)
+                .forEach { add(it) }
+            if (cursor != null) addAll(lineage)
+        }
+        // Only grant o+x (traverse by known path), never o+r (directory listing), on internal app dirs.
+        dirs.forEach { dir -> dir.setExecutable(true, false) }
+        check(destination.setReadable(true, false)) { "无法开放安装包读取权限" }
+        destination.canonicalFile.setReadable(true, false)
+        check(destination.isFile && destination.length() == apkFile.length() && destination.canRead()) { "安装缓存准备失败" }
+        return destination
+    }
+
     /** Narrow API23 fallback for OEM installers that cannot resolve content URIs. */
     private fun installWithLegacyFile(context: Context, apkFile: File) {
         val app = context.applicationContext
         Thread({
             try {
-                val root = app.externalCacheDir ?: error("电视的应用专属外部缓存不可用")
-                val directory = File(root, "updates")
-                check(directory.isDirectory || directory.mkdirs()) { "无法创建安装缓存目录" }
-                val destination = File(directory, "YuJian-legacy-update.apk")
-                if (destination.canonicalFile != apkFile.canonicalFile) {
-                    apkFile.inputStream().use { source ->
-                        FileOutputStream(destination).use { target -> source.copyTo(target) }
-                    }
-                }
-                check(destination.isFile && destination.length() == apkFile.length() && destination.canRead()) { "安装缓存复制失败" }
-                // App-specific external cache is accessible to the system installer on API23;
-                // public storage permissions and exposing private cache directories are unnecessary.
+                val destination = prepareLegacyApkFile(app, apkFile)
+                // Internal cache avoids external storage EACCES when public storage permission is absent on API23.
                 mainHandler.post {
                     try {
                         context.startActivity(Intent(Intent.ACTION_VIEW).apply {

@@ -15,7 +15,7 @@ HTTP 状态中 `playing` 仍表示组播放意图。后台的 `output_playing=fa
 
 新下载使用应用私有缓存的 `updates` 目录。优先通过只读 `content://` URI 和临时读取授权交给系统安装器，无须申请公共存储读写权限。
 
-小米 Android 6 实机的安装器只声明 `file://` 和 `package://`，无法解析 `content://` 安装入口。仅当 API 23 上没有可用的 content 安装器、但有 file 安装器时，将已校验 APK 复制到应用专属外部缓存的 `updates` 目录后使用 file 安装；不把私有缓存设为公开可读、不申请公共存储权限。API 24+ 永不回退 file URI。
+小米 Android 6 实机的安装器只声明 `file://` 和 `package://`，无法解析 `content://` 安装入口；同时部分机型未授公共存储权限时向 `externalCacheDir`（`/storage/emulated/0/...`）写入会报 `EACCES`。仅当 API 23 上没有可用的 content 安装器、但有 file 安装器时，直接在应用内部 `cacheDir/updates` 目录准备已校验 APK（仅对祖先目录开放 `+x` 穿透执行权而不开放列目录读权，对目标 APK 开放 `+r` 只读权），通过 `file://` 交给系统安装器；不写入外部存储、不申请公共存储权限。API 24+ 永不回退 file URI。
 
 下载完毕先检查文件格式、已知文件长度、包名、版本号和签名。系统安装器仍负责最终验签与确认安装。Android 6 如被 ROM 限制，需要在系统设置允许未知来源；Android 8 以上未授权时先进入本应用的未知来源设置，授权返回后继续安装。
 

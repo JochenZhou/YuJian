@@ -41,26 +41,95 @@ class LegacyApkInstallerTest {
         })
     }
 
-    @Test fun `file-only API23 installer gets a readable copy in app-specific external cache`() {
+    private fun awaitStartedActivity(app: Application): Intent? {
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (System.nanoTime() < deadline) {
+            shadowOf(android.os.Looper.getMainLooper()).idle()
+            shadowOf(app).nextStartedActivity?.let { return it }
+            Thread.sleep(10)
+        }
+        return null
+    }
+
+    @Test fun `file-only API23 installer gets a readable APK in internal update cache`() {
         val app = RuntimeEnvironment.getApplication()
         val source = File(app.cacheDir, "updates/legacy.apk").apply { parentFile!!.mkdirs(); writeText("verified apk bytes") }
         registerInstaller(app, "file")
         val content = Intent(Intent.ACTION_VIEW).setDataAndType(ApkFileProvider.getUriForFile(app, source), "application/vnd.android.package-archive")
         assertNull("Reproduce OEM missing content filter", content.resolveActivity(app.packageManager))
         AppUpdater.installApk(app, source)
-        val deadline = System.nanoTime() + 5_000_000_000L
-        var intent: Intent? = null
-        while (System.nanoTime() < deadline && intent == null) {
-            shadowOf(android.os.Looper.getMainLooper()).idle()
-            intent = shadowOf(app).nextStartedActivity
-            if (intent == null) Thread.sleep(10)
-        }
+        val intent = awaitStartedActivity(app)
         assertNotNull(intent)
         assertEquals("file", intent!!.data!!.scheme)
         val delivered = File(intent.data!!.path!!)
-        assertEquals(File(app.externalCacheDir, "updates").canonicalFile, delivered.canonicalFile.parentFile)
+        assertEquals(source.canonicalFile, delivered.canonicalFile)
+        assertEquals(File(app.cacheDir, "updates").canonicalFile, delivered.canonicalFile.parentFile)
+        assertTrue(delivered.canRead())
         assertEquals("verified apk bytes", delivered.readText())
-        assertEquals("verified apk bytes", source.readText())
+    }
+
+    @Test fun `file-only API23 installer succeeds even when external cache updates cannot be opened`() {
+        val app = RuntimeEnvironment.getApplication()
+        val source = File(app.cacheDir, "updates/no-external.apk").apply { parentFile!!.mkdirs(); writeText("internal apk bytes") }
+        val blockingExternalUpdates = app.externalCacheDir?.let { extRoot ->
+            File(extRoot, "updates").apply {
+                parentFile?.mkdirs()
+                deleteRecursively()
+                // Blocking updates path as a regular file guarantees any copy to externalCacheDir throws.
+                writeText("not a directory")
+            }
+        }
+        try {
+            registerInstaller(app, "file")
+            AppUpdater.installApk(app, source)
+            val intent = awaitStartedActivity(app)
+            assertNotNull("Installer launch must not depend on externalCacheDir", intent)
+            assertEquals("file", intent!!.data!!.scheme)
+            val delivered = File(intent.data!!.path!!)
+            assertEquals(source.canonicalFile, delivered.canonicalFile)
+            assertEquals("internal apk bytes", delivered.readText())
+        } finally {
+            blockingExternalUpdates?.delete()
+        }
+    }
+
+    @Test fun `prepareLegacyApkFile stages external source and cleans stale legacy file`() {
+        val app = RuntimeEnvironment.getApplication()
+        val updatesDir = File(app.cacheDir, "updates").apply { mkdirs() }
+        val stale = File(updatesDir, "YuJian-legacy-update.apk").apply {
+            writeText("stale bytes")
+            setReadOnly()
+        }
+        val outside = File(app.cacheDir, "staging/outside.apk").apply { parentFile!!.mkdirs(); writeText("staged apk bytes") }
+        val staged = AppUpdater.prepareLegacyApkFile(app, outside)
+        assertEquals(stale.canonicalFile, staged.canonicalFile)
+        assertTrue(staged.canRead())
+        assertEquals("staged apk bytes", staged.readText())
+
+        val internal = File(updatesDir, "YuJian-update.apk").apply {
+            writeText("primary internal apk")
+            setReadable(false, false)
+            setReadable(true, true)
+        }
+        updatesDir.setReadable(false, false)
+        updatesDir.setReadable(true, true)
+        updatesDir.setExecutable(false, false)
+        updatesDir.setExecutable(true, true)
+        val preparedInternal = AppUpdater.prepareLegacyApkFile(app, internal)
+        assertEquals(internal.canonicalFile, preparedInternal.canonicalFile)
+        assertFalse("Stale legacy copy should be removed once internal primary is used", stale.exists())
+        assertTrue(preparedInternal.canRead())
+        assertEquals("primary internal apk", preparedInternal.readText())
+        if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            @Suppress("NewApi")
+            run {
+                val dirPerms = java.nio.file.Files.getPosixFilePermissions(updatesDir.toPath())
+                assertTrue(java.nio.file.attribute.PosixFilePermission.OTHERS_EXECUTE in dirPerms)
+                assertFalse(java.nio.file.attribute.PosixFilePermission.OTHERS_READ in dirPerms)
+                val filePerms = java.nio.file.Files.getPosixFilePermissions(preparedInternal.toPath())
+                assertTrue(java.nio.file.attribute.PosixFilePermission.OTHERS_READ in filePerms)
+            }
+        }
     }
 
     @Test fun `API23 installer with content support retains private read-grant delivery`() {
