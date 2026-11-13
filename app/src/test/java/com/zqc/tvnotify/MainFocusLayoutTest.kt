@@ -4,6 +4,7 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.drawable.StateListDrawable
+import android.os.Looper
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -14,6 +15,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowInstrumentation
 
@@ -184,6 +186,7 @@ class MainFocusLayoutTest {
         try {
             block()
         } finally {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             ShadowInstrumentation.getInstrumentation().setInTouchMode(prevTouchMode)
         }
     }
@@ -201,14 +204,35 @@ class MainFocusLayoutTest {
             "$sourceName should handle key $keyCode",
             source.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, keyCode, 0))
         )
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        val overview = field(activity, "overviewPage")
+        val practice = field(activity, "practicePage")
+        val system = field(activity, "systemPage")
         assertEquals(expectedTab, activeTab(activity))
-        assertEquals(if (expectedTab == MainTab.OVERVIEW) View.VISIBLE else View.GONE, field(activity, "overviewPage").visibility)
-        assertEquals(if (expectedTab == MainTab.PRACTICE) View.VISIBLE else View.GONE, field(activity, "practicePage").visibility)
-        assertEquals(if (expectedTab == MainTab.SYSTEM) View.VISIBLE else View.GONE, field(activity, "systemPage").visibility)
+        assertEquals(if (expectedTab == MainTab.OVERVIEW) View.VISIBLE else View.GONE, overview.visibility)
+        assertEquals(if (expectedTab == MainTab.PRACTICE) View.VISIBLE else View.GONE, practice.visibility)
+        assertEquals(if (expectedTab == MainTab.SYSTEM) View.VISIBLE else View.GONE, system.visibility)
 
         val expectedTarget = field(activity, expectedFocusName)
+        val expectedPage = when (expectedTab) {
+            MainTab.OVERVIEW -> overview
+            MainTab.PRACTICE -> practice
+            MainTab.SYSTEM -> system
+        }
+        assertFalse("$sourceName should lose focus after switching to $expectedTab", source.isFocused)
         assertTrue("$expectedFocusName should receive focus after switching to $expectedTab", expectedTarget.isFocused)
-        assertSame(expectedTarget, activity.currentFocus)
+        assertTrue("$expectedTab page should hold focus", expectedPage.hasFocus())
+        assertSame(expectedTarget, expectedPage.findFocus())
+        if (expectedPage !== overview) {
+            assertFalse("OVERVIEW page must not hold focus when active tab is $expectedTab", overview.hasFocus())
+        }
+        if (expectedPage !== practice) {
+            assertFalse("PRACTICE page must not hold focus when active tab is $expectedTab", practice.hasFocus())
+        }
+        if (expectedPage !== system) {
+            assertFalse("SYSTEM page must not hold focus when active tab is $expectedTab", system.hasFocus())
+        }
         assertFalse(field(activity, "overviewTabButton").isFocused)
         assertFalse(field(activity, "practiceTabButton").isFocused)
         assertFalse(field(activity, "systemTabButton").isFocused)

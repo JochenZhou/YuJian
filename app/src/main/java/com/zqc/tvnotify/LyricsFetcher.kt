@@ -410,6 +410,7 @@ object LyricsFetcher {
         }
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun queryQqMusic(
         title: String,
         artist: String,
@@ -464,6 +465,7 @@ object LyricsFetcher {
         return extractUsableLyrics(decodeHtmlEntities(raw))
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun queryKugou(
         title: String,
         artist: String,
@@ -518,6 +520,7 @@ object LyricsFetcher {
         return extractUsableLyrics(decoded)
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun queryNetease(
         title: String,
         artist: String,
@@ -569,6 +572,7 @@ object LyricsFetcher {
         return extractUsableLyrics(raw)
     }
 
+    @Suppress("UNUSED_PARAMETER")
     private fun queryLyricsOvh(
         title: String,
         artist: String,
