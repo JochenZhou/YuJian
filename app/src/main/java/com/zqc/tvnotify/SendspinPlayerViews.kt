@@ -6,6 +6,8 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Outline
@@ -29,6 +31,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -122,12 +125,22 @@ internal class SendspinStageLayout(
     }
 }
 
-/** Low contrast gradients provide an artwork tint without any blur API or render loop. */
+/**
+ * 播放器全屏底图：样式一采用柔和专辑主色微光渐变；样式二采用居中裁切的歌曲原图高斯模糊背景
+ * 并叠加轻量暗角可读蒙版，无封面时平滑回退为微光渐变。
+ */
 internal class SendspinAmbientDrawable(private val base: Int, initialColor: Int) : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val bitmapPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val bitmapMatrix = Matrix()
+    private val boundsRectF = RectF()
     private var ambient = initialColor
+    private var playerStyle = Prefs.SendspinPlayerStyle.VINYL
+    private var blurredBitmap: Bitmap? = null
     private var baseGradient: Shader? = null
     private var artGradient: Shader? = null
+    private var blurRadialScrim: Shader? = null
+    private var blurLinearScrim: Shader? = null
 
     fun setAmbientColor(color: Int) {
         if (ambient == color) return
@@ -136,7 +149,27 @@ internal class SendspinAmbientDrawable(private val base: Int, initialColor: Int)
         invalidateSelf()
     }
 
-    override fun onBoundsChange(bounds: Rect) { updateShaders() }
+    fun setPlayerStyle(style: Prefs.SendspinPlayerStyle) {
+        if (playerStyle == style) return
+        playerStyle = style
+        invalidateSelf()
+    }
+
+    fun setBlurredBitmap(bitmap: Bitmap?) {
+        if (blurredBitmap === bitmap) return
+        blurredBitmap = bitmap
+        updateBitmapMatrix()
+        invalidateSelf()
+    }
+
+    fun hasActiveBlurredBackdrop(): Boolean =
+        playerStyle == Prefs.SendspinPlayerStyle.COVER_BLUR && blurredBitmap != null
+
+    override fun onBoundsChange(bounds: Rect) {
+        boundsRectF.set(bounds)
+        updateShaders()
+        updateBitmapMatrix()
+    }
 
     private fun updateShaders() {
         if (bounds.width() <= 0 || bounds.height() <= 0) return
@@ -144,9 +177,49 @@ internal class SendspinAmbientDrawable(private val base: Int, initialColor: Int)
         val height = bounds.height().toFloat()
         baseGradient = LinearGradient(0f, 0f, width, height, playerBlend(base, Color.rgb(27, 30, 35), .35f), playerBlend(base, Color.BLACK, .24f), Shader.TileMode.CLAMP)
         artGradient = RadialGradient(width * .24f, height * .47f, max(width * .62f, height), intArrayOf(playerAlpha(ambient, 65), playerAlpha(ambient, 22), playerAlpha(ambient, 0)), floatArrayOf(0f, .48f, 1f), Shader.TileMode.CLAMP)
+        blurRadialScrim = RadialGradient(
+            width * 0.26f,
+            height * 0.48f,
+            max(width * 0.72f, height * 0.95f),
+            intArrayOf(Color.argb(36, 8, 10, 14), Color.argb(92, 8, 10, 14), Color.argb(132, 8, 10, 14)),
+            floatArrayOf(0f, 0.62f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        blurLinearScrim = LinearGradient(
+            0f, 0f, 0f, height,
+            intArrayOf(Color.argb(62, 8, 10, 14), Color.argb(40, 8, 10, 14), Color.argb(112, 8, 10, 14)),
+            floatArrayOf(0f, 0.46f, 1f),
+            Shader.TileMode.CLAMP
+        )
+    }
+
+    private fun updateBitmapMatrix() {
+        val bmp = blurredBitmap ?: return
+        val w = bounds.width().toFloat()
+        val h = bounds.height().toFloat()
+        if (w <= 0f || h <= 0f || bmp.width <= 0 || bmp.height <= 0) return
+        val scale = max(w / bmp.width.toFloat(), h / bmp.height.toFloat())
+        val dx = bounds.left + (w - bmp.width * scale) / 2f
+        val dy = bounds.top + (h - bmp.height * scale) / 2f
+        bitmapMatrix.reset()
+        bitmapMatrix.setScale(scale, scale)
+        bitmapMatrix.postTranslate(dx, dy)
     }
 
     override fun draw(canvas: Canvas) {
+        val blur = if (playerStyle == Prefs.SendspinPlayerStyle.COVER_BLUR) blurredBitmap else null
+        if (blur != null && !blur.isRecycled) {
+            val save = canvas.save()
+            canvas.clipRect(bounds)
+            canvas.drawBitmap(blur, bitmapMatrix, bitmapPaint)
+            canvas.restoreToCount(save)
+            paint.shader = blurRadialScrim
+            canvas.drawRect(boundsRectF, paint)
+            paint.shader = blurLinearScrim
+            canvas.drawRect(boundsRectF, paint)
+            paint.shader = null
+            return
+        }
         paint.shader = baseGradient
         canvas.drawRect(bounds, paint)
         paint.shader = artGradient
@@ -154,8 +227,8 @@ internal class SendspinAmbientDrawable(private val base: Int, initialColor: Int)
         paint.shader = null
     }
 
-    override fun setAlpha(alpha: Int) { paint.alpha = alpha; invalidateSelf() }
-    override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter; invalidateSelf() }
+    override fun setAlpha(alpha: Int) { paint.alpha = alpha; bitmapPaint.alpha = alpha; invalidateSelf() }
+    override fun setColorFilter(colorFilter: ColorFilter?) { paint.colorFilter = colorFilter; bitmapPaint.colorFilter = colorFilter; invalidateSelf() }
     @Suppress("DEPRECATION") override fun getOpacity(): Int = PixelFormat.OPAQUE
 }
 
@@ -254,7 +327,9 @@ internal class SendspinControlDrawable(
     private val accent: Int,
     private val primary: Boolean = false,
     private val radiusDp: Float = 100f,
-    private val quiet: Boolean = false
+    private val quiet: Boolean = false,
+    private val idleFillColor: Int = Color.argb(13, 255, 255, 255),
+    private val idleStrokeColor: Int = Color.argb(22, 255, 255, 255)
 ) : Drawable() {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
@@ -272,9 +347,9 @@ internal class SendspinControlDrawable(
         paint.color = when {
             primary -> playerBlend(Color.rgb(236, 241, 241), accent, if (pressed) .28f else .08f)
             pressed -> playerAlpha(accent, 42)
-            focused -> playerAlpha(accent, 20)
+            focused -> playerAlpha(accent, 24)
             quiet -> Color.TRANSPARENT
-            else -> Color.argb(13, 255, 255, 255)
+            else -> idleFillColor
         }
         if (!enabled) paint.color = playerAlpha(paint.color, if (primary) 50 else 5)
         canvas.drawRoundRect(rect, radiusDp * density, radiusDp * density, paint)
@@ -284,7 +359,7 @@ internal class SendspinControlDrawable(
             focused -> accent
             quiet -> Color.TRANSPARENT
             primary -> Color.argb(if (enabled) 65 else 10, 255, 255, 255)
-            else -> Color.argb(if (enabled) 22 else 8, 255, 255, 255)
+            else -> if (enabled) idleStrokeColor else playerAlpha(idleStrokeColor, 30)
         }
         canvas.drawRoundRect(rect, radiusDp * density, radiusDp * density, paint)
     }
@@ -295,15 +370,31 @@ internal class SendspinControlDrawable(
     @Suppress("DEPRECATION") override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
 }
 
-internal class SendspinIconButton(context: Context, icon: SendspinIcon, accent: Int, primary: Boolean = false) : ImageButton(context) {
-    private val symbol = SendspinIconDrawable(context, icon, if (primary) Color.rgb(18, 22, 26) else Color.rgb(234, 239, 240), if (primary) 32f else 24f)
+internal class SendspinIconButton(
+    context: Context,
+    icon: SendspinIcon,
+    accent: Int,
+    primary: Boolean = false,
+    iconColor: Int = if (primary) Color.rgb(18, 22, 26) else Color.rgb(234, 239, 240),
+    radiusDp: Float = 100f,
+    idleFillColor: Int = Color.argb(13, 255, 255, 255),
+    idleStrokeColor: Int = Color.argb(22, 255, 255, 255)
+) : ImageButton(context) {
+    private val symbol = SendspinIconDrawable(context, icon, iconColor, if (primary) 32f else 24f)
     var icon: SendspinIcon
         get() = symbol.icon
         set(value) { if (symbol.icon != value) { symbol.icon = value; symbol.invalidateSelf() } }
 
     init {
         backgroundTintList = null
-        background = SendspinControlDrawable(resources.displayMetrics.density, accent, primary)
+        background = SendspinControlDrawable(
+            density = resources.displayMetrics.density,
+            accent = accent,
+            primary = primary,
+            radiusDp = radiusDp,
+            idleFillColor = idleFillColor,
+            idleStrokeColor = idleStrokeColor
+        )
         stateListAnimator = null
         setImageDrawable(symbol)
         scaleType = ImageView.ScaleType.CENTER
@@ -347,7 +438,12 @@ internal class SendspinFocusPill(context: Context, accent: Int) : LinearLayout(c
 }
 
 /** Native seeking semantics with a thin painted track and explicit D-pad/accessibility commits. */
-internal class SendspinSeekBar(context: Context, private val accent: Int) : SeekBar(context) {
+internal class SendspinSeekBar(
+    context: Context,
+    private val accent: Int,
+    private val trackColor: Int = Color.argb(44, 255, 255, 255),
+    private val disabledTrackColor: Int = Color.argb(22, 255, 255, 255)
+) : SeekBar(context) {
     var onSeekCommit: (() -> Unit)? = null
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
@@ -370,7 +466,7 @@ internal class SendspinSeekBar(context: Context, private val accent: Int) : Seek
         val x = start + (end - start) * progress / max.coerceAtLeast(1)
         paint.strokeCap = Paint.Cap.ROUND
         paint.strokeWidth = context.playerDp(if (isFocused) 3f else 2f)
-        paint.color = Color.argb(if (isEnabled) 44 else 22, 255, 255, 255)
+        paint.color = if (isEnabled) trackColor else disabledTrackColor
         canvas.drawLine(start, y, end, y, paint)
         paint.color = playerAlpha(accent, if (isEnabled) 255 else 100)
         if (x > start) canvas.drawLine(start, y, x, y, paint)
@@ -427,6 +523,98 @@ internal fun sendspinArtworkColor(bitmap: Bitmap, fallback: Int): Int {
     hsv[1] = hsv[1].coerceIn(.12f, .6f)
     hsv[2] = hsv[2].coerceIn(.3f, .7f)
     return Color.HSVToColor(hsv)
+}
+
+/**
+ * 兼容 API 23+ 的纯软件高斯模糊底图生成器：先居中裁切并降采样至 96x96（适度提升色彩饱和度），
+ * 再执行 3 趟滑动均值模糊（等价高斯卷积核），既保留封面清晰可辨的色彩与光影轮廓，又零卡顿低内存。
+ */
+internal fun createBlurredArtworkBackdrop(source: Bitmap): Bitmap? {
+    val srcW = source.width
+    val srcH = source.height
+    if (srcW <= 0 || srcH <= 0 || source.isRecycled) return null
+    val size = 96
+    val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(out)
+    canvas.drawColor(Color.rgb(18, 22, 28))
+    val cropSide = min(srcW, srcH)
+    val cropX = (srcW - cropSide) / 2
+    val cropY = (srcH - cropSide) / 2
+    val srcRect = Rect(cropX, cropY, cropX + cropSide, cropY + cropSide)
+    val dstRect = Rect(0, 0, size, size)
+
+    val cm = ColorMatrix().apply { setSaturation(1.32f) }
+    val scale = ColorMatrix().apply { setScale(0.94f, 0.94f, 0.94f, 1f) }
+    cm.postConcat(scale)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+        colorFilter = ColorMatrixColorFilter(cm)
+    }
+    canvas.drawBitmap(source, srcRect, dstRect, paint)
+
+    val pixels = IntArray(size * size)
+    out.getPixels(pixels, 0, size, 0, 0, size, size)
+    applyThreePassGaussianBlur(pixels, size, size, radius = 4)
+    out.setPixels(pixels, 0, size, 0, 0, size, size)
+    return out
+}
+
+internal fun applyThreePassGaussianBlur(pixels: IntArray, w: Int, h: Int, radius: Int) {
+    if (w <= 0 || h <= 0 || radius <= 0) return
+    val tmp = IntArray(w * h)
+    val div = radius * 2 + 1
+    val half = div / 2
+    val maxX = w - 1
+    val maxY = h - 1
+
+    repeat(3) {
+        // Horizontal box pass: pixels -> tmp
+        for (y in 0 until h) {
+            val row = y * w
+            var rSum = 0; var gSum = 0; var bSum = 0
+            for (i in -radius..radius) {
+                val c = pixels[row + i.coerceIn(0, maxX)]
+                rSum += (c ushr 16) and 0xFF
+                gSum += (c ushr 8) and 0xFF
+                bSum += c and 0xFF
+            }
+            for (x in 0 until w) {
+                val rAvg = (rSum + half) / div
+                val gAvg = (gSum + half) / div
+                val bAvg = (bSum + half) / div
+                tmp[row + x] = (0xFF shl 24) or (rAvg shl 16) or (gAvg shl 8) or bAvg
+                if (x + 1 < w) {
+                    val cOut = pixels[row + (x - radius).coerceIn(0, maxX)]
+                    val cIn = pixels[row + (x + radius + 1).coerceIn(0, maxX)]
+                    rSum += ((cIn ushr 16) and 0xFF) - ((cOut ushr 16) and 0xFF)
+                    gSum += ((cIn ushr 8) and 0xFF) - ((cOut ushr 8) and 0xFF)
+                    bSum += (cIn and 0xFF) - (cOut and 0xFF)
+                }
+            }
+        }
+        // Vertical box pass: tmp -> pixels
+        for (x in 0 until w) {
+            var rSum = 0; var gSum = 0; var bSum = 0
+            for (i in -radius..radius) {
+                val c = tmp[i.coerceIn(0, maxY) * w + x]
+                rSum += (c ushr 16) and 0xFF
+                gSum += (c ushr 8) and 0xFF
+                bSum += c and 0xFF
+            }
+            for (y in 0 until h) {
+                val rAvg = (rSum + half) / div
+                val gAvg = (gSum + half) / div
+                val bAvg = (bSum + half) / div
+                pixels[y * w + x] = (0xFF shl 24) or (rAvg shl 16) or (gAvg shl 8) or bAvg
+                if (y + 1 < h) {
+                    val cOut = tmp[(y - radius).coerceIn(0, maxY) * w + x]
+                    val cIn = tmp[(y + radius + 1).coerceIn(0, maxY) * w + x]
+                    rSum += ((cIn ushr 16) and 0xFF) - ((cOut ushr 16) and 0xFF)
+                    gSum += ((cIn ushr 8) and 0xFF) - ((cOut ushr 8) and 0xFF)
+                    bSum += (cIn and 0xFF) - (cOut and 0xFF)
+                }
+            }
+        }
+    }
 }
 
 /** Custom-drawn rotating vinyl disc with concentric grooves and circular center artwork label. */
@@ -628,6 +816,199 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
     }
 }
 
+/** 样式二：微圆角正方形唱片封面视图，未加载封面时展示音符占位卡。 */
+internal class RoundedCoverView(context: Context, initialAccent: Int) : View(context) {
+    private var accent = initialAccent
+    private var artwork: Bitmap? = null
+    private var artworkShader: BitmapShader? = null
+    private val shaderMatrix = Matrix()
+
+    private val coverRect = RectF()
+    private val glowRect = RectF()
+    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val cardBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val artworkPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val noteDrawable = SendspinIconDrawable(context, SendspinIcon.NOTE, Color.rgb(226, 236, 238))
+
+    init {
+        isFocusable = false
+        isFocusableInTouchMode = false
+    }
+
+    fun setAccentColor(color: Int) {
+        if (accent == color) return
+        accent = color
+        rebuildGlow()
+        invalidate()
+    }
+
+    fun setArtwork(bitmap: Bitmap?) {
+        if (artwork === bitmap) return
+        artwork = bitmap
+        artworkShader = bitmap?.let { BitmapShader(it, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP) }
+        artworkPaint.shader = artworkShader
+        updateArtworkMatrix()
+        invalidate()
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        val cx = w / 2f
+        val cy = h / 2f
+        val half = min(w, h) * 0.44f
+        coverRect.set(cx - half, cy - half, cx + half, cy + half)
+        val glowHalf = half * 1.12f
+        glowRect.set(cx - glowHalf, cy - glowHalf, cx + glowHalf, cy + glowHalf)
+        rebuildGlow()
+        updateArtworkMatrix()
+    }
+
+    private fun rebuildGlow() {
+        if (coverRect.width() <= 0f) return
+        val cx = coverRect.centerX()
+        val cy = coverRect.centerY()
+        val radius = coverRect.width() * 0.78f
+        glowPaint.shader = RadialGradient(
+            cx, cy, radius,
+            intArrayOf(playerAlpha(accent, 95), playerAlpha(accent, 28), Color.TRANSPARENT),
+            floatArrayOf(0.45f, 0.80f, 1f),
+            Shader.TileMode.CLAMP
+        )
+    }
+
+    private fun updateArtworkMatrix() {
+        val bmp = artwork ?: return
+        val shader = artworkShader ?: return
+        val size = coverRect.width()
+        if (size <= 0f || bmp.width <= 0 || bmp.height <= 0) return
+        val scale = max(size / bmp.width.toFloat(), size / bmp.height.toFloat())
+        val dx = coverRect.centerX() - bmp.width * scale / 2f
+        val dy = coverRect.centerY() - bmp.height * scale / 2f
+        shaderMatrix.reset()
+        shaderMatrix.setScale(scale, scale)
+        shaderMatrix.postTranslate(dx, dy)
+        shader.setLocalMatrix(shaderMatrix)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        if (coverRect.width() <= 0f) return
+        val corner = min(context.playerDp(10f), coverRect.width() * 0.12f)
+        canvas.drawRoundRect(glowRect, corner * 1.3f, corner * 1.3f, glowPaint)
+
+        if (artworkShader != null) {
+            cardBgPaint.color = Color.rgb(24, 28, 34)
+            canvas.drawRoundRect(coverRect, corner, corner, cardBgPaint)
+            canvas.drawRoundRect(coverRect, corner, corner, artworkPaint)
+            borderPaint.color = Color.argb(64, 255, 255, 255)
+        } else {
+            cardBgPaint.color = Color.argb(190, 30, 36, 44)
+            canvas.drawRoundRect(coverRect, corner, corner, cardBgPaint)
+            val noteHalf = (coverRect.width() * 0.24f).toInt()
+            val cx = coverRect.centerX().toInt()
+            val cy = coverRect.centerY().toInt()
+            noteDrawable.setBounds(cx - noteHalf, cy - noteHalf, cx + noteHalf, cy + noteHalf)
+            noteDrawable.alpha = 205
+            noteDrawable.draw(canvas)
+            borderPaint.color = Color.argb(46, 255, 255, 255)
+        }
+        borderPaint.strokeWidth = max(1f, context.playerDp(1f))
+        canvas.drawRoundRect(coverRect, corner, corner, borderPaint)
+    }
+}
+
+/** 可点击、可遥控器聚焦的封面切换容器，兼容样式一（黑胶）与样式二（微圆角方图）。 */
+internal class SendspinArtworkSwitcher(context: Context, initialAccent: Int) : FrameLayout(context) {
+    val vinylRecord = VinylRecordView(context, initialAccent)
+    val roundedCover = RoundedCoverView(context, initialAccent).apply { visibility = GONE }
+
+    private var accent = initialAccent
+    private var style = Prefs.SendspinPlayerStyle.VINYL
+    private var playing = false
+    private val focusRect = RectF()
+    private val focusPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+    }
+
+    init {
+        setWillNotDraw(false)
+        clipChildren = false
+        clipToPadding = false
+        isFocusable = true
+        isFocusableInTouchMode = false
+        isClickable = true
+        descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        addView(vinylRecord, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(roundedCover, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        updateContentDescription()
+    }
+
+    fun setStyle(newStyle: Prefs.SendspinPlayerStyle) {
+        if (style == newStyle) return
+        style = newStyle
+        val isVinyl = style == Prefs.SendspinPlayerStyle.VINYL
+        vinylRecord.visibility = if (isVinyl) VISIBLE else GONE
+        roundedCover.visibility = if (isVinyl) GONE else VISIBLE
+        vinylRecord.setPlaying(playing && isVinyl)
+        updateContentDescription()
+        invalidate()
+    }
+
+    fun setArtwork(bitmap: Bitmap?) {
+        vinylRecord.setArtwork(bitmap)
+        roundedCover.setArtwork(bitmap)
+    }
+
+    fun setAccentColor(color: Int) {
+        accent = color
+        vinylRecord.setAccentColor(color)
+        roundedCover.setAccentColor(color)
+        if (isFocused) invalidate()
+    }
+
+    fun setPlaying(isPlaying: Boolean) {
+        playing = isPlaying
+        vinylRecord.setPlaying(isPlaying && style == Prefs.SendspinPlayerStyle.VINYL)
+    }
+
+    private fun updateContentDescription() {
+        contentDescription = if (style == Prefs.SendspinPlayerStyle.VINYL) {
+            "黑胶唱片封面，点击切换为方形封面样式"
+        } else {
+            "方形唱片封面，点击切换为黑胶唱片样式"
+        }
+    }
+
+    override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
+        super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
+        animatePlayerFocus(gainFocus)
+        invalidate()
+    }
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = "android.widget.Button"
+    }
+
+    override fun dispatchDraw(canvas: Canvas) {
+        super.dispatchDraw(canvas)
+        if (!isFocused || width <= 0 || height <= 0) return
+        val half = min(width, height) * 0.44f + context.playerDp(3f)
+        val cx = width / 2f
+        val cy = height / 2f
+        focusPaint.strokeWidth = context.playerDp(2.2f)
+        focusPaint.color = accent
+        if (style == Prefs.SendspinPlayerStyle.VINYL) {
+            canvas.drawCircle(cx, cy, half, focusPaint)
+        } else {
+            val corner = min(context.playerDp(12f), half * 2f * 0.14f)
+            focusRect.set(cx - half, cy - half, cx + half, cy + half)
+            canvas.drawRoundRect(focusRect, corner, corner, focusPaint)
+        }
+    }
+}
+
 /** Hardware-accelerated damped smooth scrolling LRC view with multi-line wrapping. */
 internal class LyricsScrollView(context: Context, initialAccent: Int) : View(context) {
     private data class LyricItemLayout(
@@ -641,6 +1022,7 @@ internal class LyricsScrollView(context: Context, initialAccent: Int) : View(con
     private var lyrics: ParsedLyrics? = null
     private var loading = false
     private var playing = false
+    private var blurredBackdropActive = false
     private var currentPositionMs = 0L
 
     private var currentScrollY = 0f
@@ -697,6 +1079,12 @@ internal class LyricsScrollView(context: Context, initialAccent: Int) : View(con
     fun setLoading(isLoading: Boolean) {
         if (loading == isLoading) return
         loading = isLoading
+        invalidate()
+    }
+
+    fun setBlurredBackdropActive(active: Boolean) {
+        if (blurredBackdropActive == active) return
+        blurredBackdropActive = active
         invalidate()
     }
 
@@ -807,13 +1195,18 @@ internal class LyricsScrollView(context: Context, initialAccent: Int) : View(con
             val paint = item.layout.paint
 
             if (item.isActive) {
-                paint.color = activeColor
+                paint.color = if (blurredBackdropActive) Color.WHITE else activeColor
                 paint.alpha = (alphaFactor * 255).toInt()
-                paint.setShadowLayer(shadowRadius, 0f, context.playerDp(1f), shadowColor)
+                val actShadowColor = if (blurredBackdropActive) Color.argb(170, 0, 0, 0) else shadowColor
+                paint.setShadowLayer(shadowRadius, 0f, context.playerDp(1f), actShadowColor)
             } else {
-                paint.clearShadowLayer()
-                paint.color = Color.rgb(228, 234, 236)
-                paint.alpha = (alphaFactor * 165).toInt()
+                if (blurredBackdropActive) {
+                    paint.setShadowLayer(context.playerDp(3f), 0f, context.playerDp(1f), Color.argb(125, 0, 0, 0))
+                } else {
+                    paint.clearShadowLayer()
+                }
+                paint.color = if (blurredBackdropActive) Color.rgb(238, 243, 245) else Color.rgb(228, 234, 236)
+                paint.alpha = (alphaFactor * if (blurredBackdropActive) 185 else 165).toInt()
             }
 
             canvas.save()

@@ -2,7 +2,6 @@ package com.zqc.tvnotify
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -152,6 +151,7 @@ class MainActivity : Activity() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var bannerController: BannerController? = null
+    private var activeDialog: ThemedDialog? = null
     private var currentUrl: String = ""
     private var webConsoleUrl: String = ""
     private var cachedIp: String = "127.0.0.1"
@@ -211,6 +211,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        activeDialog?.dismiss()
+        activeDialog = null
         bannerController?.dismissImmediately()
         bannerController?.release()
         bannerController = null
@@ -1305,40 +1307,45 @@ class MainActivity : Activity() {
             toast(if (theme.isXianxia) "暂无传音简录" else "暂无通知历史")
             return
         }
-        val titles = items.map { item ->
-            val levelTag = when (item.level.lowercase()) {
-                "warn" -> if (theme.isXianxia) "[灵警]" else "[警告]"
-                "error" -> if (theme.isXianxia) "[告急]" else "[错误]"
-                else -> if (theme.isXianxia) "[传音]" else "[通知]"
-            }
-            val posTag = "[${theme.positionDisplayName(item.position)}]"
-            val ttsTag = if (!item.tts.isNullOrBlank()) " 🔊" else ""
-            "$levelTag $posTag ${item.formattedTime}$ttsTag\n${item.title.ifEmpty { "（无标题）" }}：${item.text.take(32)}"
-        }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle(theme.historyButtonText)
-            .setItems(titles) { _, which ->
-                val selected = items[which]
+        val dialogItems = items.map { item ->
+            val level = BannerLevel.fromRaw(item.level)
+            val posName = theme.positionDisplayName(item.position)
+            val ttsTag = if (!item.tts.isNullOrBlank()) " · 🔊" else ""
+            val bodyPreview = item.text.replace('\n', ' ').trim().take(42)
+            ThemeDialogItem(
+                title = item.title.ifEmpty { if (theme.isXianxia) "（无题灵简）" else "（无标题）" },
+                subtitle = "[$posName] ${item.formattedTime}$ttsTag${if (bodyPreview.isNotEmpty()) " · $bodyPreview" else ""}",
+                leadingBadge = theme.levelBadgeText(level),
+                leadingBadgeColor = theme.bannerIconColor(level),
+                trailingBadge = if (theme.isXianxia) "重演" else "重播"
+            ) {
                 val controller = bannerController ?: BannerController(this).also { bannerController = it }
                 controller.show(
                     BannerRequest(
-                        title = selected.title,
-                        text = selected.text,
-                        level = BannerLevel.fromRaw(selected.level),
-                        position = BannerPosition.fromRaw(selected.position),
+                        title = item.title,
+                        text = item.text,
+                        level = level,
+                        position = BannerPosition.fromRaw(item.position),
                         durationSeconds = 6,
-                        tts = selected.tts
+                        tts = item.tts
                     )
                 )
                 toast(if (theme.isXianxia) "已重演此简" else "已重新展示该通知")
             }
-            .setNeutralButton(if (theme.isXianxia) "拭去简录 (清空)" else "清空历史") { _, _ ->
-                NotifyHistory.clear(this)
-                toast(if (theme.isXianxia) "简录已拭去" else "历史已清空")
-            }
-            .setPositiveButton(if (theme.isXianxia) "收起" else "关闭", null)
-            .show()
+        }
+
+        showThemedDialog(
+            ThemedDialogBuilder(this, theme)
+                .setTitle(theme.historyButtonText)
+                .setItems(dialogItems)
+                .setMaxWidthDp(580)
+                .setNeutralButton(if (theme.isXianxia) "拭去简录 (清空)" else "清空历史") {
+                    NotifyHistory.clear(this)
+                    toast(if (theme.isXianxia) "简录已拭去" else "历史已清空")
+                }
+                .setPositiveButton(if (theme.isXianxia) "收起" else "关闭")
+                .create()
+        )
     }
 
     private fun cycleBannerPosition() {
@@ -1374,11 +1381,14 @@ class MainActivity : Activity() {
             append("HA 集成：\n").append(HA_INTEGRATION_URL).append("\n\n")
             append("致谢：\n感谢开源电视桌面 Aerial 的 ADB 保活机制，助力实现后台拉起服务通知。")
         }
-        AlertDialog.Builder(this)
-            .setTitle(if (theme.isXianxia) "简牍溯源" else "关于")
-            .setMessage(message)
-            .setPositiveButton(if (theme.isXianxia) "知道了" else "确定", null)
-            .show()
+        showThemedDialog(
+            ThemedDialogBuilder(this, theme)
+                .setTitle(if (theme.isXianxia) "简牍溯源" else "关于")
+                .setMessage(message)
+                .setMaxWidthDp(520)
+                .setPositiveButton(if (theme.isXianxia) "知道了" else "确定")
+                .create()
+        )
     }
 
     private fun checkUpdateManual() {
@@ -1422,22 +1432,43 @@ class MainActivity : Activity() {
 
     private fun showThemeSelectorDialog() {
         val allThemes = Theme.entries
-        val labels = allThemes.map { item ->
-            val prefix = if (item == theme) "✓ " else "   "
-            "$prefix${item.fullName}"
-        }.toTypedArray()
-
-        AlertDialog.Builder(this)
-            .setTitle(
-                if (theme.isXianxia) "选择法相主题（共 ${Theme.entries.size} 款 · 含专属提示音）"
-                else "选择横幅与界面主题（共 ${Theme.entries.size} 款 · 含专属提示音）"
-            )
-            .setItems(labels) { _, which ->
-                val selected = allThemes[which]
-                applySelectedTheme(selected)
+        val dialogItems = allThemes.map { item ->
+            val previewPalette = ThemeDialogPalette.from(item)
+            val detail = item.fullName.substringAfter("（", "").removeSuffix("）").ifBlank { item.soundDesc }
+            val selected = item == theme
+            ThemeDialogItem(
+                title = "${item.emoji} ${item.shortName}",
+                subtitle = detail,
+                selected = selected,
+                swatchFill = previewPalette.accentColor,
+                swatchStroke = previewPalette.strokeColor,
+                swatchSquare = item == Theme.MINECRAFT,
+                trailingBadge = if (selected) (if (theme.isXianxia) "✓ 当前法相" else "✓ 当前主题") else null
+            ) {
+                applySelectedTheme(item)
             }
-            .setNegativeButton(if (theme.isXianxia) "收起" else "取消", null)
-            .show()
+        }
+
+        showThemedDialog(
+            ThemedDialogBuilder(this, theme)
+                .setTitle(
+                    if (theme.isXianxia) "选择法相主题（共 ${Theme.entries.size} 款）"
+                    else "选择界面与横幅主题（共 ${Theme.entries.size} 款）"
+                )
+                .setItems(dialogItems)
+                .setMaxWidthDp(560)
+                .setNegativeButton(if (theme.isXianxia) "收起" else "取消")
+                .create()
+        )
+    }
+
+    private fun showThemedDialog(dialog: ThemedDialog) {
+        activeDialog?.dismiss()
+        activeDialog = dialog
+        dialog.setOnDismissListener {
+            if (activeDialog === dialog) activeDialog = null
+        }
+        dialog.show()
     }
 
     private fun cycleTheme() {

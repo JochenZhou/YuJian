@@ -1,20 +1,15 @@
 package com.zqc.tvnotify
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
-import android.view.Gravity
-import android.view.View
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -23,7 +18,6 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.util.regex.Pattern
 
 /**
@@ -253,13 +247,14 @@ object AppUpdater {
 
         val message = "当前版本：v$currentVer\n最新版本：v${info.versionName}$sizeDesc$notes"
 
-        AlertDialog.Builder(activity)
+        ThemedDialogBuilder(activity, theme)
             .setTitle(theme.updateDialogTitle("v${info.versionName}"))
             .setMessage(message)
-            .setPositiveButton(theme.updateDialogAction) { _, _ ->
+            .setMaxWidthDp(520)
+            .setPositiveButton(theme.updateDialogAction) {
                 startDownload(activity, info, theme)
             }
-            .setNegativeButton(theme.updateDialogCancel) { _, _ ->
+            .setNegativeButton(theme.updateDialogCancel) {
                 userDismissedVersion = info.versionName
             }
             .show()
@@ -271,47 +266,42 @@ object AppUpdater {
 
         val density = activity.resources.displayMetrics.density
         fun dp(v: Float) = (v * density).toInt()
+        val palette = ThemeDialogPalette.from(theme)
 
         val layout = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(22f), dp(18f), dp(22f), dp(12f))
+            setPadding(dp(4f), dp(4f), dp(4f), dp(4f))
         }
-
-        val titleView = TextView(activity).apply {
-            text = theme.downloadingUpdateTitle
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 0, 0, dp(10f))
-        }
-        layout.addView(titleView)
 
         val progressBar = ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = false
             max = 100
             progress = 0
+            palette.styleProgressBar(this, density)
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(12f)
+                dp(10f)
             )
         }
         layout.addView(progressBar)
 
         val statusView = TextView(activity).apply {
             text = "正在连接更新节点… (0%)"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setTextColor(Color.argb(0xCC, 0xFF, 0xFF, 0xFF))
-            setPadding(0, dp(8f), 0, 0)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+            setTextColor(palette.mutedColor)
+            typeface = palette.bodyTypeface
+            setPadding(0, dp(10f), 0, 0)
         }
         layout.addView(statusView)
 
         val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
-        val dialog = AlertDialog.Builder(activity)
+        val dialog = ThemedDialogBuilder(activity, theme)
+            .setTitle(theme.downloadingUpdateTitle)
             .setView(layout)
+            .setMaxWidthDp(480)
             .setCancelable(false)
-            .setNegativeButton(if (theme.isXianxia) "作罢 (取消)" else "取消") { d, _ ->
+            .setNegativeButton(if (theme.isXianxia) "作罢 (取消)" else "取消") {
                 cancelled.set(true)
-                d.dismiss()
             }
             .create()
         dialog.show()

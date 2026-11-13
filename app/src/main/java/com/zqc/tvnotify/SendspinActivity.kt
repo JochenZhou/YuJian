@@ -1,7 +1,6 @@
 package com.zqc.tvnotify
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -49,7 +48,7 @@ class SendspinActivity : Activity() {
     private lateinit var header: LinearLayout
     private lateinit var stage: SendspinStageLayout
     private lateinit var leftColumn: LinearLayout
-    private lateinit var vinylRecord: VinylRecordView
+    private lateinit var artworkSwitcher: SendspinArtworkSwitcher
     private lateinit var lyricsView: LyricsScrollView
     private lateinit var ambient: SendspinAmbientDrawable
     private lateinit var status: TextView
@@ -71,6 +70,7 @@ class SendspinActivity : Activity() {
     private lateinit var settings: SendspinFocusPill
     private lateinit var settingsLabel: TextView
     private lateinit var theme: Theme
+    private var playerStyle = Prefs.SendspinPlayerStyle.VINYL
     private var accent = Color.WHITE
     private var playerBase = Color.BLACK
     private var runtime: SendspinRuntime? = null
@@ -93,7 +93,7 @@ class SendspinActivity : Activity() {
     private var lyricsGeneration = 0L
     private var lyricsLoading = false
     private var lastLyricsTrackKey = ""
-    private var playerDialog: AlertDialog? = null
+    private var playerDialog: ThemedDialog? = null
     private var volumeDialogSeek: SendspinSeekBar? = null
     private var volumeDialogLabel: TextView? = null
     private var volumeDialogMute: SendspinIconButton? = null
@@ -115,6 +115,7 @@ class SendspinActivity : Activity() {
         active = this
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         theme = Theme.current(this)
+        playerStyle = Prefs.getSendspinPlayerStyle(this)
         // Keep the player's surfaces graphite, while retaining the selected theme's hue.
         playerBase = playerBlend(Color.rgb(17, 20, 25), theme.windowBg, .25f)
         accent = playerBlend(theme.accentColor, Color.rgb(192, 208, 210), .28f)
@@ -129,6 +130,7 @@ class SendspinActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        theme = Theme.current(this)
         visible = true
         runtime?.setActivityVisible(true)
         runtime?.addListener(listener)
@@ -147,7 +149,7 @@ class SendspinActivity : Activity() {
         cancelArtworkDecode()
         artworkExecutor?.shutdownNow()
         artworkExecutor = null
-        vinylRecord.setPlaying(false)
+        artworkSwitcher.setPlaying(false)
         lyricsView.setPlaying(false)
         if (lyricsLoading) {
             lyricsGeneration++
@@ -155,7 +157,7 @@ class SendspinActivity : Activity() {
             lyricsView.setLoading(false)
             lastLyricsTrackKey = ""
         }
-        for (view in arrayOf(back, progress, previous, playPause, next, volumeControl, settings)) view.animate().cancel()
+        for (view in arrayOf(back, artworkSwitcher, progress, previous, playPause, next, volumeControl, settings)) view.animate().cancel()
         playerDialog?.dismiss()
         playerDialog = null
         super.onPause()
@@ -221,8 +223,12 @@ class SendspinActivity : Activity() {
             clipChildren = false
             clipToPadding = false
         }
-        vinylRecord = VinylRecordView(this, accent)
-        leftColumn.addView(vinylRecord, LinearLayout.LayoutParams(dp(200), dp(200)))
+        artworkSwitcher = SendspinArtworkSwitcher(this, accent).apply {
+            id = View.generateViewId()
+            setStyle(playerStyle)
+            setOnClickListener { togglePlayerStyle() }
+        }
+        leftColumn.addView(artworkSwitcher, LinearLayout.LayoutParams(dp(200), dp(200)))
 
         title = text("音乐，在此刻", 26f, Color.rgb(245, 247, 247), true).apply {
             gravity = Gravity.CENTER_HORIZONTAL
@@ -316,6 +322,7 @@ class SendspinActivity : Activity() {
         stage = SendspinStageLayout(this, leftColumn, lyricsView)
         root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(10) })
         applyLayoutMetrics(resources.configuration.screenWidthDp, resources.configuration.screenHeightDp)
+        applyPlayerStyleState()
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
                 val density = resources.displayMetrics.density
@@ -352,7 +359,7 @@ class SendspinActivity : Activity() {
         back.layoutParams = LinearLayout.LayoutParams(dp(headerHeight), dp(headerHeight))
         (stage.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 8 else 12)
 
-        vinylRecord.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
+        artworkSwitcher.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
         title.textSize = if (tiny) 19f else if (compact) 22f else 26f
         artist.textSize = if (compact) 13.5f else 15f
         album.textSize = if (compact) 11.5f else 12.5f
@@ -391,7 +398,7 @@ class SendspinActivity : Activity() {
         currentStatus = state
         val connected = state.state == "connected"
         val isPlaying = connected && state.playing
-        vinylRecord.setPlaying(isPlaying)
+        artworkSwitcher.setPlaying(isPlaying)
         lyricsView.setPlaying(isPlaying)
 
         val statusLabel = when (state.state) {
@@ -448,13 +455,17 @@ class SendspinActivity : Activity() {
             volumeControl.isEnabled -> volumeControl.id
             else -> settings.id
         }
-        back.nextFocusDownId = if (progress.isEnabled) progress.id else defaultTransport
+        back.nextFocusDownId = artworkSwitcher.id
         back.nextFocusRightId = settings.id
-        progress.nextFocusUpId = back.id
+        artworkSwitcher.nextFocusUpId = back.id
+        artworkSwitcher.nextFocusDownId = if (progress.isEnabled) progress.id else defaultTransport
+        artworkSwitcher.nextFocusLeftId = artworkSwitcher.id
+        artworkSwitcher.nextFocusRightId = artworkSwitcher.id
+        progress.nextFocusUpId = artworkSwitcher.id
         progress.nextFocusDownId = defaultTransport
         for (i in enabledRow.indices) {
             val view = enabledRow[i]
-            view.nextFocusUpId = if (progress.isEnabled) progress.id else back.id
+            view.nextFocusUpId = if (progress.isEnabled) progress.id else artworkSwitcher.id
             view.nextFocusLeftId = if (i > 0) enabledRow[i - 1].id else View.NO_ID
             view.nextFocusRightId = if (i + 1 < enabledRow.size) enabledRow[i + 1].id else View.NO_ID
         }
@@ -519,10 +530,12 @@ class SendspinActivity : Activity() {
             cancelArtworkDecode()
             requestedArtwork = bytes
             appliedArtwork = null
-            vinylRecord.setArtwork(null)
-            vinylRecord.setAccentColor(accent)
+            artworkSwitcher.setArtwork(null)
+            artworkSwitcher.setAccentColor(accent)
             lyricsView.setAccentColor(accent)
             ambient.setAmbientColor(accent)
+            ambient.setBlurredBitmap(null)
+            applyPlayerStyleState()
         }
         if (bytes == null || !visible || destroyed || artworkLoading || appliedArtwork === requestedArtwork) return
         val snapshot = requestedArtwork ?: return
@@ -531,6 +544,11 @@ class SendspinActivity : Activity() {
         val executor = artworkExecutor ?: Executors.newSingleThreadExecutor { task -> Thread(task, "sendspin-player-art").apply { isDaemon = true } }.also { artworkExecutor = it }
         artworkFuture = executor.submit {
             val bitmap = decodeArtwork(snapshot)
+            val blurred = if (bitmap != null && !Thread.currentThread().isInterrupted) {
+                createBlurredArtworkBackdrop(bitmap)
+            } else {
+                null
+            }
             if (Thread.currentThread().isInterrupted) return@submit
             main.post {
                 if (!visible || destroyed || generation != artworkGeneration || requestedArtwork !== snapshot) return@post
@@ -540,12 +558,42 @@ class SendspinActivity : Activity() {
                 appliedArtwork = snapshot
                 if (bitmap != null) {
                     val artColor = sendspinArtworkColor(bitmap, accent)
-                    vinylRecord.setArtwork(bitmap)
-                    vinylRecord.setAccentColor(artColor)
+                    artworkSwitcher.setArtwork(bitmap)
+                    artworkSwitcher.setAccentColor(artColor)
                     lyricsView.setAccentColor(artColor)
                     ambient.setAmbientColor(artColor)
+                    ambient.setBlurredBitmap(blurred)
+                    applyPlayerStyleState()
                 }
             }
+        }
+    }
+
+    private fun togglePlayerStyle() {
+        playerStyle = if (playerStyle == Prefs.SendspinPlayerStyle.VINYL) {
+            Prefs.SendspinPlayerStyle.COVER_BLUR
+        } else {
+            Prefs.SendspinPlayerStyle.VINYL
+        }
+        Prefs.setSendspinPlayerStyle(this, playerStyle)
+        applyPlayerStyleState()
+        val msg = if (playerStyle == Prefs.SendspinPlayerStyle.COVER_BLUR) {
+            "已切换为样式二：方形封面 · 高斯模糊背景（点击封面可切回）"
+        } else {
+            "已切换为样式一：经典黑胶（点击唱片可切换）"
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun applyPlayerStyleState() {
+        artworkSwitcher.setStyle(playerStyle)
+        ambient.setPlayerStyle(playerStyle)
+        val hasBlur = ambient.hasActiveBlurredBackdrop()
+        lyricsView.setBlurredBackdropActive(hasBlur)
+        val shadowRadius = if (hasBlur) 6f else 0f
+        val shadowColor = if (hasBlur) Color.argb(145, 0, 0, 0) else Color.TRANSPARENT
+        for (tv in arrayOf(status, title, artist, album, position, duration, volume, settingsLabel)) {
+            tv.setShadowLayer(shadowRadius, 0f, if (hasBlur) 1.5f else 0f, shadowColor)
         }
     }
 
@@ -624,11 +672,18 @@ class SendspinActivity : Activity() {
     }
 
     private fun showVolumeDialog() {
-        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(8)); clipChildren = false }
-        val label = text("", 18f, Color.rgb(224, 232, 234)).apply { gravity = Gravity.CENTER }
+        val palette = ThemeDialogPalette.from(theme)
+        val column = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(6), dp(8), dp(6)); clipChildren = false; clipToPadding = false }
+        val label = text("", 18f, palette.titleColor).apply {
+            gravity = Gravity.CENTER
+            typeface = palette.titleTypeface
+        }
         column.addView(label, params(bottom = dp(8)))
         var pending = false
-        val slider = SendspinSeekBar(this, accent).apply {
+        val sliderTrack = if (palette.isLightSurface) Color.argb(48, 34, 30, 26) else Color.argb(44, 255, 255, 255)
+        val sliderDisabledTrack = if (palette.isLightSurface) Color.argb(24, 34, 30, 26) else Color.argb(22, 255, 255, 255)
+        val slider = SendspinSeekBar(this, palette.accentColor, trackColor = sliderTrack, disabledTrackColor = sliderDisabledTrack).apply {
+            id = View.generateViewId()
             max = 100
             keyProgressIncrement = 5
             contentDescription = "音量"
@@ -648,10 +703,10 @@ class SendspinActivity : Activity() {
             })
         }
         column.addView(slider, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(44)))
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; clipChildren = false }
-        val minus = iconButton(SendspinIcon.MINUS, "降低音量") { adjustVolume(-5) }
-        val plus = iconButton(SendspinIcon.PLUS, "提高音量") { adjustVolume(5) }
-        val mute = iconButton(SendspinIcon.MUTED, "静音") { toggleMute() }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; clipChildren = false; clipToPadding = false }
+        val minus = dialogIconButton(SendspinIcon.MINUS, "降低音量", palette) { adjustVolume(-5) }
+        val plus = dialogIconButton(SendspinIcon.PLUS, "提高音量", palette) { adjustVolume(5) }
+        val mute = dialogIconButton(SendspinIcon.MUTED, "静音", palette) { toggleMute() }
         row.addView(minus, LinearLayout.LayoutParams(dp(48), dp(48)))
         row.addView(plus, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(16) })
         row.addView(mute, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(28) })
@@ -664,13 +719,23 @@ class SendspinActivity : Activity() {
         volumeDialogPlus = plus
         volumeDialogEditing = false
         updateVolumeDialog(currentStatus)
-        val dialog = AlertDialog.Builder(this).setTitle("音量").setView(column).setPositiveButton("完成", null).create()
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("音量")
+            .setView(column)
+            .setMaxWidthDp(460)
+            .setPositiveButton("完成")
+            .create()
         dialog.setOnDismissListener {
             volumeDialogSeek = null; volumeDialogLabel = null; volumeDialogMute = null; volumeDialogMinus = null; volumeDialogPlus = null; volumeDialogEditing = false
             if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
         }
-        playerDialog = dialog
-        showDialog(dialog)
+        slider.nextFocusDownId = (if (minus.isEnabled) minus else mute).id
+        dialog.positiveButton?.let { doneBtn ->
+            for (btn in arrayOf(minus, plus, mute)) btn.nextFocusDownId = doneBtn.id
+            doneBtn.nextFocusUpId = (if (mute.isEnabled) mute else slider).id
+        }
+        showPlayerDialog(dialog)
         if (slider.isEnabled) slider.requestFocus() else mute.requestFocus()
     }
 
@@ -692,36 +757,76 @@ class SendspinActivity : Activity() {
     }
 
     private fun showSettingsDialog() {
-        val autoLabel = if (Prefs.isSendspinAutoPopup(this)) "播放时自动打开：已开启" else "播放时自动打开：已关闭"
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("播放器设置")
-            .setItems(arrayOf("连接 Music Assistant", autoLabel)) { _, which ->
-                if (which == 0) showConnectionDialog() else toggleAutoPopup()
+        val styleLabel = if (playerStyle == Prefs.SendspinPlayerStyle.VINYL) {
+            "样式一（黑胶唱片）"
+        } else {
+            "样式二（方形封面 · 高斯模糊）"
+        }
+        val autoEnabled = Prefs.isSendspinAutoPopup(this)
+        val savedUrl = Prefs.getSendspinServerUrl(this).trim()
+        val serverSummary = if (savedUrl.isEmpty()) "当前使用局域网自动发现，点击可手动指定地址" else "当前地址：$savedUrl"
+        val items = listOf(
+            ThemeDialogItem(
+                title = "连接 Music Assistant",
+                subtitle = serverSummary,
+                dismissOnClick = false
+            ) {
+                showConnectionDialog()
+            },
+            ThemeDialogItem(
+                title = "播放页样式：$styleLabel",
+                subtitle = "备用入口：也可以直接点击左侧黑胶唱片或方形封面切换",
+                trailingBadge = if (playerStyle == Prefs.SendspinPlayerStyle.VINYL) "样式一" else "样式二"
+            ) {
+                togglePlayerStyle()
+            },
+            ThemeDialogItem(
+                title = "播放时自动打开：${if (autoEnabled) "已开启" else "已关闭"}",
+                subtitle = "检测到局域网音乐推流播放时自动弹出此页面",
+                trailingBadge = if (autoEnabled) "已开启" else "已关闭"
+            ) {
+                toggleAutoPopup()
             }
-            .setNegativeButton("关闭", null)
+        )
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("播放器设置")
+            .setItems(items)
+            .setMaxWidthDp(520)
+            .setNegativeButton("关闭")
             .create()
-        playerDialog?.dismiss()
-        playerDialog = dialog
-        showDialog(dialog)
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
     }
 
     private fun showConnectionDialog() {
+        val palette = ThemeDialogPalette.from(theme)
+        val density = resources.displayMetrics.density
         val input = EditText(this).apply {
+            id = View.generateViewId()
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             hint = "ws://music-assistant:8927/sendspin"
             setText(Prefs.getSendspinServerUrl(this@SendspinActivity))
-            setTextColor(Color.rgb(224, 232, 234))
-            setHintTextColor(Color.rgb(132, 148, 155))
-            backgroundTintList = android.content.res.ColorStateList.valueOf(accent)
+            setTextSize(14f)
             setSingleLine(true)
+            palette.styleEditText(this, density)
         }
         val auto = Button(this).apply {
+            id = View.generateViewId()
             text = "使用自动发现"
             isAllCaps = false
-            setTextColor(Color.rgb(224, 232, 234))
+            setTextColor(palette.titleColor)
+            typeface = palette.titleTypeface
             backgroundTintList = null
-            background = SendspinControlDrawable(resources.displayMetrics.density, accent, radiusDp = 12f)
+            background = palette.buildButtonBackground(density, emphasized = true)
             stateListAnimator = null
+            setOnFocusChangeListener { v, hasFocus ->
+                v.animate().cancel()
+                v.animate().scaleX(if (hasFocus) 1.02f else 1f).scaleY(if (hasFocus) 1.02f else 1f).setDuration(110L).start()
+                setTextColor(if (hasFocus) palette.focusedTextColor else palette.titleColor)
+            }
             setOnClickListener {
                 runtime?.reconnectByDiscovery()
                 playerDialog?.dismiss()
@@ -730,31 +835,58 @@ class SendspinActivity : Activity() {
         }
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(4), dp(24), dp(8))
+            setPadding(dp(4), dp(2), dp(4), dp(4))
+            clipChildren = false
+            clipToPadding = false
             addView(input, params())
-            addView(auto, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(48)).apply { topMargin = dp(12) })
+            addView(auto, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46)).apply { topMargin = dp(12) })
         }
-        val dialog = AlertDialog.Builder(this)
+        val dialog = ThemedDialogBuilder(this, theme)
             .setTitle("连接 Music Assistant")
             .setMessage("输入服务地址，或在同一网络中自动发现。")
             .setView(column)
-            .setPositiveButton("连接") { _, _ -> runtime?.connect(input.text.toString()) }
-            .setNegativeButton("取消", null)
+            .setMaxWidthDp(500)
+            .setPositiveButton("连接") { runtime?.connect(input.text.toString()) }
+            .setNegativeButton("取消")
             .create()
-        playerDialog?.dismiss()
-        playerDialog = dialog
-        showDialog(dialog)
+        input.nextFocusDownId = auto.id
+        auto.nextFocusUpId = input.id
+        dialog.positiveButton?.let { posBtn ->
+            auto.nextFocusDownId = posBtn.id
+            posBtn.nextFocusUpId = auto.id
+        }
+        dialog.negativeButton?.nextFocusUpId = auto.id
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
     }
 
-    private fun showDialog(dialog: AlertDialog) {
+    private fun showPlayerDialog(dialog: ThemedDialog) {
+        playerDialog?.dismiss()
+        playerDialog = dialog
         dialog.show()
-        dialog.window?.setBackgroundDrawable(GradientDrawable().apply {
-            setColor(playerBlend(playerBase, Color.rgb(41, 46, 52), .45f))
-            cornerRadius = dp(20).toFloat()
-            setStroke(dp(1), Color.argb(28, 255, 255, 255))
-        })
-        dialog.window?.setLayout(min(dp(480), resources.displayMetrics.widthPixels - dp(48)), ViewGroup.LayoutParams.WRAP_CONTENT)
-        for (which in intArrayOf(AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE)) dialog.getButton(which)?.setTextColor(accent)
+    }
+
+    private fun dialogIconButton(
+        icon: SendspinIcon,
+        label: String,
+        palette: ThemeDialogPalette,
+        action: () -> Unit
+    ): SendspinIconButton = SendspinIconButton(
+        context = this,
+        icon = icon,
+        accent = palette.accentColor,
+        primary = false,
+        iconColor = palette.titleColor,
+        radiusDp = palette.buttonCornerRadiusDp,
+        idleFillColor = palette.itemBg,
+        idleStrokeColor = palette.itemStroke
+    ).apply {
+        id = View.generateViewId()
+        contentDescription = label
+        setOnClickListener { action() }
     }
 
     private fun toggleAutoPopup() {

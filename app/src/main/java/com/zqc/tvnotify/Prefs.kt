@@ -25,6 +25,19 @@ object Prefs {
     private const val KEY_SENDSPIN_AUTO_POPUP = "sendspin_auto_popup"
     private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
+    private const val KEY_SENDSPIN_PLAYER_STYLE = "sendspin_player_style"
+
+    enum class SendspinPlayerStyle(val storageId: String, val label: String) {
+        VINYL("vinyl", "样式一（经典黑胶）"),
+        COVER_BLUR("cover_blur", "样式二（方形封面 · 高斯模糊背景）");
+
+        companion object {
+            fun fromRaw(raw: String?): SendspinPlayerStyle = when (raw?.trim()?.lowercase()) {
+                "cover_blur", "square", "style2" -> COVER_BLUR
+                else -> VINYL
+            }
+        }
+    }
 
     private const val TOKEN_LENGTH = 8
 
@@ -132,6 +145,15 @@ object Prefs {
 
     fun setSendspinClientName(context: Context, name: String) {
         prefs(context).edit().putString(KEY_SENDSPIN_CLIENT_NAME, name.trim()).apply()
+    }
+
+    /** 读取播放页视觉样式；默认样式一（经典黑胶唱片）。 */
+    fun getSendspinPlayerStyle(context: Context): SendspinPlayerStyle =
+        SendspinPlayerStyle.fromRaw(prefs(context).getString(KEY_SENDSPIN_PLAYER_STYLE, SendspinPlayerStyle.VINYL.storageId))
+
+    /** 持久化播放页视觉样式。 */
+    fun setSendspinPlayerStyle(context: Context, style: SendspinPlayerStyle) {
+        prefs(context).edit().putString(KEY_SENDSPIN_PLAYER_STYLE, style.storageId).apply()
     }
 
     private fun generateToken(): String {
