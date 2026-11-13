@@ -6,8 +6,6 @@ import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorFilter
-import android.graphics.ColorMatrix
-import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Outline
@@ -533,29 +531,90 @@ internal fun createBlurredArtworkBackdrop(source: Bitmap): Bitmap? {
     val srcW = source.width
     val srcH = source.height
     if (srcW <= 0 || srcH <= 0 || source.isRecycled) return null
+    val readable = if (android.os.Build.VERSION.SDK_INT >= 26 && source.config == Bitmap.Config.HARDWARE) {
+        source.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+    } else {
+        source
+    }
     val size = 96
-    val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(out)
-    canvas.drawColor(Color.rgb(18, 22, 28))
     val cropSide = min(srcW, srcH)
     val cropX = (srcW - cropSide) / 2
     val cropY = (srcH - cropSide) / 2
-    val srcRect = Rect(cropX, cropY, cropX + cropSide, cropY + cropSide)
-    val dstRect = Rect(0, 0, size, size)
-
-    val cm = ColorMatrix().apply { setSaturation(1.32f) }
-    val scale = ColorMatrix().apply { setScale(0.94f, 0.94f, 0.94f, 1f) }
-    cm.postConcat(scale)
-    val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-        colorFilter = ColorMatrixColorFilter(cm)
-    }
-    canvas.drawBitmap(source, srcRect, dstRect, paint)
-
     val pixels = IntArray(size * size)
-    out.getPixels(pixels, 0, size, 0, 0, size, size)
+    val rowBuf0 = IntArray(cropSide)
+    val rowBuf1 = IntArray(cropSide)
+    var cachedRow0 = -1
+    var cachedRow1 = -1
+
+    // 适度提升饱和度并压暗底色，效果对齐 ColorMatrix(sat=1.32, scale=0.94)，同时兼容纯像素与硬件位图
+    val sat = 1.32f
+    val invSat = 1f - sat
+    val rw = 0.213f * invSat
+    val gw = 0.715f * invSat
+    val bw = 0.072f * invSat
+    val scale = 0.94f
+
+    for (y in 0 until size) {
+        val fy = ((y + 0.5f) * cropSide / size.toFloat() - 0.5f).coerceIn(0f, (cropSide - 1).toFloat())
+        val sy0 = fy.toInt().coerceIn(0, cropSide - 1)
+        val sy1 = (sy0 + 1).coerceAtMost(cropSide - 1)
+        val wy = fy - sy0
+        val iwy = 1f - wy
+
+        if (cachedRow0 != sy0) {
+            if (cachedRow1 == sy0) {
+                System.arraycopy(rowBuf1, 0, rowBuf0, 0, cropSide)
+            } else {
+                readable.getPixels(rowBuf0, 0, cropSide, cropX, cropY + sy0, cropSide, 1)
+            }
+            cachedRow0 = sy0
+        }
+        if (sy1 == sy0) {
+            System.arraycopy(rowBuf0, 0, rowBuf1, 0, cropSide)
+            cachedRow1 = sy1
+        } else if (cachedRow1 != sy1) {
+            readable.getPixels(rowBuf1, 0, cropSide, cropX, cropY + sy1, cropSide, 1)
+            cachedRow1 = sy1
+        }
+
+        val rowOffset = y * size
+        for (x in 0 until size) {
+            val fx = ((x + 0.5f) * cropSide / size.toFloat() - 0.5f).coerceIn(0f, (cropSide - 1).toFloat())
+            val sx0 = fx.toInt().coerceIn(0, cropSide - 1)
+            val sx1 = (sx0 + 1).coerceAtMost(cropSide - 1)
+            val wx = fx - sx0
+            val iwx = 1f - wx
+
+            val c00 = rowBuf0[sx0]; val c10 = rowBuf0[sx1]
+            val c01 = rowBuf1[sx0]; val c11 = rowBuf1[sx1]
+            val w00 = iwx * iwy; val w10 = wx * iwy; val w01 = iwx * wy; val w11 = wx * wy
+
+            val a = (((c00 ushr 24) and 0xFF) * w00 + ((c10 ushr 24) and 0xFF) * w10 +
+                ((c01 ushr 24) and 0xFF) * w01 + ((c11 ushr 24) and 0xFF) * w11) / 255f
+            val rSrc = ((c00 ushr 16) and 0xFF) * w00 + ((c10 ushr 16) and 0xFF) * w10 +
+                ((c01 ushr 16) and 0xFF) * w01 + ((c11 ushr 16) and 0xFF) * w11
+            val gSrc = ((c00 ushr 8) and 0xFF) * w00 + ((c10 ushr 8) and 0xFF) * w10 +
+                ((c01 ushr 8) and 0xFF) * w01 + ((c11 ushr 8) and 0xFF) * w11
+            val bSrc = (c00 and 0xFF) * w00 + (c10 and 0xFF) * w10 +
+                (c01 and 0xFF) * w01 + (c11 and 0xFF) * w11
+
+            val rSat = ((rw + sat) * rSrc + gw * gSrc + bw * bSrc) * scale
+            val gSat = (rw * rSrc + (gw + sat) * gSrc + bw * bSrc) * scale
+            val bSat = (rw * rSrc + gw * gSrc + (bw + sat) * bSrc) * scale
+
+            val invA = 1f - a
+            val rOut = (rSat * a + 18f * invA + 0.5f).toInt().coerceIn(0, 255)
+            val gOut = (gSat * a + 22f * invA + 0.5f).toInt().coerceIn(0, 255)
+            val bOut = (bSat * a + 28f * invA + 0.5f).toInt().coerceIn(0, 255)
+            pixels[rowOffset + x] = (0xFF shl 24) or (rOut shl 16) or (gOut shl 8) or bOut
+        }
+    }
+
+    if (readable !== source) readable.recycle()
     applyThreePassGaussianBlur(pixels, size, size, radius = 4)
-    out.setPixels(pixels, 0, size, 0, 0, size, size)
-    return out
+    return Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).apply {
+        setPixels(pixels, 0, size, 0, 0, size, size)
+    }
 }
 
 internal fun applyThreePassGaussianBlur(pixels: IntArray, w: Int, h: Int, radius: Int) {

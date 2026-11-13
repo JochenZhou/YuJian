@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -95,13 +94,13 @@ class ThemeDialogTest {
                 .create()
 
             val card = dialog.rootContainer!!
-            val bg = card.background as GradientDrawable
-            assertEquals(ThemeDialogPalette.from(theme).cornerRadiusDp * density, bg.cornerRadius, 0.5f)
+            val bg = card.background as ThemeDialogPalette.ThemeSurfaceDrawable
+            assertEquals(ThemeDialogPalette.from(theme).cornerRadiusDp * density, bg.cornerRadiusPx, 0.5f)
 
             val dialogWidth = (520 * density).toInt()
             card.measure(
                 View.MeasureSpec.makeMeasureSpec(dialogWidth, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(900, View.MeasureSpec.AT_MOST)
+                View.MeasureSpec.makeMeasureSpec((600 * density).toInt(), View.MeasureSpec.AT_MOST)
             )
             card.layout(0, 0, card.measuredWidth, card.measuredHeight)
 

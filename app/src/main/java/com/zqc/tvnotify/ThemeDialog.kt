@@ -190,12 +190,28 @@ internal data class ThemeDialogPalette(
         }
     }
 
-    fun buildContainerBackground(density: Float): GradientDrawable =
-        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(surfaceStart, surfaceEnd)).apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = cornerRadiusDp * density
-            setStroke((strokeWidthDp * density + 0.5f).toInt().coerceAtLeast(1), strokeColor)
+    internal class ThemeSurfaceDrawable(
+        orientation: Orientation,
+        colors: IntArray,
+        val cornerRadiusPx: Float,
+        strokeWidthPx: Int,
+        strokeColor: Int
+    ) : GradientDrawable(orientation, colors) {
+        init {
+            shape = RECTANGLE
+            cornerRadius = cornerRadiusPx
+            if (strokeWidthPx > 0) setStroke(strokeWidthPx, strokeColor)
         }
+    }
+
+    fun buildContainerBackground(density: Float): ThemeSurfaceDrawable =
+        ThemeSurfaceDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(surfaceStart, surfaceEnd),
+            cornerRadiusDp * density,
+            (strokeWidthDp * density + 0.5f).toInt().coerceAtLeast(1),
+            strokeColor
+        )
 
     fun buildButtonBackground(density: Float, emphasized: Boolean): StateListDrawable {
         val radius = buttonCornerRadiusDp * density
@@ -795,7 +811,10 @@ internal fun ThemeDialogPalette.styleProgressBar(progressBar: ProgressBar, densi
 
 private class MaxHeightScrollView(context: Context, private val maxHeightPx: Int) : ScrollView(context) {
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val cappedHeight = View.MeasureSpec.makeMeasureSpec(maxHeightPx, View.MeasureSpec.AT_MOST)
+        val mode = View.MeasureSpec.getMode(heightMeasureSpec)
+        val size = View.MeasureSpec.getSize(heightMeasureSpec)
+        val capped = if (mode == View.MeasureSpec.UNSPECIFIED) maxHeightPx else min(size, maxHeightPx)
+        val cappedHeight = View.MeasureSpec.makeMeasureSpec(capped, View.MeasureSpec.AT_MOST)
         super.onMeasure(widthMeasureSpec, cappedHeight)
     }
 }

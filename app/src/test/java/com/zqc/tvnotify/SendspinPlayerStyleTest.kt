@@ -1,9 +1,7 @@
 package com.zqc.tvnotify
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -59,13 +57,16 @@ class SendspinPlayerStyleTest {
     @Test
     fun `blurred artwork backdrop preserves distinct album hue zones without flattening`() {
         val src = Bitmap.createBitmap(240, 160, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(src)
-        val paint = Paint()
-        // Left half cobalt blue, right half warm sunset orange (overlapping center square crop)
-        paint.color = Color.rgb(20, 95, 210)
-        canvas.drawRect(0f, 0f, 120f, 160f, paint)
-        paint.color = Color.rgb(245, 115, 25)
-        canvas.drawRect(120f, 0f, 240f, 160f, paint)
+        val raw = IntArray(240 * 160)
+        val leftColor = Color.rgb(20, 95, 210)
+        val rightColor = Color.rgb(245, 115, 25)
+        for (y in 0 until 160) {
+            val row = y * 240
+            for (x in 0 until 240) {
+                raw[row + x] = if (x < 120) leftColor else rightColor
+            }
+        }
+        src.setPixels(raw, 0, 240, 0, 0, 240, 160)
 
         val blurred = createBlurredArtworkBackdrop(src)
         assertNotNull(blurred)
