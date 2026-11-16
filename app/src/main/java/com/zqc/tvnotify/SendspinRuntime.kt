@@ -12,6 +12,7 @@ import com.sendspin.protocol.ClientState
 import com.sendspin.protocol.ClockSync
 import com.sendspin.protocol.ControllerState
 import com.sendspin.protocol.DiscoveryService
+import com.sendspin.protocol.GroupPlaybackState
 import com.sendspin.protocol.JsonOptionalAdapterFactory
 import com.sendspin.protocol.OptionalRole
 import com.sendspin.protocol.JsonOptional
@@ -535,8 +536,17 @@ class SendspinRuntime private constructor(private val context: Context) {
             val metadata = message.metadata
             if (metadata is JsonOptional.Present) {
                 val incoming = metadata.value
-                if (progressTracker.update(incoming, nowUs)) {
-                    lastMetadata = incoming?.let { mergeMetadata(lastMetadata, it) }
+                // Music Assistant clears the metadata role (null) when the group pauses. Keep
+                // the last known track in that case so the player continues to show the song,
+                // artwork and lyrics instead of reverting to the empty "no music" state; the
+                // paused position is already frozen by the group playback state. An explicit
+                // stop still clears it.
+                val clearing = incoming == null
+                val stopped = instance.groupPlaybackState.value == GroupPlaybackState.STOPPED
+                if (!clearing || stopped) {
+                    if (progressTracker.update(incoming, nowUs)) {
+                        lastMetadata = incoming?.let { mergeMetadata(lastMetadata, it) }
+                    }
                 }
             }
             val controller = message.controller

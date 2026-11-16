@@ -315,7 +315,8 @@ class NotifyService : Service() {
                     },
                     onSendspinConfigChanged = { sendspinRuntime?.reconfigure() },
                     onOpenSendspinUi = { mainHandler.post { launchSendspinActivity(automatic = false) } },
-                    onCloseSendspinUi = { mainHandler.post { SendspinActivity.closeCurrent() } }
+                    onCloseSendspinUi = { mainHandler.post { SendspinActivity.closeCurrent() } },
+                    onLibrary = { json -> PlaylistStore.update(PlaylistCatalog.parse(json)) }
                 )
                 httpd.start()
                 synchronized(serverLock) {

@@ -36,6 +36,7 @@ class NotifyHttpServer(
     private val onSendspinConfigChanged: () -> Unit,
     private val onOpenSendspinUi: () -> Unit,
     private val onCloseSendspinUi: () -> Unit,
+    private val onLibrary: (String) -> Unit,
 ) : NanoHTTPD(advertisedPort) {
 
     companion object {
@@ -53,6 +54,7 @@ class NotifyHttpServer(
         private const val ROUTE_HISTORY = "history"
         private const val ROUTE_CONFIG = "config"
         private const val ROUTE_SENDSPIN = "sendspin"
+        private const val ROUTE_LIBRARY = "library"
         private const val ROUTE_UI = "ui"
 
         private const val DEFAULT_DURATION_SEC = 5
@@ -95,6 +97,7 @@ class NotifyHttpServer(
             ROUTE_HISTORY -> handleHistory(session)
             ROUTE_CONFIG -> handleConfig(session)
             ROUTE_SENDSPIN -> handleSendspin(session)
+            ROUTE_LIBRARY -> handleLibrary(session)
             else -> jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
         }
     }
@@ -175,6 +178,35 @@ class NotifyHttpServer(
             NanoHTTPD.Response.Status.OK,
             "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\",\"theme\":\"$currentTheme\"}"
         )
+    }
+
+    // ------------------------------------------------------------------
+    // POST /{token}/library —— 接收 HA 推送的歌单目录
+    // ------------------------------------------------------------------
+
+    private fun handleLibrary(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (session.method != NanoHTTPD.Method.POST) {
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+        val body = readRequestBody(session)
+        if (body.tooLarge) {
+            return jsonResponse(NanoHTTPD.Response.Status.PAYLOAD_TOO_LARGE, "{\"ok\":false,\"error\":\"body too large\"}")
+        }
+        if (body.text.isEmpty()) {
+            return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, EMPTY_CONTENT_BODY)
+        }
+        // 最小校验：必须是含 playlists 数组的 JSON 对象，防止脏数据覆盖好目录
+        val valid = try {
+            val json = JSONObject(body.text)
+            json.has("playlists") && json.optJSONArray("playlists") != null
+        } catch (e: Exception) {
+            false
+        }
+        if (!valid) {
+            return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, "{\"ok\":false,\"error\":\"invalid payload\"}")
+        }
+        onLibrary(body.text)
+        return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
     }
 
     private fun handleSendspin(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {

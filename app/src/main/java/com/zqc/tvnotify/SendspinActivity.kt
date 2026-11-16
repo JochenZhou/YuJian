@@ -767,6 +767,14 @@ class SendspinActivity : Activity() {
         val serverSummary = if (savedUrl.isEmpty()) "当前使用局域网自动发现，点击可手动指定地址" else "当前地址：$savedUrl"
         val items = listOf(
             ThemeDialogItem(
+                title = "浏览歌单",
+                subtitle = "从 Music Assistant 同步的歌单中选一张播放",
+                trailingBadge = "歌单",
+                dismissOnClick = false
+            ) {
+                showPlaylistDialog()
+            },
+            ThemeDialogItem(
                 title = "连接 Music Assistant",
                 subtitle = serverSummary,
                 dismissOnClick = false
@@ -799,6 +807,63 @@ class SendspinActivity : Activity() {
             hideSystemBars()
         }
         showPlayerDialog(dialog)
+    }
+
+    private fun showPlaylistDialog() {
+        val catalog = PlaylistStore.current()
+        if (catalog == null || catalog.playlists.isEmpty()) {
+            ThemedDialogBuilder(this, theme)
+                .setTitle("歌单")
+                .setMessage("尚未同步到歌单。请确认 Home Assistant 的玉简集成已开启「同步歌单」，电视与 HA 在同一局域网，稍后再试。")
+                .setPositiveButton("知道了")
+                .show()
+            return
+        }
+        val items = catalog.playlists.map { entry ->
+            ThemeDialogItem(
+                title = entry.name,
+                subtitle = entry.trackCount?.let { "$it 首" },
+                trailingBadge = "播放",
+                dismissOnClick = false
+            ) { dialog ->
+                dialog.dismiss()
+                playPlaylist(entry)
+            }
+        }
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("歌单（${catalog.playlists.size}）")
+            .setItems(items)
+            .setMaxWidthDp(560)
+            .setNegativeButton("关闭")
+            .create()
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
+    }
+
+    private fun playPlaylist(entry: PlaylistEntry) {
+        val catalog = PlaylistStore.current()
+        if (catalog == null || catalog.callbackUrl.isBlank()) {
+            Toast.makeText(this, "播放回调未配置，请先在 HA 侧开启歌单同步", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, "正在请求播放「${entry.name}」…", Toast.LENGTH_SHORT).show()
+        PlaylistPlayer.request(
+            url = catalog.callbackUrl,
+            token = catalog.callbackToken,
+            id = entry.id,
+            name = entry.name
+        ) { ok, error ->
+            main.post {
+                Toast.makeText(
+                    this,
+                    if (ok) "已请求播放「${entry.name}」" else (error ?: "点播失败"),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
     }
 
     private fun showConnectionDialog() {
