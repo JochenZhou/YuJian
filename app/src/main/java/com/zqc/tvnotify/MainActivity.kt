@@ -62,37 +62,6 @@ class MainActivity : Activity() {
         const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-yujian"
         const val APP_REPO_URL = "https://github.com/JochenZhou/YuJian"
 
-        // 16:9 示例测试画卷（纯原生 JPEG Base64，供长按「试传一简」测试多媒体横幅）
-        private const val SAMPLE_TEST_IMAGE_BASE64 =
-            "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4p" +
-            "LSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09P" +
-            "T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCABaAKADASIA" +
-            "AhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA" +
-            "AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3" +
-            "ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWm" +
-            "p6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEA" +
-            "AwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSEx" +
-            "BhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElK" +
-            "U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3" +
-            "uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDiqKK2" +
-            "oE0yDTbSW8tTI84f597AAhsDOO3Pb06GtDjnPktpcxaK15ZLCJQ/9kB4icCRLpip9s9j7HB9qi+2" +
-            "aZ/0CP8AyZagSqN7Rf4f5mbRWl9s0z/oEf8AyZag+2aZ/wBAj/yZagOeX8r/AA/zM2itL7Zpn/QI" +
-            "/wDJlqPtmmf9Aj/yZagOeX8r/D/MzaK0vtemf9Aj/wAmWo+2aZ/0CP8AyZagOeX8r/D/ADMbz5fL" +
-            "8rzG8v8Au7jj8qf9qm/57P8A99Gtf7Zpn/QI/wDJlqPtmmf9Aj/yZagOeX8r/D/MzaK0vtemf9Aj" +
-            "/wAmWo+2aZ/0CP8AyZagOeX8r/D/ADMbz5fL8rzG8v8Au7jj8qPtU3/PZ/8Avo1r/bNM/wCgR/5M" +
-            "tU+zSZoWlbR9qqQMm5cDJ7dPY0BztdF+H+Zifapv+ez/99Gj7VN/z2f8A76NdF9j0n/oEf+TLUfY" +
-            "9J/6BH/ky1Fw55eX4f5mP9qvvI8z7VP5ecZ8xsZqL7VN/wA9n/76NdH5OmfYzN/Zf3XCeX9pbHQn" +
-            "Ocf5zUX2PSf+gR/5MtRcOeXl+H+Zz1Fa97Dp8UYePS96k4DfaWxn0+6ap/aNP/6BP/kz/wDY0Fc8" +
-            "uz/D/MqUVb+0af/0Cf/Jn/wCxo+0af/0Cf/Jn/wCxoDnl2f4f5lSrVhdraXPmyW6XK7GTy5CQORjP" +
-            "HPUdqd9o0/8A6BP/AJM//Y0faNP/AOgT/wCTP/2NAc8uz/D/ADJ31G2ksVtH0qBoY3MiqZX4Y9T1" +
-            "9zUct1pkyhZdKDBRgZuWwPoMcD2o+0af/wBAn/yZ/wDsaPtGn/8AQJ/8mf8A7GgXNLy/D/MZdXOn" +
-            "zRKi6T5YUADZcsOnYccD2rNq39o0/wD6BP8A5M//AGNH2jT/APoE/wAkz/8AY0y1KXZ/h/mVKsWV" +
-            "0lpceZJbpcLsZfLkJA5GM8c9am+0af8A9An/AMmf/saPtGn/APQJ/wDJn/7GgHOS6P8AD/MjjuNO" +
-            "hcvFpW1iCM/amz+HHy/hVTzpfL8rzG8v+7uOPyq39o0//oE/+TP/ANjR9o0//oE/+TP/ANjQF5Po" +
-            "/wAP8ypRVv7Rp/8A0Cf/ACZ/+xo+0af/ANAn/wAmf/saY+eXZ/h/mPGoXIsjZtcStb5yE8wgKfXH" +
-            "1x+FRRXtzFCY4riZIz1VZCBT/tGn/wDQJ/8AJn/7Gj7Rp/8A0Cf/ACZ/+xoFzT7P8P8AMpUUUUyj" +
-            "/9k="
-
         private val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         private val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
     }
@@ -451,8 +420,7 @@ class MainActivity : Activity() {
         }.apply { id = View.generateViewId() }
         quickTestButton = buildButton(
             label = theme.testButtonText,
-            onClick = { showTestBanner() },
-            onLongClick = { showTestMediaBanner() }
+            onClick = { showTestBanner() }
         ).apply { id = View.generateViewId() }
         quickHistoryButton = buildButton(theme.historyButtonText) {
             showHistoryDialog()
@@ -537,8 +505,7 @@ class MainActivity : Activity() {
         testButton = buildButton(
             label = theme.testButtonText,
             padV = 13,
-            onClick = { showTestBanner() },
-            onLongClick = { showTestMediaBanner() }
+            onClick = { showTestBanner() }
         ).apply { id = View.generateViewId() }
         imageTestButton = buildButton(theme.imageTestButtonText, padV = 13) {
             showTestImageBanner()
@@ -1219,25 +1186,6 @@ class MainActivity : Activity() {
                 durationSeconds = 5
             )
         )
-    }
-
-    private fun showTestMediaBanner(): Boolean {
-        if (!Settings.canDrawOverlays(this)) {
-            toast(theme.overlayPermissionToast)
-            openOverlaySettings()
-            return true
-        }
-        val controller = bannerController ?: BannerController(this).also { bannerController = it }
-        controller.show(
-            BannerRequest(
-                title = if (theme.isXianxia) "灵镜法相显化" else "实时画卷测试",
-                text = if (theme.isXianxia) "山门感应到外部灵讯，已呈递 16:9 实时法相画卷。" else "收到外部系统推送，已弹出 16:9 多媒体快照画卷。",
-                durationSeconds = 8,
-                imageBase64 = SAMPLE_TEST_IMAGE_BASE64
-            )
-        )
-        toast(if (theme.isXianxia) "长按试传：灵镜画卷显化" else "长按触发：16:9 多媒体画卷演示")
-        return true
     }
 
     private fun showTestImageBanner() {
