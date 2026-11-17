@@ -7,6 +7,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
@@ -27,6 +28,9 @@ object PlaylistPlayer {
 
     /**
      * 异步发起点播。回调可能来自 okhttp 的 IO 线程，调用方需自行切回主线程。
+     *
+     * 请求体带上本机型号，HA 侧据此把点播落到这台电视自己的 Music Assistant
+     * 播放器上；否则它只能在一堆播放器里瞎挑（曾经播到 AkuBox）。
      */
     fun request(
         url: String,
@@ -35,7 +39,11 @@ object PlaylistPlayer {
         name: String,
         onResult: (ok: Boolean, error: String?) -> Unit
     ) {
-        val body = org.json.JSONObject().put("id", id).put("name", name).toString()
+        val body = JSONObject()
+            .put("id", id)
+            .put("name", name)
+            .put("model", (android.os.Build.MODEL ?: "").trim())
+            .toString()
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -48,9 +56,31 @@ object PlaylistPlayer {
 
             override fun onResponse(call: Call, response: Response) {
                 val ok = response.isSuccessful
+                // 失败时把 HA 给的说明（例如“未指定目标播放器”）透出来，
+                // 否则用户只看到 HTTP 409 无从下手。
+                val error = if (ok) {
+                    null
+                } else {
+                    val text = try {
+                        response.body?.string().orEmpty()
+                    } catch (_: IOException) {
+                        ""
+                    }
+                    jsonError(text) ?: "HTTP ${response.code}"
+                }
                 response.close()
-                onResult(ok, if (ok) null else "HTTP ${response.code}")
+                onResult(ok, error)
             }
         })
+    }
+
+    /** 从 HA 的错误响应里取出可读的 error 字段。 */
+    private fun jsonError(text: String): String? {
+        if (text.isBlank()) return null
+        return try {
+            JSONObject(text).optString("error").trim().ifEmpty { null }
+        } catch (_: Exception) {
+            null
+        }
     }
 }

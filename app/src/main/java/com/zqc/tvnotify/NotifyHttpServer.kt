@@ -562,8 +562,12 @@ class NotifyHttpServer(
         val muted = Prefs.isMuted(context)
         val pos = Prefs.getBannerPosition(context)
         val currentTheme = Theme.current(context).storageId
+        // model 让 HA 侧把点播落到这台设备自己的 MA 播放器上，
+        // 而不是随便挑一个（以前会播到音箱/手机）。
+        val model = (android.os.Build.MODEL ?: "").trim()
         return "{\"ok\":true,\"version\":\"$versionName\",\"uptime\":$uptime," +
-                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted,\"position\":\"$pos\",\"theme\":\"$currentTheme\"}"
+                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted," +
+                "\"position\":\"$pos\",\"theme\":\"$currentTheme\",\"model\":\"$model\"}"
     }
 
     // ------------------------------------------------------------------
