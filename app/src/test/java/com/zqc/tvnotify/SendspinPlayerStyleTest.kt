@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.TextView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -269,6 +270,115 @@ class SendspinPlayerStyleTest {
         emptyDetailDialog.dismiss()
         PlaylistStore.update(null)
         PlaylistStore.markActivePlaylist(null)
+    }
+
+    @Test
+    fun `settings dialog exposes independent default-off WLED toggles and validates config inputs`() {
+        val context = RuntimeEnvironment.getApplication()
+        assertFalse(Prefs.isWledSyncEnabled(context))
+        assertFalse(Prefs.isWledColorSyncEnabled(context))
+        assertEquals(11988, Prefs.getWledSyncPort(context))
+        assertEquals("192.168.101.206", Prefs.getWledColorHost(context))
+
+        val activity = buildPreparedSendspinActivity()
+        val clazz = SendspinActivity::class.java
+        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        val settingsDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(settingsDialog.isShowing)
+        val rows = settingsDialog.itemViews.map { collectAllTexts(it).joinToString(" | ") }
+        val audioRowIdx = rows.indexOfFirst { it.contains("WLED 音乐律动") }
+        val colorRowIdx = rows.indexOfFirst { it.contains("WLED 封面色彩同步") }
+        val configRowIdx = rows.indexOfFirst { it.contains("WLED 参数设置") }
+        assertTrue("Expected WLED audio toggle in settings: $rows", audioRowIdx >= 0 && rows[audioRowIdx].contains("已关闭"))
+        assertTrue("Expected WLED color toggle in settings: $rows", colorRowIdx >= 0 && rows[colorRowIdx].contains("已关闭"))
+        assertTrue("Expected WLED config row in settings: $rows", configRowIdx >= 0)
+
+        // Toggle audio sync ON cleanly
+        settingsDialog.itemViews[audioRowIdx].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(Prefs.isWledSyncEnabled(context))
+        assertFalse(Prefs.isWledColorSyncEnabled(context))
+
+        // Open settings again and toggle color sync ON independently
+        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        val settingsDialog2 = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        settingsDialog2.itemViews[colorRowIdx].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(Prefs.isWledColorSyncEnabled(context))
+
+        // Open WLED config sub-dialog
+        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        val settingsDialog3 = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        settingsDialog3.itemViews[configRowIdx].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        val configDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(configDialog.isShowing)
+        val inputs = collectEditTexts(configDialog.window!!.decorView)
+        assertEquals(2, inputs.size)
+        val portInput = inputs[0]
+        val hostInput = inputs[1]
+        assertEquals("11988", portInput.text.toString())
+        assertEquals("192.168.101.206", hostInput.text.toString())
+
+        // Invalid port stays open without overwriting stored port
+        portInput.setText("70000")
+        configDialog.positiveButton!!.performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(configDialog.isShowing)
+        assertEquals(11988, Prefs.getWledSyncPort(context))
+
+        // Valid port + invalid host stays open without overwriting host
+        portInput.setText("11999")
+        hostInput.setText("ftp://bad/path")
+        configDialog.positiveButton!!.performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(configDialog.isShowing)
+        assertEquals(11988, Prefs.getWledSyncPort(context))
+        assertEquals("192.168.101.206", Prefs.getWledColorHost(context))
+
+        // Valid port + host saves, normalizes, and dismisses cleanly
+        hostInput.setText("http://192.168.101.210/")
+        configDialog.positiveButton!!.performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(configDialog.isShowing)
+        assertEquals(11999, Prefs.getWledSyncPort(context))
+        assertEquals("192.168.101.210", Prefs.getWledColorHost(context))
+
+        // Re-open config dialog and verify neutral button ("恢复默认") restores defaults cleanly
+        clazz.getDeclaredMethod("showWledConfigDialog").apply { isAccessible = true }.invoke(activity)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        val resetDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(resetDialog.isShowing)
+        val resetInputs = collectEditTexts(resetDialog.window!!.decorView)
+        assertEquals("11999", resetInputs[0].text.toString())
+        assertEquals("192.168.101.210", resetInputs[1].text.toString())
+        resetDialog.neutralButton!!.performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertTrue(resetDialog.isShowing)
+        assertEquals("11988", resetInputs[0].text.toString())
+        assertEquals("192.168.101.206", resetInputs[1].text.toString())
+        resetDialog.positiveButton!!.performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(11988, Prefs.getWledSyncPort(context))
+        assertEquals("192.168.101.206", Prefs.getWledColorHost(context))
+    }
+
+    private fun collectEditTexts(view: View): List<EditText> {
+        val result = mutableListOf<EditText>()
+        if (view is EditText) {
+            result.add(view)
+        }
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) {
+                result.addAll(collectEditTexts(view.getChildAt(i)))
+            }
+        }
+        return result
     }
 
     private fun collectAllTexts(view: View): List<String> {

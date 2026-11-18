@@ -799,6 +799,10 @@ class SendspinActivity : Activity() {
         val autoEnabled = Prefs.isSendspinAutoPopup(this)
         val savedUrl = Prefs.getSendspinServerUrl(this).trim()
         val serverSummary = if (savedUrl.isEmpty()) "当前使用局域网自动发现，点击可手动指定地址" else "当前地址：$savedUrl"
+        val wledAudioEnabled = Prefs.isWledSyncEnabled(this)
+        val wledPort = Prefs.getWledSyncPort(this)
+        val wledColorEnabled = Prefs.isWledColorSyncEnabled(this)
+        val wledHost = Prefs.getWledColorHost(this)
         val items = listOf(
             ThemeDialogItem(
                 title = "浏览歌单",
@@ -828,6 +832,28 @@ class SendspinActivity : Activity() {
                 trailingBadge = if (autoEnabled) "已开启" else "已关闭"
             ) {
                 toggleAutoPopup()
+            },
+            ThemeDialogItem(
+                title = "WLED 音乐律动：${if (wledAudioEnabled) "已开启" else "已关闭"}",
+                subtitle = "向局域网组播 239.0.0.1:$wledPort 广播 AudioReactive V2 音频律动",
+                trailingBadge = if (wledAudioEnabled) "已开启" else "已关闭"
+            ) {
+                toggleWledAudioSync()
+            },
+            ThemeDialogItem(
+                title = "WLED 封面色彩同步：${if (wledColorEnabled) "已开启" else "已关闭"}",
+                subtitle = "向 $wledHost 同步封面主色调（主色调为黑时自动采用次色调）",
+                trailingBadge = if (wledColorEnabled) "已开启" else "已关闭"
+            ) {
+                toggleWledColorSync()
+            },
+            ThemeDialogItem(
+                title = "WLED 参数设置",
+                subtitle = "组播端口 $wledPort · 色彩目标 $wledHost",
+                trailingBadge = "配置",
+                dismissOnClick = false
+            ) {
+                showWledConfigDialog()
             }
         )
         val dialog = ThemedDialogBuilder(this, theme)
@@ -1104,6 +1130,118 @@ class SendspinActivity : Activity() {
         val enabled = !Prefs.isSendspinAutoPopup(this)
         Prefs.setSendspinAutoPopup(this, enabled)
         Toast.makeText(this, if (enabled) "播放时自动打开音乐页" else "已关闭自动打开", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleWledAudioSync() {
+        val enabled = !Prefs.isWledSyncEnabled(this)
+        Prefs.setWledSyncEnabled(this, enabled)
+        val port = Prefs.getWledSyncPort(this)
+        runtime?.configureWledAudioSync(enabled, port)
+        Toast.makeText(
+            this,
+            if (enabled) "已开启 WLED 音乐律动（239.0.0.1:$port）" else "已关闭 WLED 音乐律动",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun toggleWledColorSync() {
+        val enabled = !Prefs.isWledColorSyncEnabled(this)
+        Prefs.setWledColorSyncEnabled(this, enabled)
+        val host = Prefs.getWledColorHost(this)
+        runtime?.configureWledColorSync(enabled, host)
+        Toast.makeText(
+            this,
+            if (enabled) "已开启 WLED 封面色彩同步（$host）" else "已关闭 WLED 封面色彩同步",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun showWledConfigDialog() {
+        val palette = ThemeDialogPalette.from(theme)
+        val density = resources.displayMetrics.density
+        val portLabel = text("AudioReactive UDP 端口（默认 ${Prefs.DEFAULT_WLED_SYNC_PORT}）", 12f, palette.mutedColor, bold = true)
+        val portInput = EditText(this).apply {
+            id = View.generateViewId()
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = Prefs.DEFAULT_WLED_SYNC_PORT.toString()
+            setText(Prefs.getWledSyncPort(this@SendspinActivity).toString())
+            setTextSize(14f)
+            setSingleLine(true)
+            palette.styleEditText(this, density)
+        }
+        val hostLabel = text("WLED 设备 IP / 地址（用于封面色彩同步，默认 ${Prefs.DEFAULT_WLED_COLOR_HOST}）", 12f, palette.mutedColor, bold = true)
+        val hostInput = EditText(this).apply {
+            id = View.generateViewId()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            hint = Prefs.DEFAULT_WLED_COLOR_HOST
+            setText(Prefs.getWledColorHost(this@SendspinActivity))
+            setTextSize(14f)
+            setSingleLine(true)
+            palette.styleEditText(this, density)
+        }
+        val errorText = text("", 12f, theme.bannerIconColor(BannerLevel.ERROR), bold = true).apply {
+            visibility = View.GONE
+        }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(2), dp(4), dp(4))
+            clipChildren = false
+            clipToPadding = false
+            addView(portLabel, params(bottom = dp(6)))
+            addView(portInput, params(bottom = dp(12)))
+            addView(hostLabel, params(bottom = dp(6)))
+            addView(hostInput, params())
+            addView(errorText, params(top = dp(8)))
+        }
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("WLED 参数设置")
+            .setMessage("音乐律动广播到局域网组播 239.0.0.1；封面色彩同步仅更新目标灯带的当前主色，不改效果与亮度。")
+            .setView(column)
+            .setMaxWidthDp(520)
+            .setPositiveButton("保存", autoDismiss = false) { dlg ->
+                val port = Prefs.parseWledSyncPort(portInput.text.toString())
+                if (port == null) {
+                    errorText.text = "请输入有效 UDP 端口（1..65535）"
+                    errorText.visibility = View.VISIBLE
+                    portInput.requestFocus()
+                    return@setPositiveButton
+                }
+                val host = Prefs.normalizeWledHost(hostInput.text.toString())
+                if (host == null) {
+                    errorText.text = "请输入有效 WLED 设备 IP 或主机名"
+                    errorText.visibility = View.VISIBLE
+                    hostInput.requestFocus()
+                    return@setPositiveButton
+                }
+                errorText.visibility = View.GONE
+                Prefs.setWledSyncPort(this, port)
+                Prefs.setWledColorHost(this, host)
+                runtime?.configureWledAudioSync(Prefs.isWledSyncEnabled(this), port)
+                runtime?.configureWledColorSync(Prefs.isWledColorSyncEnabled(this), host)
+                dlg.dismiss()
+                Toast.makeText(this, "已保存 WLED 参数（端口 $port · $host）", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("恢复默认", autoDismiss = false) {
+                portInput.setText(Prefs.DEFAULT_WLED_SYNC_PORT.toString())
+                hostInput.setText(Prefs.DEFAULT_WLED_COLOR_HOST)
+                errorText.visibility = View.GONE
+            }
+            .setNegativeButton("取消")
+            .create()
+        portInput.nextFocusDownId = hostInput.id
+        hostInput.nextFocusUpId = portInput.id
+        val firstButtonId = dialog.positiveButton?.id ?: dialog.negativeButton?.id ?: View.NO_ID
+        if (firstButtonId != View.NO_ID) {
+            hostInput.nextFocusDownId = firstButtonId
+        }
+        dialog.positiveButton?.nextFocusUpId = hostInput.id
+        dialog.negativeButton?.nextFocusUpId = hostInput.id
+        dialog.neutralButton?.nextFocusUpId = hostInput.id
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {

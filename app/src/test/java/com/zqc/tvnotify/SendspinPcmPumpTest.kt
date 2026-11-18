@@ -23,6 +23,7 @@ class SendspinPcmPumpTest {
         var minimumFrames = 0
         var capacityFrames = 0
         val samples = mutableListOf<Short>()
+        val tappedWrites = mutableListOf<Int>()
         override fun playbackHead(): Long = if (useHardwareHead && playing) {
             minOf(written, ((clockUs - startUs).coerceAtLeast(0) * 48_000 * speed / 1_000_000).toLong())
         } else head
@@ -40,6 +41,9 @@ class SendspinPcmPumpTest {
             }
             written += frames
             return frames * 2
+        }
+        override fun onPcmWritten(data: ByteArray, offset: Int, length: Int, sampleRate: Int, channels: Int, presentationUs: Long) {
+            tappedWrites += length
         }
         override fun play() { playing = true; startUs = clockUs; plays++ }
         override fun pauseAndFlush() { playing = false; head = 0; written = 0 }
@@ -305,5 +309,18 @@ class SendspinPcmPumpTest {
         f.pump.step(f.base + 1_100_000)
         assertTrue(f.output.playing)
         assertEquals(20_000.toShort(), f.output.samples.last())
+    }
+
+    @Test fun `onPcmWritten taps live audio writes but skips zero-byte writes and inserted silence`() {
+        val f = Fixture()
+        f.add(f.base + 100_000L, 1920, 4000)
+        f.prefill(f.base)
+        assertTrue("Expected tapped non-silence PCM writes", f.output.tappedWrites.sum() >= 1920 * 2)
+
+        val countAfterFirst = f.output.tappedWrites.size
+        f.output.limitFrames = 0
+        f.add(f.base + 200_000L, 960, 4000)
+        f.pump.step(f.base + 100_000L)
+        assertEquals("Zero-byte writes must not trigger onPcmWritten", countAfterFirst, f.output.tappedWrites.size)
     }
 }

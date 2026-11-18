@@ -26,6 +26,14 @@ internal class SendspinPcmPump(
         fun playbackHead(): Long
         fun timestamp(): Timestamp?
         fun write(data: ByteArray, offset: Int, length: Int): Int
+        fun onPcmWritten(
+            data: ByteArray,
+            offset: Int,
+            length: Int,
+            sampleRate: Int,
+            channels: Int,
+            presentationUs: Long
+        ) {}
         fun play()
         fun pauseAndFlush()
         /** Estimated latency downstream of playbackHead(), excluding this track's queued PCM. */
@@ -206,6 +214,10 @@ internal class SendspinPcmPump(
                         check(nowUs - writeBlockedSinceUs!! < 1_500_000L) { "AudioTrack write stalled" }
                     }
                 } else {
+                    if (!current.silence) {
+                        val presentationUs = predictedOutputUs(nowUs, latencyUs, queued)
+                        output.onPcmWritten(current.bytes, current.written, count, sampleRate, channels, presentationUs)
+                    }
                     writeBlockedSinceUs = null
                     val outputFrames = count / frameBytes
                     val allOutputFrames = current.bytes.size / frameBytes

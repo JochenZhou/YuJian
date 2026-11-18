@@ -21,6 +21,7 @@ class AndroidAudioPlayer(
     private val buffer: AudioBuffer,
     private val clock: ClockSync,
     private val audioManager: AudioManager,
+    private val wledTap: WledAudioTap? = null,
 ) : LocalAudioPlayer {
     companion object {
         private const val TAG = "YuJianAudio"
@@ -254,6 +255,19 @@ class AndroidAudioPlayer(
             val count = track.write(data, offset, length, AudioTrack.WRITE_NON_BLOCKING)
             resetPolicy.onWrite(count)
             return count
+        }
+
+        override fun onPcmWritten(
+            data: ByteArray,
+            offset: Int,
+            length: Int,
+            sampleRate: Int,
+            channels: Int,
+            presentationUs: Long
+        ) {
+            if (outputEnabled) {
+                wledTap?.onPcmWritten(data, offset, length, sampleRate, channels, presentationUs)
+            }
         }
         override fun play() { if (outputEnabled) track.play() }
         override fun pauseAndFlush() {

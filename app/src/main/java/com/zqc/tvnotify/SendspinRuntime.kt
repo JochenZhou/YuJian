@@ -102,6 +102,24 @@ class SendspinRuntime private constructor(private val context: Context) {
     private val wifiLock = (app.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
         ?.createMulticastLock("yujian-sendspin")
         ?.apply { setReferenceCounted(false) }
+    private val wledAudioSync = WledAudioSync(
+        context = app,
+        initialEnabled = Prefs.isWledSyncEnabled(app),
+        initialPort = Prefs.getWledSyncPort(app),
+    )
+    private val wledColorSync = WledColorSync(
+        initialEnabled = Prefs.isWledColorSyncEnabled(app),
+        initialHost = Prefs.getWledColorHost(app),
+        poster = OkHttpWledPoster(
+            okHttp.newBuilder()
+                .pingInterval(0, TimeUnit.MILLISECONDS)
+                .connectTimeout(1500, TimeUnit.MILLISECONDS)
+                .readTimeout(2000, TimeUnit.MILLISECONDS)
+                .writeTimeout(2000, TimeUnit.MILLISECONDS)
+                .callTimeout(2500, TimeUnit.MILLISECONDS)
+                .build()
+        ),
+    )
 
     @Volatile private var client: SendSpinClient? = null
     @Volatile private var discoveryJob: Job? = null
@@ -193,8 +211,32 @@ class SendspinRuntime private constructor(private val context: Context) {
             localPlayer = null
             resetProgressSession()
         }
+        wledAudioSync.setPlaybackActive(false)
+        wledAudioSync.reset()
+        wledColorSync.onArtworkBytes(null)
         releaseMulticastLock()
         publish(savedStatus(state = "stopped"))
+    }
+
+    fun configureWledAudioSync(enabled: Boolean, port: Int) {
+        wledAudioSync.setPort(port)
+        wledAudioSync.setEnabled(enabled)
+        syncWledPlaybackState()
+    }
+
+    fun configureWledColorSync(enabled: Boolean, host: String) {
+        wledColorSync.setHost(host)
+        wledColorSync.setEnabled(enabled)
+    }
+
+    private fun syncWledPlaybackState() {
+        val current = client
+        val active = enabled &&
+            appVisible &&
+            current != null &&
+            current.state.value == ClientState.STREAMING &&
+            current.audioPlayer.isPlaying
+        wledAudioSync.setPlaybackActive(active)
     }
 
     fun setActivityVisible(visible: Boolean) {
@@ -207,6 +249,7 @@ class SendspinRuntime private constructor(private val context: Context) {
             appVisible = visible
             localPlayer?.setForeground(visible)
         }
+        syncWledPlaybackState()
         updateStatus { previous ->
             if (!visible) previous.withLocalOutputGate()
             else previous.copy(outputSuspended = false, outputPlaying = false, syncState = "buffering", syncErrorMs = null, positionSource = "unavailable")
@@ -385,7 +428,7 @@ class SendspinRuntime private constructor(private val context: Context) {
             productName = "YuJian TV",
             softwareVersion = BuildConfig.VERSION_NAME,
             audioPlayerFactory = { buffer, clock ->
-                ForegroundAudioPlayer(buffer, AndroidAudioPlayer(app, buffer, clock, audioManager)).also {
+                ForegroundAudioPlayer(buffer, AndroidAudioPlayer(app, buffer, clock, audioManager, wledAudioSync)).also {
                     localPlayer = it
                     it.setForeground(appVisible)
                 }
@@ -411,12 +454,20 @@ class SendspinRuntime private constructor(private val context: Context) {
                 instance.serverState.collect { state -> updateFromServerState(instance, state) }
             }
             launch {
-                instance.albumArtwork.collect { bytes -> updateClientStatus(instance) { it.copy(artwork = bytes) } }
+                instance.albumArtwork.collect { bytes ->
+                    wledColorSync.onArtworkBytes(bytes)
+                    updateClientStatus(instance) { it.copy(artwork = bytes) }
+                }
             }
             launch {
                 instance.streamFormat.collectLatest { format ->
                     if (client !== instance) return@collectLatest
-                    if (format != null) instance.audioPlayer.setVolume(instance.currentPlayerGain)
+                    if (format != null) {
+                        instance.audioPlayer.setVolume(instance.currentPlayerGain)
+                    } else {
+                        wledAudioSync.reset()
+                    }
+                    syncWledPlaybackState()
                     // Stream clear/end/start may be a seek or a handoff, not a new track.
                     updateClientStatus(instance) { it.copy(playerGain = instance.currentPlayerGain) }
                 }
@@ -427,6 +478,14 @@ class SendspinRuntime private constructor(private val context: Context) {
                         val nowUs = ClockSync.localMicros()
                         if (progressSessionActive) progressTracker.setGroupPlaybackState(state, nowUs)
                         it.withProgress(nowUs)
+                    }
+                    if (state != GroupPlaybackState.PLAYING) {
+                        wledAudioSync.setPlaybackActive(false)
+                        if (state == GroupPlaybackState.STOPPED) {
+                            wledAudioSync.reset()
+                        }
+                    } else {
+                        syncWledPlaybackState()
                     }
                 }
             }
@@ -454,6 +513,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                     updateClientStatus(instance) {
                         val streaming = instance.state.value == ClientState.STREAMING
                         val outputPlaying = appVisible && streaming && instance.audioPlayer.isPlaying
+                        wledAudioSync.setPlaybackActive(outputPlaying)
                         val outputSync = instance.audioPlayer.outputSync
                         openUi = appVisible && outputPlaying && !it.outputPlaying && !activityVisible
                         val next = it.copy(
@@ -553,6 +613,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                         )
                         if (state == ClientState.STREAMING) next else next.withoutOutputTiming(state)
                     }
+                    syncWledPlaybackState()
                 }
             }
         }
@@ -761,6 +822,8 @@ class SendspinRuntime private constructor(private val context: Context) {
         fun shutdown() {
             val old = synchronized(this) { instance.also { instance = null } } ?: return
             old.stop()
+            old.wledAudioSync.close()
+            old.wledColorSync.close()
             old.scope.cancel()
             old.okHttp.dispatcher.executorService.shutdown()
             old.okHttp.connectionPool.evictAll()

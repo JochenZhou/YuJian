@@ -26,6 +26,13 @@ object Prefs {
     private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
     private const val KEY_SENDSPIN_PLAYER_STYLE = "sendspin_player_style"
+    private const val KEY_WLED_SYNC_ENABLED = "wled_sync_enabled"
+    private const val KEY_WLED_SYNC_PORT = "wled_sync_port"
+    private const val KEY_WLED_COLOR_SYNC_ENABLED = "wled_color_sync_enabled"
+    private const val KEY_WLED_COLOR_HOST = "wled_color_host"
+
+    const val DEFAULT_WLED_SYNC_PORT = 11988
+    const val DEFAULT_WLED_COLOR_HOST = "192.168.101.206"
 
     enum class SendspinPlayerStyle(val storageId: String, val label: String) {
         VINYL("vinyl", "样式一（经典黑胶）"),
@@ -154,6 +161,105 @@ object Prefs {
     /** 持久化播放页视觉样式。 */
     fun setSendspinPlayerStyle(context: Context, style: SendspinPlayerStyle) {
         prefs(context).edit().putString(KEY_SENDSPIN_PLAYER_STYLE, style.storageId).apply()
+    }
+
+    /** 是否开启 WLED 音乐律动 UDP 广播；默认关闭。 */
+    fun isWledSyncEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_WLED_SYNC_ENABLED, false)
+
+    /** 持久化 WLED 音乐律动总开关。 */
+    fun setWledSyncEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_WLED_SYNC_ENABLED, enabled).apply()
+    }
+
+    /** 读取 WLED AudioReactive UDP Sync 端口；默认 11988。 */
+    fun getWledSyncPort(context: Context): Int {
+        val port = prefs(context).getInt(KEY_WLED_SYNC_PORT, DEFAULT_WLED_SYNC_PORT)
+        return if (port in 1..65535) port else DEFAULT_WLED_SYNC_PORT
+    }
+
+    /** 持久化有效的 WLED UDP 端口（1..65535）；无效值直接拒绝且不覆盖原配置。 */
+    fun setWledSyncPort(context: Context, port: Int): Boolean {
+        if (port !in 1..65535) return false
+        prefs(context).edit().putInt(KEY_WLED_SYNC_PORT, port).apply()
+        return true
+    }
+
+    /** 解析并校验 WLED UDP 端口字符串。 */
+    fun parseWledSyncPort(raw: String): Int? {
+        val port = raw.trim().toIntOrNull() ?: return null
+        return if (port in 1..65535) port else null
+    }
+
+    /** 是否开启 WLED 封面主色调同步；默认关闭。 */
+    fun isWledColorSyncEnabled(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_WLED_COLOR_SYNC_ENABLED, false)
+
+    /** 持久化 WLED 封面色彩同步开关。 */
+    fun setWledColorSyncEnabled(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_WLED_COLOR_SYNC_ENABLED, enabled).apply()
+    }
+
+    /** 读取目标 WLED 设备的 IP 或主机名；默认 192.168.101.206。 */
+    fun getWledColorHost(context: Context): String {
+        val stored = prefs(context).getString(KEY_WLED_COLOR_HOST, DEFAULT_WLED_COLOR_HOST).orEmpty()
+        return normalizeWledHost(stored) ?: DEFAULT_WLED_COLOR_HOST
+    }
+
+    /** 持久化校验后的 WLED 主机名 / IP（可选 :port）；无效输入拒绝且不覆盖原配置。 */
+    fun setWledColorHost(context: Context, host: String): Boolean {
+        val normalized = normalizeWledHost(host) ?: return false
+        prefs(context).edit().putString(KEY_WLED_COLOR_HOST, normalized).apply()
+        return true
+    }
+
+    /** 规范化并校验 WLED 设备地址（支持 host 或 host:port，自动去除 http/https 前缀与末尾斜杠）。 */
+    fun normalizeWledHost(raw: String): String? {
+        var value = raw.trim()
+        if (value.isEmpty()) return null
+        if (value.any { it.isWhitespace() || it.code < 0x20 || it == '?' || it == '#' || it == '@' }) return null
+
+        val schemeIndex = value.indexOf("://")
+        if (schemeIndex >= 0) {
+            val scheme = value.substring(0, schemeIndex).lowercase()
+            if (scheme != "http" && scheme != "https") return null
+            value = value.substring(schemeIndex + 3)
+        }
+        value = value.trimEnd('/')
+        if (value.isEmpty() || value.contains('/')) return null
+
+        if (value.startsWith('[')) {
+            val closeIdx = value.indexOf(']')
+            if (closeIdx <= 1) return null
+            val addr = value.substring(1, closeIdx)
+            if (!addr.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' || it == ':' }) return null
+            val tail = value.substring(closeIdx + 1)
+            if (tail.isNotEmpty()) {
+                if (!tail.startsWith(':')) return null
+                val port = tail.substring(1).toIntOrNull() ?: return null
+                if (port !in 1..65535) return null
+            }
+            return value
+        }
+
+        val firstColon = value.indexOf(':')
+        val hostPart: String
+        if (firstColon >= 0) {
+            if (value.indexOf(':', firstColon + 1) >= 0) return null
+            hostPart = value.substring(0, firstColon)
+            val port = value.substring(firstColon + 1).toIntOrNull() ?: return null
+            if (port !in 1..65535) return null
+        } else {
+            hostPart = value
+        }
+
+        if (hostPart.isEmpty() || hostPart.startsWith('.') || hostPart.endsWith('.') || hostPart.startsWith('-') || hostPart.endsWith('-')) {
+            return null
+        }
+        if (!hostPart.all { it in 'a'..'z' || it in 'A'..'Z' || it in '0'..'9' || it == '.' || it == '-' || it == '_' }) {
+            return null
+        }
+        return value
     }
 
     private fun generateToken(): String {
