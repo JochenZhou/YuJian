@@ -115,6 +115,32 @@ class SendSpinClientTest {
     }
 
     @Test
+    fun `server volume and mute commands emit flows and partial controller state retains volume`() {
+        val client = client()
+        val socket = CapturingSocket()
+        client.acceptIncomingConnection(socket, hello())
+
+        assertEquals(100, client.playerVolumeFlow.value)
+        assertFalse(client.playerMutedFlow.value)
+
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"volume","volume":43}}}""")
+        assertEquals(43, client.playerVolumeFlow.value)
+        assertEquals(43, client.currentPlayerVolume)
+
+        client.handleTextMessage("""{"type":"server/command","payload":{"player":{"command":"mute","mute":true}}}""")
+        assertTrue(client.playerMutedFlow.value)
+        assertTrue(client.currentPlayerMuted)
+
+        client.handleTextMessage("""{"type":"server/state","payload":{"controller":{"supported_commands":["volume","mute"],"volume":68,"muted":false}}}""")
+        assertEquals(68, client.controllerState.value?.volume)
+        assertEquals(false, client.controllerState.value?.muted)
+
+        client.handleTextMessage("""{"type":"server/state","payload":{"controller":{"supported_commands":["volume","mute"]}}}""")
+        assertEquals(68, client.controllerState.value?.volume)
+        assertEquals(false, client.controllerState.value?.muted)
+    }
+
+    @Test
     fun `first clock burst seeds readiness before initial audio flush`() = runBlocking {
         val player = TrackingPlayer()
         val client = client(player = player)

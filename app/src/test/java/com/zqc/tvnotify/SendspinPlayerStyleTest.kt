@@ -169,6 +169,108 @@ class SendspinPlayerStyleTest {
         assertEquals(View.VISIBLE, switcher.roundedCover.visibility)
     }
 
+    @Test
+    fun `header hosts settings and controls bar hosts playlist button with complete focus chain`() {
+        val activity = buildPreparedSendspinActivity()
+        val clazz = SendspinActivity::class.java
+        val header = clazz.getDeclaredField("header").apply { isAccessible = true }.get(activity) as ViewGroup
+        val controls = clazz.getDeclaredField("controls").apply { isAccessible = true }.get(activity) as ViewGroup
+        val back = clazz.getDeclaredField("back").apply { isAccessible = true }.get(activity) as View
+        val settings = clazz.getDeclaredField("settings").apply { isAccessible = true }.get(activity) as View
+        val volumeControl = clazz.getDeclaredField("volumeControl").apply { isAccessible = true }.get(activity) as View
+        val previous = clazz.getDeclaredField("previous").apply { isAccessible = true }.get(activity) as View
+        val playPause = clazz.getDeclaredField("playPause").apply { isAccessible = true }.get(activity) as View
+        val next = clazz.getDeclaredField("next").apply { isAccessible = true }.get(activity) as View
+        val playlistButton = clazz.getDeclaredField("playlistButton").apply { isAccessible = true }.get(activity) as View
+
+        assertTrue("Settings button must live in header", settings.parent === header)
+        assertTrue("Playlist button must live in controls bar", playlistButton.parent === controls)
+        assertEquals(settings.id, back.nextFocusRightId)
+        assertEquals(back.id, settings.nextFocusLeftId)
+
+        // Render connected state with controller-only volume & full transport controls
+        val connected = SendspinRuntime.Status(
+            state = "connected",
+            title = "晴天",
+            artist = "周杰伦",
+            volume = 64,
+            controllerCommands = setOf("play", "pause", "next", "previous", "volume", "mute"),
+            playerCommands = emptySet()
+        )
+        clazz.getDeclaredMethod("render", SendspinRuntime.Status::class.java)
+            .apply { isAccessible = true }
+            .invoke(activity, connected)
+
+        assertTrue("Controller volume command must enable TV volume button", volumeControl.isEnabled)
+        assertEquals(previous.id, volumeControl.nextFocusRightId)
+        assertEquals(playPause.id, previous.nextFocusRightId)
+        assertEquals(next.id, playPause.nextFocusRightId)
+        assertEquals(playlistButton.id, next.nextFocusRightId)
+        assertEquals(next.id, playlistButton.nextFocusLeftId)
+    }
+
+    @Test
+    fun `clicking playlist button opens current playlist track detail and highlights active song`() {
+        PlaylistStore.update(null)
+        PlaylistStore.markActivePlaylist(null)
+        val catalog = PlaylistCatalog.parse(
+            """
+            {
+              "callback": {"url": "http://192.168.1.10:8123/api/yujian/play", "token": "tok"},
+              "playlists": [
+                {
+                  "id": "library://playlist/1",
+                  "name": "华语精选",
+                  "tracks": [
+                    {"id": "library://track/1", "name": "稻香", "artist": "周杰伦"},
+                    {"id": "library://track/2", "name": "晴天", "artist": "周杰伦"}
+                  ]
+                },
+                {
+                  "id": "library://playlist/2",
+                  "name": "轻音乐",
+                  "tracks": []
+                }
+              ]
+            }
+            """.trimIndent()
+        )!!
+        PlaylistStore.update(catalog)
+
+        val activity = buildPreparedSendspinActivity()
+        val clazz = SendspinActivity::class.java
+        clazz.getDeclaredMethod("render", SendspinRuntime.Status::class.java)
+            .apply { isAccessible = true }
+            .invoke(activity, SendspinRuntime.Status(state = "connected", title = "晴天", artist = "周杰伦"))
+
+        val playlistButton = clazz.getDeclaredField("playlistButton").apply { isAccessible = true }.get(activity) as View
+        assertTrue(playlistButton.performClick())
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        val dialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(dialog.isShowing)
+        val rows = dialog.itemViews.map { collectAllTexts(it).joinToString(" | ") }
+        assertTrue("Should offer switch playlist action: $rows", rows.any { it.contains("切换其他歌单") })
+        assertTrue("Should offer play full playlist action: $rows", rows.any { it.contains("从头播放整张歌单") })
+        assertTrue("Track 01 should appear with 点播 badge: $rows", rows.any { it.contains("01. 稻香") && it.contains("点播") })
+        assertTrue("Playing track 02 should highlight with 正在播放 badge: $rows", rows.any { it.contains("02. 晴天") && it.contains("正在播放") })
+
+        // Clicking 切换其他歌单 switches smoothly to all-playlists dialog; selecting empty-track playlist still opens detail cleanly
+        dialog.itemViews[0].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        val catalogDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(catalogDialog.isShowing)
+        catalogDialog.itemViews[1].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        val emptyDetailDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(emptyDetailDialog.isShowing)
+        val emptyRows = emptyDetailDialog.itemViews.map { collectAllTexts(it).joinToString(" | ") }
+        assertTrue("Playlist without tracks still supports whole-playlist play", emptyRows.any { it.contains("从头播放整张歌单") })
+        emptyDetailDialog.dismiss()
+        PlaylistStore.update(null)
+        PlaylistStore.markActivePlaylist(null)
+    }
+
     private fun collectAllTexts(view: View): List<String> {
         val result = mutableListOf<String>()
         if (view is TextView && view.text.isNotEmpty()) {

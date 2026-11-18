@@ -67,6 +67,8 @@ class SendspinActivity : Activity() {
     private lateinit var volume: TextView
     private lateinit var volumeIcon: ImageView
     private lateinit var volumeControl: SendspinFocusPill
+    private lateinit var playlistButton: SendspinFocusPill
+    private lateinit var playlistLabel: TextView
     private lateinit var settings: SendspinFocusPill
     private lateinit var settingsLabel: TextView
     private lateinit var theme: Theme
@@ -125,7 +127,7 @@ class SendspinActivity : Activity() {
         runtime = SendspinRuntime.current() ?: SendspinRuntime.init(this).also { it.start() }
         buildUi()
         render(runtime?.status() ?: currentStatus)
-        if (playPause.isEnabled) playPause.requestFocus() else settings.requestFocus()
+        if (playPause.isEnabled) playPause.requestFocus() else playlistButton.requestFocus()
     }
 
     override fun onResume() {
@@ -157,7 +159,7 @@ class SendspinActivity : Activity() {
             lyricsView.setLoading(false)
             lastLyricsTrackKey = ""
         }
-        for (view in arrayOf(back, artworkSwitcher, progress, previous, playPause, next, volumeControl, settings)) view.animate().cancel()
+        for (view in arrayOf(back, artworkSwitcher, progress, previous, playPause, next, volumeControl, playlistButton, settings)) view.animate().cancel()
         playerDialog?.dismiss()
         playerDialog = null
         super.onPause()
@@ -204,6 +206,7 @@ class SendspinActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             clipChildren = false
+            clipToPadding = false
         }
         back = iconButton(SendspinIcon.BACK, "返回") { finish() }
         header.addView(back, LinearLayout.LayoutParams(dp(40), dp(40)))
@@ -215,6 +218,18 @@ class SendspinActivity : Activity() {
             compoundDrawablePadding = dp(7)
         }
         header.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        settingsLabel = text("设置", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
+        settings = SendspinFocusPill(this, accent).apply {
+            id = View.generateViewId()
+            setPadding(dp(11), 0, dp(11), 0)
+            contentDescription = "播放器设置"
+            addView(ImageView(this@SendspinActivity).apply {
+                setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.SETTINGS, Color.rgb(176, 189, 193), 18f))
+            }, LinearLayout.LayoutParams(dp(18), dp(18)))
+            addView(settingsLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) })
+            setOnClickListener { showSettingsDialog() }
+        }
+        header.addView(settings, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)).apply { leftMargin = dp(12) })
         root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(40)))
 
         leftColumn = LinearLayout(this).apply {
@@ -297,16 +312,16 @@ class SendspinActivity : Activity() {
         playPause = iconButton(SendspinIcon.PLAY, "播放", primary = true) { togglePlayback() }
         next = iconButton(SendspinIcon.NEXT, "下一首") { send("next") }
 
-        settingsLabel = text("设置", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
-        settings = SendspinFocusPill(this, accent).apply {
+        playlistLabel = text("歌单", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
+        playlistButton = SendspinFocusPill(this, accent).apply {
             id = View.generateViewId()
             setPadding(dp(11), 0, dp(11), 0)
-            contentDescription = "播放器设置"
+            contentDescription = "当前歌单详单"
             addView(ImageView(this@SendspinActivity).apply {
-                setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.SETTINGS, Color.rgb(176, 189, 193), 18f))
+                setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.PLAYLIST, Color.rgb(176, 189, 193), 18f))
             }, LinearLayout.LayoutParams(dp(18), dp(18)))
-            addView(settingsLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) })
-            setOnClickListener { showSettingsDialog() }
+            addView(playlistLabel, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = dp(6) })
+            setOnClickListener { showCurrentPlaylistOrCatalogDialog() }
         }
 
         controls.addView(volumeControl, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
@@ -315,7 +330,7 @@ class SendspinActivity : Activity() {
         controls.addView(playPause, LinearLayout.LayoutParams(dp(64), dp(64)).apply { leftMargin = dp(12); rightMargin = dp(12) })
         controls.addView(next, LinearLayout.LayoutParams(dp(46), dp(46)))
         controls.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        controls.addView(settings, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
+        controls.addView(playlistButton, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(40)))
         leftColumn.addView(controls, params(top = dp(12)))
 
         lyricsView = LyricsScrollView(this, accent)
@@ -357,6 +372,8 @@ class SendspinActivity : Activity() {
         val headerHeight = if (tiny) 32 else if (compact) 36 else 40
         header.layoutParams.height = dp(headerHeight)
         back.layoutParams = LinearLayout.LayoutParams(dp(headerHeight), dp(headerHeight))
+        settings.layoutParams.height = dp(if (tiny) 30 else if (compact) 34 else 36)
+        settingsLabel.visibility = if (hideSettingsText) View.GONE else View.VISIBLE
         (stage.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 8 else 12)
 
         artworkSwitcher.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
@@ -382,8 +399,8 @@ class SendspinActivity : Activity() {
         }
         val pillHeight = dp(if (tiny) 34 else if (compact) 36 else 40)
         volumeControl.layoutParams.height = pillHeight
-        settings.layoutParams.height = pillHeight
-        settingsLabel.visibility = if (hideSettingsText) View.GONE else View.VISIBLE
+        playlistButton.layoutParams.height = pillHeight
+        playlistLabel.visibility = if (hideSettingsText) View.GONE else View.VISIBLE
         root.requestLayout()
     }
 
@@ -430,12 +447,17 @@ class SendspinActivity : Activity() {
         playPause.isEnabled = connected && (if (state.playing) "pause" else "play") in state.controllerCommands
         previous.isEnabled = connected && "previous" in state.controllerCommands
         next.isEnabled = connected && "next" in state.controllerCommands
-        val canAdjustVolume = connected && ("volume" in state.playerCommands || "mute" in state.playerCommands)
+        val canAdjustVolume = connected && (
+            "volume" in state.controllerCommands ||
+                "mute" in state.controllerCommands ||
+                "volume" in state.playerCommands ||
+                "mute" in state.playerCommands
+            )
         volumeControl.isEnabled = canAdjustVolume
         volumeControl.alpha = if (canAdjustVolume) 1f else .38f
         val volumeLabel = if (state.muted) "静音" else "${state.volume.coerceIn(0, 100)}%"
         setTextIfChanged(volume, volumeLabel)
-        volumeControl.contentDescription = "${if (state.muted) "已静音" else "音量 ${state.volume.coerceIn(0, 100)}%"}，调整音量"
+        volumeControl.contentDescription = "${if (state.muted) "已静音" else "音量 ${state.volume.coerceIn(0, 100)}%"}，调整 Music Assistant 音量"
         if (old.muted != state.muted) {
             volumeIcon.setImageDrawable(SendspinIconDrawable(this, if (state.muted) SendspinIcon.MUTED else SendspinIcon.VOLUME, Color.rgb(176, 189, 193), 18f))
         }
@@ -446,17 +468,22 @@ class SendspinActivity : Activity() {
     }
 
     private fun updateFocusTargets() {
-        val rowButtons = listOf(volumeControl, previous, playPause, next, settings)
+        val rowButtons = listOf(volumeControl, previous, playPause, next, playlistButton)
         val enabledRow = rowButtons.filter { it.isEnabled }
         val defaultTransport = when {
             playPause.isEnabled -> playPause.id
             previous.isEnabled -> previous.id
             next.isEnabled -> next.id
             volumeControl.isEnabled -> volumeControl.id
-            else -> settings.id
+            else -> playlistButton.id
         }
         back.nextFocusDownId = artworkSwitcher.id
         back.nextFocusRightId = settings.id
+        back.nextFocusLeftId = View.NO_ID
+        settings.nextFocusLeftId = back.id
+        settings.nextFocusRightId = View.NO_ID
+        settings.nextFocusDownId = artworkSwitcher.id
+        settings.nextFocusUpId = View.NO_ID
         artworkSwitcher.nextFocusUpId = back.id
         artworkSwitcher.nextFocusDownId = if (progress.isEnabled) progress.id else defaultTransport
         artworkSwitcher.nextFocusLeftId = artworkSwitcher.id
@@ -466,10 +493,11 @@ class SendspinActivity : Activity() {
         for (i in enabledRow.indices) {
             val view = enabledRow[i]
             view.nextFocusUpId = if (progress.isEnabled) progress.id else artworkSwitcher.id
+            view.nextFocusDownId = View.NO_ID
             view.nextFocusLeftId = if (i > 0) enabledRow[i - 1].id else View.NO_ID
             view.nextFocusRightId = if (i + 1 < enabledRow.size) enabledRow[i + 1].id else View.NO_ID
         }
-        if (currentFocus?.isEnabled == false && playerDialog?.isShowing != true) settings.requestFocus()
+        if (currentFocus?.isEnabled == false && playerDialog?.isShowing != true) playlistButton.requestFocus()
     }
 
     private fun projectedPosition(state: SendspinRuntime.Status = currentStatus, nowUs: Long = ClockSync.localMicros()): Long {
@@ -592,7 +620,7 @@ class SendspinActivity : Activity() {
         lyricsView.setBlurredBackdropActive(hasBlur)
         val shadowRadius = if (hasBlur) 6f else 0f
         val shadowColor = if (hasBlur) Color.argb(145, 0, 0, 0) else Color.TRANSPARENT
-        for (tv in arrayOf(status, title, artist, album, position, duration, volume, settingsLabel)) {
+        for (tv in arrayOf(status, title, artist, album, position, duration, volume, settingsLabel, playlistLabel)) {
             tv.setShadowLayer(shadowRadius, 0f, if (hasBlur) 1.5f else 0f, shadowColor)
         }
     }
@@ -662,12 +690,16 @@ class SendspinActivity : Activity() {
     private fun adjustVolume(delta: Int) { setVolume((currentStatus.volume + delta).coerceIn(0, 100)) }
 
     private fun setVolume(target: Int) {
-        if (currentStatus.state != "connected" || "volume" !in currentStatus.playerCommands) return
+        if (currentStatus.state != "connected" ||
+            ("volume" !in currentStatus.controllerCommands && "volume" !in currentStatus.playerCommands)
+        ) return
         if (runtime?.command("volume", volume = target.coerceIn(0, 100)) != true) Toast.makeText(this, "音量调整暂不可用", Toast.LENGTH_SHORT).show()
     }
 
     private fun toggleMute() {
-        if (currentStatus.state != "connected" || "mute" !in currentStatus.playerCommands) return
+        if (currentStatus.state != "connected" ||
+            ("mute" !in currentStatus.controllerCommands && "mute" !in currentStatus.playerCommands)
+        ) return
         if (runtime?.command("mute", muted = !currentStatus.muted) != true) Toast.makeText(this, "静音控制暂不可用", Toast.LENGTH_SHORT).show()
     }
 
@@ -741,18 +773,20 @@ class SendspinActivity : Activity() {
 
     private fun updateVolumeDialog(state: SendspinRuntime.Status) {
         val connected = state.state == "connected"
-        val canVolume = connected && "volume" in state.playerCommands
+        val canVolume = connected && ("volume" in state.controllerCommands || "volume" in state.playerCommands)
         volumeDialogSeek?.isEnabled = canVolume
         volumeDialogMinus?.isEnabled = canVolume
         volumeDialogPlus?.isEnabled = canVolume
         volumeDialogMute?.apply {
-            isEnabled = connected && "mute" in state.playerCommands
+            isEnabled = connected && ("mute" in state.controllerCommands || "mute" in state.playerCommands)
             icon = if (state.muted) SendspinIcon.VOLUME else SendspinIcon.MUTED
             contentDescription = if (state.muted) "取消静音" else "静音"
         }
         if (!volumeDialogEditing) {
             volumeDialogSeek?.progress = state.volume.coerceIn(0, 100)
-            volumeDialogLabel?.text = "音量 ${state.volume.coerceIn(0, 100)}%${if (state.muted) " · 已静音" else ""}"
+            val maTag = if ("volume" in state.controllerCommands) " · MA" else ""
+            val muteTag = if (state.muted) " · 已静音" else ""
+            volumeDialogLabel?.text = "音量 ${state.volume.coerceIn(0, 100)}%$maTag$muteTag"
         }
     }
 
@@ -768,7 +802,7 @@ class SendspinActivity : Activity() {
         val items = listOf(
             ThemeDialogItem(
                 title = "浏览歌单",
-                subtitle = "从 Music Assistant 同步的歌单中选一张播放",
+                subtitle = "查看已同步歌单与曲目详单，或选歌点播",
                 trailingBadge = "歌单",
                 dismissOnClick = false
             ) {
@@ -809,25 +843,47 @@ class SendspinActivity : Activity() {
         showPlayerDialog(dialog)
     }
 
+    private fun showCurrentPlaylistOrCatalogDialog() {
+        val catalog = PlaylistStore.current()
+        if (catalog == null || catalog.playlists.isEmpty()) {
+            showPlaylistDialog()
+            return
+        }
+        val active = PlaylistStore.resolveActivePlaylist(currentStatus.title, currentStatus.artist)
+        if (active != null) {
+            showPlaylistDetailDialog(active)
+        } else {
+            showPlaylistDialog()
+        }
+    }
+
     private fun showPlaylistDialog() {
         val catalog = PlaylistStore.current()
         if (catalog == null || catalog.playlists.isEmpty()) {
-            ThemedDialogBuilder(this, theme)
+            val dialog = ThemedDialogBuilder(this, theme)
                 .setTitle("歌单")
                 .setMessage("尚未同步到歌单。请确认 Home Assistant 的玉简集成已开启「同步歌单」，电视与 HA 在同一局域网，稍后再试。")
                 .setPositiveButton("知道了")
-                .show()
+                .create()
+            dialog.setOnDismissListener {
+                if (playerDialog === dialog) playerDialog = null
+                hideSystemBars()
+            }
+            showPlayerDialog(dialog)
             return
         }
+        val activeId = PlaylistStore.resolveActivePlaylist(currentStatus.title, currentStatus.artist)?.id
         val items = catalog.playlists.map { entry ->
+            val isCurrent = entry.id == activeId
+            val countLabel = entry.effectiveTrackCount?.let { "$it 首" }
             ThemeDialogItem(
                 title = entry.name,
-                subtitle = entry.trackCount?.let { "$it 首" },
-                trailingBadge = "播放",
+                subtitle = if (isCurrent && countLabel != null) "当前歌单 · $countLabel" else if (isCurrent) "当前歌单" else countLabel,
+                trailingBadge = if (isCurrent) "当前" else "详情",
+                selected = isCurrent,
                 dismissOnClick = false
-            ) { dialog ->
-                dialog.dismiss()
-                playPlaylist(entry)
+            ) {
+                showPlaylistDetailDialog(entry)
             }
         }
         val dialog = ThemedDialogBuilder(this, theme)
@@ -843,12 +899,76 @@ class SendspinActivity : Activity() {
         showPlayerDialog(dialog)
     }
 
+    private fun showPlaylistDetailDialog(entry: PlaylistEntry) {
+        val catalog = PlaylistStore.current()
+        val playlistCount = catalog?.playlists?.size ?: 0
+        val trackCountText = entry.effectiveTrackCount?.let { "共 $it 首" }
+        val items = mutableListOf<ThemeDialogItem>()
+        if (playlistCount > 1) {
+            items.add(
+                ThemeDialogItem(
+                    title = "⇄ 切换其他歌单",
+                    subtitle = "已同步 $playlistCount 张歌单，点击切换",
+                    trailingBadge = "全部歌单",
+                    dismissOnClick = false
+                ) {
+                    showPlaylistDialog()
+                }
+            )
+        }
+        items.add(
+            ThemeDialogItem(
+                title = "▶ 从头播放整张歌单",
+                subtitle = trackCountText ?: "从第 1 首开始播放整张歌单",
+                trailingBadge = "整单",
+                dismissOnClick = false
+            ) { dialog ->
+                dialog.dismiss()
+                playPlaylist(entry)
+            }
+        )
+        for ((index, track) in entry.tracks.withIndex()) {
+            val number = String.format(Locale.ROOT, "%02d", index + 1)
+            val isPlayingTrack = track.matchesPlaying(currentStatus.title, currentStatus.artist)
+            items.add(
+                ThemeDialogItem(
+                    title = "$number. ${track.name}",
+                    subtitle = track.artist,
+                    trailingBadge = if (isPlayingTrack) "正在播放" else "点播",
+                    selected = isPlayingTrack,
+                    dismissOnClick = false
+                ) { dialog ->
+                    dialog.dismiss()
+                    playTrack(entry, track)
+                }
+            )
+        }
+        val emptyTracksNote = if (entry.tracks.isEmpty()) {
+            "暂未收到该歌单的曲目列表，可直接点击上方整单播放；请将 HA 玉简集成更新至最新版以同步歌单详单。"
+        } else {
+            null
+        }
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle(entry.name + (entry.effectiveTrackCount?.let { "（$it 首）" }.orEmpty()))
+            .setMessage(emptyTracksNote)
+            .setItems(items)
+            .setMaxWidthDp(580)
+            .setNegativeButton("关闭")
+            .create()
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
+    }
+
     private fun playPlaylist(entry: PlaylistEntry) {
         val catalog = PlaylistStore.current()
         if (catalog == null || catalog.callbackUrl.isBlank()) {
             Toast.makeText(this, "播放回调未配置，请先在 HA 侧开启歌单同步", Toast.LENGTH_SHORT).show()
             return
         }
+        PlaylistStore.markActivePlaylist(entry.id)
         Toast.makeText(this, "正在请求播放「${entry.name}」…", Toast.LENGTH_SHORT).show()
         PlaylistPlayer.request(
             url = catalog.callbackUrl,
@@ -860,6 +980,32 @@ class SendspinActivity : Activity() {
                 Toast.makeText(
                     this,
                     if (ok) "已请求播放「${entry.name}」" else (error ?: "点播失败"),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    private fun playTrack(entry: PlaylistEntry, track: PlaylistTrack) {
+        val catalog = PlaylistStore.current()
+        if (catalog == null || catalog.callbackUrl.isBlank()) {
+            Toast.makeText(this, "播放回调未配置，请先在 HA 侧开启歌单同步", Toast.LENGTH_SHORT).show()
+            return
+        }
+        PlaylistStore.markActivePlaylist(entry.id)
+        Toast.makeText(this, "正在点播「${track.name}」…", Toast.LENGTH_SHORT).show()
+        PlaylistPlayer.request(
+            url = catalog.callbackUrl,
+            token = catalog.callbackToken,
+            id = entry.id,
+            name = entry.name,
+            trackId = track.id,
+            trackName = track.name
+        ) { ok, error ->
+            main.post {
+                Toast.makeText(
+                    this,
+                    if (ok) "已点播「${track.name}」" else (error ?: "点播失败"),
                     Toast.LENGTH_SHORT
                 ).show()
             }

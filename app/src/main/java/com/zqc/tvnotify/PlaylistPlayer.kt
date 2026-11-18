@@ -26,24 +26,44 @@ object PlaylistPlayer {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    internal fun buildRequestPayload(
+        id: String,
+        name: String,
+        trackId: String? = null,
+        trackName: String? = null,
+        model: String? = android.os.Build.MODEL
+    ): JSONObject {
+        val body = JSONObject()
+            .put("id", id)
+            .put("name", name)
+            .put("model", (model ?: "").trim())
+        val cleanTrackId = trackId?.trim().orEmpty()
+        if (cleanTrackId.isNotEmpty()) {
+            body.put("track_id", cleanTrackId)
+            val cleanTrackName = trackName?.trim().orEmpty()
+            if (cleanTrackName.isNotEmpty()) {
+                body.put("track_name", cleanTrackName)
+            }
+        }
+        return body
+    }
+
     /**
      * 异步发起点播。回调可能来自 okhttp 的 IO 线程，调用方需自行切回主线程。
      *
      * 请求体带上本机型号，HA 侧据此把点播落到这台电视自己的 Music Assistant
-     * 播放器上；否则它只能在一堆播放器里瞎挑（曾经播到 AkuBox）。
+     * 播放器上；传入 [trackId] 时播放歌单内指定曲目并续播后续歌单，不传则整单从头播。
      */
     fun request(
         url: String,
         token: String,
         id: String,
         name: String,
+        trackId: String? = null,
+        trackName: String? = null,
         onResult: (ok: Boolean, error: String?) -> Unit
     ) {
-        val body = JSONObject()
-            .put("id", id)
-            .put("name", name)
-            .put("model", (android.os.Build.MODEL ?: "").trim())
-            .toString()
+        val body = buildRequestPayload(id, name, trackId, trackName).toString()
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")

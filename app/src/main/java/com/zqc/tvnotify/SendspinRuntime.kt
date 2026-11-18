@@ -279,18 +279,35 @@ class SendspinRuntime private constructor(private val context: Context) {
                 current.sendSeekRelative(offsetMs)
             }
             "volume" -> {
-                if ("volume" !in playerSupported || volume == null) return false
-                current.setLocalVolume(volume)
-                val gain = current.currentPlayerGain
-                current.audioPlayer.setVolume(gain)
-                updateStatus { it.copy(volume = volume.coerceIn(0, 100), playerGain = gain) }
+                if (volume == null) return false
+                val clamped = volume.coerceIn(0, 100)
+                val canController = "volume" in supported
+                val canPlayer = "volume" in playerSupported
+                if (!canController && !canPlayer) return false
+                if (canController) {
+                    current.sendControllerCommand("volume", volume = clamped)
+                    updateStatus { it.copy(volume = clamped) }
+                } else {
+                    current.setLocalVolume(clamped)
+                    val gain = current.currentPlayerGain
+                    current.audioPlayer.setVolume(gain)
+                    updateStatus { it.copy(volume = clamped, playerGain = gain) }
+                }
             }
             "mute" -> {
-                if ("mute" !in playerSupported || muted == null) return false
-                current.setLocalMuted(muted)
-                val gain = current.currentPlayerGain
-                current.audioPlayer.setVolume(gain)
-                updateStatus { it.copy(muted = muted, playerGain = gain) }
+                if (muted == null) return false
+                val canController = "mute" in supported
+                val canPlayer = "mute" in playerSupported
+                if (!canController && !canPlayer) return false
+                if (canController) {
+                    current.sendControllerCommand("mute", muted = muted)
+                    updateStatus { it.copy(muted = muted) }
+                } else {
+                    current.setLocalMuted(muted)
+                    val gain = current.currentPlayerGain
+                    current.audioPlayer.setVolume(gain)
+                    updateStatus { it.copy(muted = muted, playerGain = gain) }
+                }
             }
             else -> return false
         }
@@ -461,11 +478,36 @@ class SendspinRuntime private constructor(private val context: Context) {
                 }
             }
             launch {
+                instance.playerVolumeFlow.collect { vol ->
+                    updateClientStatus(instance) { existing ->
+                        val nextVol = if ("volume" in existing.controllerCommands && lastController?.volume != null) {
+                            existing.volume
+                        } else {
+                            vol
+                        }
+                        existing.copy(volume = nextVol, playerGain = instance.currentPlayerGain)
+                    }
+                }
+            }
+            launch {
+                instance.playerMutedFlow.collect { mutedFlag ->
+                    updateClientStatus(instance) { existing ->
+                        val nextMuted = if ("mute" in existing.controllerCommands && lastController?.muted != null) {
+                            existing.muted
+                        } else {
+                            mutedFlag
+                        }
+                        existing.copy(muted = nextMuted, playerGain = instance.currentPlayerGain)
+                    }
+                }
+            }
+            launch {
                 instance.serverHello.collectLatest { hello ->
                     val activeRoles = hello?.activeRoles.orEmpty().toSet()
                     val controllerEnabled = "controller@v1" in activeRoles || "controller" in activeRoles
                     val playerEnabled = "player@v1" in activeRoles || "player" in activeRoles
                     val pairingRequired = "pairing@v1" in activeRoles
+                    val ctrl = instance.controllerState.value
                     updateClientStatus(instance) {
                         val controller = it.controllerCommands.takeIf { _ -> controllerEnabled } ?: emptySet()
                         val player = setOf("volume", "mute").takeIf { _ -> playerEnabled } ?: emptySet()
@@ -475,8 +517,8 @@ class SendspinRuntime private constructor(private val context: Context) {
                             controllerCommands = controller,
                             playerCommands = player,
                             commands = controller + player,
-                            volume = instance.currentPlayerVolume,
-                            muted = instance.currentPlayerMuted,
+                            volume = ctrl?.volume?.coerceIn(0, 100) ?: instance.currentPlayerVolume,
+                            muted = ctrl?.muted ?: instance.currentPlayerMuted,
                             playerGain = instance.currentPlayerGain,
                             outputDelayMs = instance.currentOutputDelayMs,
                             automaticSync = instance.currentAutomaticSync,
@@ -552,11 +594,35 @@ class SendspinRuntime private constructor(private val context: Context) {
             val controller = message.controller
             if (controller is JsonOptional.Present) lastController = controller.value
             val controllerCommands = lastController?.supportedCommands?.toSet()
-                ?: if (message.controller is JsonOptional.Present) emptySet() else existing.controllerCommands
+                ?: if (controller is JsonOptional.Present) emptySet() else existing.controllerCommands
+            val nextVolume = if (controller is JsonOptional.Present) {
+                val ctrl = controller.value
+                val ctrlVol = ctrl?.volume
+                when {
+                    ctrl == null -> instance.currentPlayerVolume
+                    ctrlVol != null -> ctrlVol.coerceIn(0, 100)
+                    else -> existing.volume
+                }
+            } else {
+                existing.volume
+            }
+            val nextMuted = if (controller is JsonOptional.Present) {
+                val ctrl = controller.value
+                val ctrlMuted = ctrl?.muted
+                when {
+                    ctrl == null -> instance.currentPlayerMuted
+                    ctrlMuted != null -> ctrlMuted
+                    else -> existing.muted
+                }
+            } else {
+                existing.muted
+            }
             existing.copy(
                 title = lastMetadata?.title?.orNull().orEmpty(),
                 artist = lastMetadata?.artist?.orNull().orEmpty(),
                 album = lastMetadata?.album?.orNull().orEmpty(),
+                volume = nextVolume,
+                muted = nextMuted,
                 commands = controllerCommands + existing.playerCommands,
                 controllerCommands = controllerCommands,
             ).withProgress(nowUs)

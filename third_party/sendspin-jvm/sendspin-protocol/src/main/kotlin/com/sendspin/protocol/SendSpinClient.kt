@@ -221,6 +221,10 @@ class SendSpinClient(
     @Volatile private var playerVolume: Int = settingsStore.getInt(ClientSettingsKeys.PLAYER_VOLUME, 100)
         .coerceIn(0, 100)
     @Volatile private var playerMuted: Boolean = settingsStore.getInt(ClientSettingsKeys.PLAYER_MUTED, 0) != 0
+    private val _playerVolumeFlow = MutableStateFlow(playerVolume)
+    val playerVolumeFlow: StateFlow<Int> = _playerVolumeFlow
+    private val _playerMutedFlow = MutableStateFlow(playerMuted)
+    val playerMutedFlow: StateFlow<Boolean> = _playerMutedFlow
 
     val currentPlayerVolume: Int get() = playerVolume
     val currentPlayerMuted: Boolean get() = playerMuted
@@ -371,6 +375,7 @@ class SendSpinClient(
     fun setLocalVolume(volume: Int) {
         playerVolume = volume.coerceIn(0, 100)
         settingsStore.putInt(ClientSettingsKeys.PLAYER_VOLUME, playerVolume)
+        _playerVolumeFlow.value = playerVolume
         applyVolumeToPlayer()
         sendClientState()
     }
@@ -379,6 +384,7 @@ class SendSpinClient(
     fun setLocalMuted(muted: Boolean) {
         playerMuted = muted
         settingsStore.putInt(ClientSettingsKeys.PLAYER_MUTED, if (muted) 1 else 0)
+        _playerMutedFlow.value = playerMuted
         applyVolumeToPlayer()
         sendClientState()
     }
@@ -680,6 +686,7 @@ class SendSpinClient(
                             }
                             playerVolume = clamped
                             settingsStore.putInt(ClientSettingsKeys.PLAYER_VOLUME, playerVolume)
+                            _playerVolumeFlow.value = playerVolume
                             applyVolumeToPlayer()
                             sendClientState()
                         }
@@ -691,6 +698,7 @@ class SendSpinClient(
                         } else {
                             playerMuted = requested
                             settingsStore.putInt(ClientSettingsKeys.PLAYER_MUTED, if (playerMuted) 1 else 0)
+                            _playerMutedFlow.value = playerMuted
                             applyVolumeToPlayer()
                             sendClientState()
                         }
@@ -754,7 +762,14 @@ class SendSpinClient(
                     rawShuffle       is JsonOptional.Present -> rawShuffle
                     else -> stored?.shuffle ?: JsonOptional.Absent
                 }
-                ControllerUpdate.Set(ctrlValue.copy(repeat = repeat, shuffle = shuffle))
+                ControllerUpdate.Set(
+                    ctrlValue.copy(
+                        volume = ctrlValue.volume ?: stored?.volume,
+                        muted = ctrlValue.muted ?: stored?.muted,
+                        repeat = repeat,
+                        shuffle = shuffle,
+                    )
+                )
             }
             rawRepeat is JsonOptional.Present || rawShuffle is JsonOptional.Present -> {
                 // No controller object. Old server sends repeat/shuffle only via metadata.

@@ -230,7 +230,7 @@ internal class SendspinAmbientDrawable(private val base: Int, initialColor: Int)
     @Suppress("DEPRECATION") override fun getOpacity(): Int = PixelFormat.OPAQUE
 }
 
-internal enum class SendspinIcon { BACK, PLAY, PAUSE, PREVIOUS, NEXT, VOLUME, MUTED, SETTINGS, MINUS, PLUS, NOTE }
+internal enum class SendspinIcon { BACK, PLAY, PAUSE, PREVIOUS, NEXT, VOLUME, MUTED, SETTINGS, MINUS, PLUS, NOTE, PLAYLIST }
 
 /** All symbols are paths, so the player does not depend on emoji or a device icon font. */
 internal class SendspinIconDrawable(
@@ -308,6 +308,15 @@ internal class SendspinIconDrawable(
                 canvas.drawPath(path, paint)
                 paint.style = Paint.Style.FILL
                 canvas.drawOval(3f, 15f, 10f, 20f, paint); canvas.drawOval(13f, 13f, 20f, 18f, paint)
+            }
+            SendspinIcon.PLAYLIST -> {
+                paint.style = Paint.Style.STROKE
+                canvas.drawLine(4f, 6.5f, 19f, 6.5f, paint)
+                canvas.drawLine(4f, 12f, 19f, 12f, paint)
+                canvas.drawLine(4f, 17.5f, 12f, 17.5f, paint)
+                paint.style = Paint.Style.FILL
+                path.moveTo(15f, 14f); path.lineTo(20.5f, 17.2f); path.lineTo(15f, 20.4f); path.close()
+                canvas.drawPath(path, paint)
             }
         }
         canvas.restoreToCount(save)
