@@ -30,19 +30,24 @@ object Prefs {
     private const val KEY_WLED_SYNC_PORT = "wled_sync_port"
     private const val KEY_WLED_COLOR_SYNC_ENABLED = "wled_color_sync_enabled"
     private const val KEY_WLED_COLOR_HOST = "wled_color_host"
+    private const val KEY_WLED_EFFECT = "wled_effect"
 
     const val DEFAULT_WLED_SYNC_PORT = 11988
     const val DEFAULT_WLED_COLOR_HOST = "192.168.101.206"
+    val DEFAULT_WLED_EFFECT: String get() = WledEffectPreset.CUSTOM.storageId
 
     enum class SendspinPlayerStyle(val storageId: String, val label: String) {
         VINYL("vinyl", "样式一（经典黑胶）"),
         COVER_BLUR("cover_blur", "样式二（方形封面 · 高斯模糊背景）");
 
         companion object {
-            fun fromRaw(raw: String?): SendspinPlayerStyle = when (raw?.trim()?.lowercase()) {
+            fun tryParse(raw: String?): SendspinPlayerStyle? = when (raw?.trim()?.lowercase()) {
+                "vinyl", "style1" -> VINYL
                 "cover_blur", "square", "style2" -> COVER_BLUR
-                else -> VINYL
+                else -> null
             }
+
+            fun fromRaw(raw: String?): SendspinPlayerStyle = tryParse(raw) ?: VINYL
         }
     }
 
@@ -210,6 +215,19 @@ object Prefs {
     fun setWledColorHost(context: Context, host: String): Boolean {
         val normalized = normalizeWledHost(host) ?: return false
         prefs(context).edit().putString(KEY_WLED_COLOR_HOST, normalized).apply()
+        return true
+    }
+
+    /** 读取最近一次选中的推荐 WLED 律动效果（默认 custom，不主动改写灯带自身效果）。 */
+    fun getWledEffect(context: Context): String {
+        val stored = prefs(context).getString(KEY_WLED_EFFECT, DEFAULT_WLED_EFFECT)
+        return WledEffectPreset.fromRaw(stored).storageId
+    }
+
+    /** 持久化推荐 WLED 律动效果标识；未知值返回 false 且不覆盖原配置。 */
+    fun setWledEffect(context: Context, rawEffect: String): Boolean {
+        val preset = WledEffectPreset.tryParse(rawEffect) ?: return false
+        prefs(context).edit().putString(KEY_WLED_EFFECT, preset.storageId).apply()
         return true
     }
 

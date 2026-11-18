@@ -93,6 +93,7 @@ class NotifyService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        PlaylistStore.restoreIfEmpty(applicationContext)
         bannerController = BannerController(this)
         // Promote before network work to meet the foreground-service start deadline.
         startForegroundSafely()
@@ -314,9 +315,11 @@ class NotifyService : Service() {
                         sendspinRuntime?.setAutomaticSync(automatic) == true
                     },
                     onSendspinConfigChanged = { sendspinRuntime?.reconfigure() },
+                    onWledConfigChanged = { sendspinRuntime?.refreshWledAndDisplaySettings() },
+                    onApplyWledEffect = { preset -> sendspinRuntime?.applyWledEffect(preset) },
                     onOpenSendspinUi = { mainHandler.post { launchSendspinActivity(automatic = false) } },
                     onCloseSendspinUi = { mainHandler.post { SendspinActivity.closeCurrent() } },
-                    onLibrary = { json -> PlaylistStore.update(PlaylistCatalog.parse(json)) }
+                    onLibrary = { json -> PlaylistStore.updateFromJson(applicationContext, json) }
                 )
                 httpd.start()
                 synchronized(serverLock) {

@@ -139,6 +139,7 @@ class WledAudioAnalyzer {
     private var fftReal = DoubleArray(FFT_SIZE)
     private var fftImag = DoubleArray(FFT_SIZE)
     private var binMagnitudes = DoubleArray(FFT_SIZE / 2)
+    private val smoothedBands = DoubleArray(NUM_BANDS)
     private val fftOut = ByteArray(NUM_BANDS)
 
     private var smoothedLevel = 0f
@@ -155,6 +156,7 @@ class WledAudioAnalyzer {
         fftReal.fill(0.0)
         fftImag.fill(0.0)
         binMagnitudes.fill(0.0)
+        smoothedBands.fill(0.0)
         fftOut.fill(0)
         smoothedLevel = 0f
         agcPeak = INITIAL_AGC_PEAK
@@ -214,20 +216,21 @@ class WledAudioAnalyzer {
             0f
         } else {
             if (rms > agcPeak) {
-                agcPeak = max(agcPeak + 0.60 * (rms - agcPeak), rms * 0.90)
+                agcPeak = max(agcPeak + 0.55 * (rms - agcPeak), rms * 0.90)
             } else {
-                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.985)
+                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.988)
             }
             val normRms = (rms / max(agcPeak, MIN_AGC_PEAK)).coerceIn(0.0, 1.35)
-            val base = normRms.coerceAtMost(1.0).pow(0.65) * 235.0
-            val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 20.0
+            val base = normRms.coerceAtMost(1.0).pow(0.75) * 232.0
+            val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 23.0
             (base + burst).toFloat().coerceIn(0f, 255f)
         }
 
         smoothedLevel = if (rawLevel == 0f && smoothedLevel < 0.5f) {
             0f
         } else {
-            val alpha = if (rawLevel >= smoothedLevel) 0.72f else 0.32f
+            // Velvet asymmetric smoothing: calm rise, unhurried fade-out without strobing.
+            val alpha = if (rawLevel >= smoothedLevel) 0.28f else 0.085f
             val next = smoothedLevel + alpha * (rawLevel - smoothedLevel)
             if (next < 0.25f) 0f else next.coerceIn(0f, 255f)
         }
@@ -236,16 +239,16 @@ class WledAudioAnalyzer {
         if (beatBaseline == 0.0) {
             beatBaseline = beatEnergy
         } else {
-            val baseAlpha = if (beatEnergy > beatBaseline) 0.08 else 0.04
+            val baseAlpha = if (beatEnergy > beatBaseline) 0.10 else 0.035
             beatBaseline += baseAlpha * (beatEnergy - beatBaseline)
         }
         if (peakCooldownFrames > 0) peakCooldownFrames--
         val isPeak = rms >= NOISE_FLOOR_RMS &&
-            rawLevel >= 40f &&
+            rawLevel >= 65f &&
             peakCooldownFrames == 0 &&
-            beatEnergy > beatBaseline * 1.32
+            beatEnergy > beatBaseline * 1.48
         if (isPeak) {
-            peakCooldownFrames = 4 // ~80 ms at 50 fps
+            peakCooldownFrames = 9 // ~270-300 ms at 33 fps to avoid harsh beat strobing
         }
 
         var windowSumSq = 0.0
@@ -265,7 +268,11 @@ class WledAudioAnalyzer {
         frameCounter = (frameCounter + 1) and 0xFF
 
         if (windowSumSq < NOISE_FLOOR_RMS * NOISE_FLOOR_RMS * FFT_SIZE) {
-            fftOut.fill(0)
+            for (band in 0 until NUM_BANDS) {
+                val faded = if (smoothedBands[band] < 1.0) 0.0 else smoothedBands[band] * 0.91
+                smoothedBands[band] = faded
+                fftOut[band] = faded.roundToInt().coerceIn(0, 254).toByte()
+            }
             return WledAudioMetrics(
                 sampleRaw = rawLevel,
                 sampleSmth = smoothedLevel,
@@ -313,26 +320,34 @@ class WledAudioAnalyzer {
         for (band in 0 until NUM_BANDS) {
             val fLow = BAND_EDGES_HZ[band]
             val fHigh = min(BAND_EDGES_HZ[band + 1], sampleRate * 0.49)
-            if (fHigh <= fLow) {
-                fftOut[band] = 0
-                continue
-            }
-            val startBin = max(1, (fLow / binHz).toInt())
-            val endBin = min(half - 1, max(startBin, (fHigh / binHz).roundToInt()))
-            var bandEnergy = 0.0
-            for (b in startBin..endBin) {
-                bandEnergy += binMagnitudes[b] * binMagnitudes[b]
-            }
-            // Parseval total band energy avoids crushing wide upper-octave bands, plus +0.09/band treble tilt.
-            val bandRms = sqrt(bandEnergy)
-            val tilt = 1.0 + band * 0.09
-            val bandNorm = (bandRms * tilt) / (agcRef * 0.72)
-            val bandByte = if (bandRms < 0.0003 || bandNorm < 0.04) {
-                0
+            val targetBand = if (fHigh <= fLow) {
+                0.0
             } else {
-                (bandNorm.coerceIn(0.0, 1.0).pow(0.62) * 254.0).roundToInt().coerceIn(0, 254)
+                val startBin = max(1, (fLow / binHz).toInt())
+                val endBin = min(half - 1, max(startBin, (fHigh / binHz).roundToInt()))
+                var bandEnergy = 0.0
+                for (b in startBin..endBin) {
+                    bandEnergy += binMagnitudes[b] * binMagnitudes[b]
+                }
+                // Parseval total band energy avoids crushing wide upper-octave bands, plus +0.09/band treble tilt.
+                val bandRms = sqrt(bandEnergy)
+                val tilt = 1.0 + band * 0.09
+                val bandNorm = (bandRms * tilt) / (agcRef * 0.72)
+                if (bandRms < 0.0003 || bandNorm < 0.04) {
+                    0.0
+                } else {
+                    bandNorm.coerceIn(0.0, 1.0).pow(0.72) * 254.0
+                }
             }
-            fftOut[band] = bandByte.toByte()
+            val prevBand = smoothedBands[band]
+            val bandAlpha = if (targetBand >= prevBand) 0.30 else 0.09
+            val nextBand = if (targetBand == 0.0 && prevBand < 1.0) {
+                0.0
+            } else {
+                prevBand + bandAlpha * (targetBand - prevBand)
+            }
+            smoothedBands[band] = nextBand.coerceIn(0.0, 254.0)
+            fftOut[band] = smoothedBands[band].roundToInt().coerceIn(0, 254).toByte()
         }
 
         return WledAudioMetrics(
@@ -350,6 +365,7 @@ class WledAudioAnalyzer {
     private fun silentMetrics(): WledAudioMetrics {
         smoothedLevel = 0f
         beatBaseline = 0.0
+        smoothedBands.fill(0.0)
         fftOut.fill(0)
         val counter = frameCounter
         frameCounter = (frameCounter + 1) and 0xFF
@@ -490,7 +506,7 @@ class WledAudioSync(
     private val multicastLease: MulticastLease =
         if (context != null) AndroidMulticastLease(context) else NoOpMulticastLease,
     private val nowNs: () -> Long = System::nanoTime,
-    private val minIntervalNs: Long = 20_000_000L,
+    private val minIntervalNs: Long = 30_000_000L,
     private val maxFrameAgeNs: Long = 150_000_000L
 ) : WledAudioTap, AutoCloseable {
 

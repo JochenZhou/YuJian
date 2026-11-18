@@ -1,6 +1,9 @@
 package com.zqc.tvnotify
 
+import android.content.Context
+import android.util.Log
 import org.json.JSONObject
+import java.io.File
 
 /**
  * 歌单目录：Home Assistant 的玉简集成把 Music Assistant 的歌单通过
@@ -115,6 +118,9 @@ data class PlaylistCatalog(
  * 用 [Volatile] 保证跨线程可见性。
  */
 object PlaylistStore {
+    private const val TAG = "YuJianPlaylists"
+    private const val CACHE_FILE = "playlist_catalog.json"
+
     @Volatile
     private var catalog: PlaylistCatalog? = null
 
@@ -123,6 +129,45 @@ object PlaylistStore {
 
     fun update(catalog: PlaylistCatalog?) {
         this.catalog = catalog
+    }
+
+    /** Restore the last saved playlist catalog from app storage when memory cache is empty. */
+    fun restoreIfEmpty(context: Context) {
+        if (catalog != null) return
+        val file = File(context.applicationContext.filesDir, CACHE_FILE)
+        if (!file.isFile) return
+        val restored = runCatching {
+            val text = file.readText(Charsets.UTF_8)
+            PlaylistCatalog.parse(text)
+        }.onFailure { err ->
+            Log.w(TAG, "恢复本地歌单缓存失败", err)
+        }.getOrNull() ?: return
+        synchronized(this) {
+            if (catalog == null) {
+                catalog = restored
+            }
+        }
+    }
+
+    /** Parse and apply incoming `/library` JSON, persisting non-empty catalogs across restarts. */
+    fun updateFromJson(context: Context, rawJson: String): Int {
+        val parsed = PlaylistCatalog.parse(rawJson) ?: return catalog?.playlists?.size ?: 0
+        synchronized(this) {
+            catalog = parsed
+        }
+        runCatching {
+            val appCtx = context.applicationContext
+            val target = File(appCtx.filesDir, CACHE_FILE)
+            val tmp = File(appCtx.filesDir, "$CACHE_FILE.tmp")
+            tmp.writeText(rawJson, Charsets.UTF_8)
+            if (!tmp.renameTo(target)) {
+                target.writeText(rawJson, Charsets.UTF_8)
+                tmp.delete()
+            }
+        }.onFailure { err ->
+            Log.w(TAG, "保存本地歌单缓存失败", err)
+        }
+        return parsed.playlists.size
     }
 
     fun current(): PlaylistCatalog? = catalog

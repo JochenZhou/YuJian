@@ -37,6 +37,8 @@ class NotifyHttpServer(
     private val onOpenSendspinUi: () -> Unit,
     private val onCloseSendspinUi: () -> Unit,
     private val onLibrary: (String) -> Unit,
+    private val onWledConfigChanged: () -> Unit = {},
+    private val onApplyWledEffect: (WledEffectPreset) -> Unit = {},
 ) : NanoHTTPD(advertisedPort) {
 
     companion object {
@@ -196,17 +198,18 @@ class NotifyHttpServer(
             return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, EMPTY_CONTENT_BODY)
         }
         // 最小校验：必须是含 playlists 数组的 JSON 对象，防止脏数据覆盖好目录
-        val valid = try {
+        val parsedCount = try {
             val json = JSONObject(body.text)
-            json.has("playlists") && json.optJSONArray("playlists") != null
+            val arr = if (json.has("playlists")) json.optJSONArray("playlists") else null
+            arr?.length()
         } catch (e: Exception) {
-            false
+            null
         }
-        if (!valid) {
+        if (parsedCount == null) {
             return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, "{\"ok\":false,\"error\":\"invalid payload\"}")
         }
         onLibrary(body.text)
-        return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
+        return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true,\"playlist_count\":$parsedCount}")
     }
 
     private fun handleSendspin(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -273,11 +276,27 @@ class NotifyHttpServer(
             val reconnect = (config.enabled != null && config.enabled != Prefs.isSendspinEnabled(context)) ||
                 (config.serverUrl != null && config.serverUrl.trim() != Prefs.getSendspinServerUrl(context)) ||
                 (config.clientName != null && config.clientName.trim() != Prefs.getSendspinClientName(context))
+            val wledOrStyleChanged = config.playerStyle != null ||
+                config.wledSyncEnabled != null ||
+                config.wledSyncPort != null ||
+                config.wledColorSyncEnabled != null ||
+                config.wledColorHost != null ||
+                config.wledEffect != null
             config.enabled?.let { Prefs.setSendspinEnabled(context, it) }
             config.autoPopup?.let { Prefs.setSendspinAutoPopup(context, it) }
             config.serverUrl?.let { Prefs.setSendspinServerUrl(context, it) }
             config.clientName?.let { Prefs.setSendspinClientName(context, it) }
+            config.playerStyle?.let { Prefs.setSendspinPlayerStyle(context, it) }
+            config.wledSyncEnabled?.let { Prefs.setWledSyncEnabled(context, it) }
+            config.wledSyncPort?.let { Prefs.setWledSyncPort(context, it) }
+            config.wledColorSyncEnabled?.let { Prefs.setWledColorSyncEnabled(context, it) }
+            config.wledColorHost?.let { Prefs.setWledColorHost(context, it) }
+            config.wledEffect?.let { Prefs.setWledEffect(context, it.storageId) }
             if (reconnect) onSendspinConfigChanged()
+            if (wledOrStyleChanged) onWledConfigChanged()
+            if (config.wledEffect != null && config.wledEffect != WledEffectPreset.CUSTOM) {
+                onApplyWledEffect(config.wledEffect)
+            }
             jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
         } catch (error: Exception) {
             Log.w(TAG, "Unable to update Sendspin config", error)
@@ -322,6 +341,13 @@ class NotifyHttpServer(
         json.put("supported_commands", org.json.JSONArray(status.controllerCommands.toList()))
         json.put("player_supported_commands", org.json.JSONArray(status.playerCommands.toList()))
         json.put("error", status.error)
+        json.put("player_style", Prefs.getSendspinPlayerStyle(context).storageId)
+        json.put("wled_sync_enabled", Prefs.isWledSyncEnabled(context))
+        json.put("wled_sync_port", Prefs.getWledSyncPort(context))
+        json.put("wled_color_sync_enabled", Prefs.isWledColorSyncEnabled(context))
+        json.put("wled_color_host", Prefs.getWledColorHost(context))
+        json.put("wled_effect", Prefs.getWledEffect(context))
+        json.put("playlist_count", PlaylistStore.current()?.playlists?.size ?: 0)
         return json.toString()
     }
 
@@ -565,9 +591,11 @@ class NotifyHttpServer(
         // model 让 HA 侧把点播落到这台设备自己的 MA 播放器上，
         // 而不是随便挑一个（以前会播到音箱/手机）。
         val model = (android.os.Build.MODEL ?: "").trim()
+        val playlistCount = PlaylistStore.current()?.playlists?.size ?: 0
         return "{\"ok\":true,\"version\":\"$versionName\",\"uptime\":$uptime," +
                 "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted," +
-                "\"position\":\"$pos\",\"theme\":\"$currentTheme\",\"model\":\"$model\"}"
+                "\"position\":\"$pos\",\"theme\":\"$currentTheme\",\"model\":\"$model\"," +
+                "\"playlist_count\":$playlistCount}"
     }
 
     // ------------------------------------------------------------------
@@ -696,6 +724,12 @@ internal data class SendspinConfig(
     val autoPopup: Boolean? = null,
     val serverUrl: String? = null,
     val clientName: String? = null,
+    val playerStyle: Prefs.SendspinPlayerStyle? = null,
+    val wledSyncEnabled: Boolean? = null,
+    val wledSyncPort: Int? = null,
+    val wledColorSyncEnabled: Boolean? = null,
+    val wledColorHost: String? = null,
+    val wledEffect: WledEffectPreset? = null,
 )
 
 /** Validate every supplied value before any preference or client is changed. */
@@ -712,17 +746,35 @@ internal fun parseSendspinConfig(json: JSONObject): SendspinConfig {
         require(value is String) { "$key must be a string" }
         return value
     }
+    fun optionalIntInRange(key: String, range: IntRange): Int? {
+        if (!json.has(key)) return null
+        val value = json.opt(key)
+        require(value is Number) { "$key must be an integer from ${range.first} to ${range.last}" }
+        val number = value.toDouble()
+        require(number.isFinite() && number >= range.first.toDouble() && number <= range.last.toDouble() && number == number.toInt().toDouble()) {
+            "$key must be an integer from ${range.first} to ${range.last}"
+        }
+        return number.toInt()
+    }
     val mode = optionalString("sync_mode")
     require(mode == null || mode == "auto" || mode == "manual") { "sync_mode must be auto or manual" }
-    val delay = if (json.has("output_delay_ms")) {
-        val value = json.opt("output_delay_ms")
-        require(value is Number) { "output_delay_ms must be an integer from 0 to 5000" }
-        val number = value.toDouble()
-        require(number.isFinite() && number in 0.0..5000.0 && number == number.toInt().toDouble()) {
-            "output_delay_ms must be an integer from 0 to 5000"
-        }
-        number.toInt()
-    } else null
+    val delay = optionalIntInRange("output_delay_ms", 0..5000)
+    val styleRaw = optionalString("player_style")
+    val playerStyle = styleRaw?.let {
+        Prefs.SendspinPlayerStyle.tryParse(it)
+            ?: throw IllegalArgumentException("player_style must be vinyl or cover_blur")
+    }
+    val wledPort = optionalIntInRange("wled_sync_port", 1..65535)
+    val wledHostRaw = optionalString("wled_color_host")
+    val wledHost = wledHostRaw?.let {
+        Prefs.normalizeWledHost(it)
+            ?: throw IllegalArgumentException("wled_color_host must be a valid host or IP[:port]")
+    }
+    val wledEffectRaw = optionalString("wled_effect")
+    val wledEffect = wledEffectRaw?.let {
+        WledEffectPreset.tryParse(it)
+            ?: throw IllegalArgumentException("wled_effect is unknown")
+    }
     return SendspinConfig(
         automaticSync = mode?.let { it == "auto" },
         outputDelayMs = delay,
@@ -730,6 +782,12 @@ internal fun parseSendspinConfig(json: JSONObject): SendspinConfig {
         autoPopup = optionalBoolean("auto_popup"),
         serverUrl = optionalString("server_url"),
         clientName = optionalString("client_name"),
+        playerStyle = playerStyle,
+        wledSyncEnabled = optionalBoolean("wled_sync_enabled"),
+        wledSyncPort = wledPort,
+        wledColorSyncEnabled = optionalBoolean("wled_color_sync_enabled"),
+        wledColorHost = wledHost,
+        wledEffect = wledEffect,
     )
 }
 

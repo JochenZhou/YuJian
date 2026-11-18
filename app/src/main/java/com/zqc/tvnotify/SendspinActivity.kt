@@ -116,6 +116,7 @@ class SendspinActivity : Activity() {
         super.onCreate(savedInstanceState)
         active = this
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        PlaylistStore.restoreIfEmpty(applicationContext)
         theme = Theme.current(this)
         playerStyle = Prefs.getSendspinPlayerStyle(this)
         // Keep the player's surfaces graphite, while retaining the selected theme's hue.
@@ -405,6 +406,11 @@ class SendspinActivity : Activity() {
     }
 
     private fun render(state: SendspinRuntime.Status) {
+        val latestStyle = Prefs.getSendspinPlayerStyle(this)
+        if (latestStyle != playerStyle) {
+            playerStyle = latestStyle
+            applyPlayerStyleState()
+        }
         val old = currentStatus
         val trackChanged = state.title != old.title || state.artist != old.artist || state.album != old.album
         if (trackChanged) {
@@ -803,6 +809,7 @@ class SendspinActivity : Activity() {
         val wledPort = Prefs.getWledSyncPort(this)
         val wledColorEnabled = Prefs.isWledColorSyncEnabled(this)
         val wledHost = Prefs.getWledColorHost(this)
+        val wledEffect = WledEffectPreset.fromRaw(Prefs.getWledEffect(this))
         val items = listOf(
             ThemeDialogItem(
                 title = "浏览歌单",
@@ -846,6 +853,14 @@ class SendspinActivity : Activity() {
                 trailingBadge = if (wledColorEnabled) "已开启" else "已关闭"
             ) {
                 toggleWledColorSync()
+            },
+            ThemeDialogItem(
+                title = "推荐 WLED 律动效果：${wledEffect.displayName}",
+                subtitle = "为 $wledHost 一键应用柔和耐看的律动效果预设（可选保持当前）",
+                trailingBadge = if (wledEffect == WledEffectPreset.CUSTOM) "推荐" else "已选",
+                dismissOnClick = false
+            ) {
+                showWledEffectsDialog()
             },
             ThemeDialogItem(
                 title = "WLED 参数设置",
@@ -1154,6 +1169,55 @@ class SendspinActivity : Activity() {
             if (enabled) "已开启 WLED 封面色彩同步（$host）" else "已关闭 WLED 封面色彩同步",
             Toast.LENGTH_SHORT
         ).show()
+    }
+
+    private fun showWledEffectsDialog() {
+        val current = WledEffectPreset.fromRaw(Prefs.getWledEffect(this))
+        val wledHost = Prefs.getWledColorHost(this)
+        val items = WledEffectPreset.entries.map { preset ->
+            val selected = preset == current
+            ThemeDialogItem(
+                title = preset.displayName,
+                subtitle = preset.subtitle,
+                trailingBadge = when {
+                    selected -> "当前"
+                    preset == WledEffectPreset.GRAVCENTRIC -> "推荐"
+                    preset == WledEffectPreset.SOLID -> "静态"
+                    else -> "切换"
+                },
+                selected = selected
+            ) {
+                Prefs.setWledEffect(this, preset.storageId)
+                if (preset == WledEffectPreset.CUSTOM) {
+                    Toast.makeText(this, "已设为保持灯带当前效果", Toast.LENGTH_SHORT).show()
+                } else {
+                    val activeRuntime = runtime
+                    if (activeRuntime != null) {
+                        activeRuntime.applyWledEffect(preset) { _, msg ->
+                            main.post {
+                                if (!destroyed) {
+                                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    } else {
+                        Toast.makeText(this, "已选择 WLED 效果：${preset.displayName}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("推荐 WLED 律动效果")
+            .setMessage("目标设备：$wledHost · 以下效果已针对舒缓音乐律动调优；选择「保持当前效果」则完全不改变灯带自身预设。")
+            .setItems(items)
+            .setMaxWidthDp(560)
+            .setNegativeButton("关闭")
+            .create()
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
     }
 
     private fun showWledConfigDialog() {

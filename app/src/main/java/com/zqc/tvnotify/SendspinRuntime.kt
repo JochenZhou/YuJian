@@ -102,6 +102,13 @@ class SendspinRuntime private constructor(private val context: Context) {
     private val wifiLock = (app.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
         ?.createMulticastLock("yujian-sendspin")
         ?.apply { setReferenceCounted(false) }
+    private val wledHttpClient = okHttp.newBuilder()
+        .pingInterval(0, TimeUnit.MILLISECONDS)
+        .connectTimeout(1500, TimeUnit.MILLISECONDS)
+        .readTimeout(2000, TimeUnit.MILLISECONDS)
+        .writeTimeout(2000, TimeUnit.MILLISECONDS)
+        .callTimeout(2500, TimeUnit.MILLISECONDS)
+        .build()
     private val wledAudioSync = WledAudioSync(
         context = app,
         initialEnabled = Prefs.isWledSyncEnabled(app),
@@ -110,15 +117,8 @@ class SendspinRuntime private constructor(private val context: Context) {
     private val wledColorSync = WledColorSync(
         initialEnabled = Prefs.isWledColorSyncEnabled(app),
         initialHost = Prefs.getWledColorHost(app),
-        poster = OkHttpWledPoster(
-            okHttp.newBuilder()
-                .pingInterval(0, TimeUnit.MILLISECONDS)
-                .connectTimeout(1500, TimeUnit.MILLISECONDS)
-                .readTimeout(2000, TimeUnit.MILLISECONDS)
-                .writeTimeout(2000, TimeUnit.MILLISECONDS)
-                .callTimeout(2500, TimeUnit.MILLISECONDS)
-                .build()
-        ),
+        poster = OkHttpWledPoster(wledHttpClient),
+        getter = OkHttpWledGetter(wledHttpClient),
     )
 
     @Volatile private var client: SendSpinClient? = null
@@ -227,6 +227,19 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun configureWledColorSync(enabled: Boolean, host: String) {
         wledColorSync.setHost(host)
         wledColorSync.setEnabled(enabled)
+    }
+
+    /** Apply all persisted WLED and visual player settings without reconnecting Sendspin audio. */
+    fun refreshWledAndDisplaySettings() {
+        configureWledAudioSync(Prefs.isWledSyncEnabled(app), Prefs.getWledSyncPort(app))
+        configureWledColorSync(Prefs.isWledColorSyncEnabled(app), Prefs.getWledColorHost(app))
+        updateStatus { it }
+    }
+
+    /** Explicitly push a curated WLED effect preset to segment 0 without starting audio playback. */
+    fun applyWledEffect(preset: WledEffectPreset, onResult: ((Boolean, String) -> Unit)? = null) {
+        wledColorSync.setHost(Prefs.getWledColorHost(app))
+        wledColorSync.applyEffectPreset(preset, onResult)
     }
 
     private fun syncWledPlaybackState() {

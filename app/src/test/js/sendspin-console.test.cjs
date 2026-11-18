@@ -175,3 +175,57 @@ test("console exposes minecraft pixel theme option and metadata", () => {
   assert.equal((html.match(/<option value="minecraft"[\s>]/g) || []).length, 2);
   assert.match(html, /minecraft:\s*\{\s*emoji:\s*"🧱",\s*name:\s*"方块世界",\s*classical:\s*false\s*\}/);
 });
+
+test("console syncs, validates, and submits player style and all WLED settings cleanly", async () => {
+  const app = harness();
+  app.status({
+    sync_mode: "auto",
+    manual_output_delay_ms: 850,
+    output_delay_ms: 0,
+    player_style: "cover_blur",
+    wled_sync_enabled: true,
+    wled_sync_port: 12000,
+    wled_color_sync_enabled: false,
+    wled_color_host: "192.168.101.206",
+    wled_effect: "gravcentric"
+  });
+  await app.context.fetchSendspinStatus();
+  assert.equal(app.element("sendspin-player-style").value, "cover_blur");
+  assert.equal(app.element("sendspin-wled-effect").value, "gravcentric");
+  assert.equal(app.element("sendspin-wled-sync").checked, true);
+  assert.equal(app.element("sendspin-wled-color").checked, false);
+  assert.equal(app.element("sendspin-wled-port").value, 12000);
+  assert.equal(app.element("sendspin-wled-host").value, "192.168.101.206");
+
+  // Dirty user edits survive background polling
+  app.element("sendspin-wled-port").emit("input", "70000");
+  await app.context.fetchSendspinStatus();
+  assert.equal(app.element("sendspin-wled-port").value, "70000");
+
+  // Invalid port is blocked before sending HTTP POST
+  await app.context.saveWledAndStyleConfig();
+  assert.equal(app.requests.filter(r => r.method === "POST").length, 0);
+  assert.match(app.toasts.at(-1), /1–65535/);
+
+  // Valid edits post complete config payload and clear dirty flag
+  app.element("sendspin-player-style").emit("change", "vinyl");
+  app.element("sendspin-wled-effect").emit("change", "midnoise");
+  app.element("sendspin-wled-sync").checked = false;
+  app.element("sendspin-wled-sync").emit("change", "off");
+  app.element("sendspin-wled-color").checked = true;
+  app.element("sendspin-wled-color").emit("change", "on");
+  app.element("sendspin-wled-port").emit("input", "11988");
+  app.element("sendspin-wled-host").emit("input", "192.168.101.210");
+  await app.context.saveWledAndStyleConfig();
+  const postReq = app.requests.find(r => r.method === "POST");
+  assert.deepEqual(JSON.parse(postReq.body), {
+    action: "config",
+    player_style: "vinyl",
+    wled_sync_enabled: false,
+    wled_sync_port: 11988,
+    wled_color_sync_enabled: true,
+    wled_color_host: "192.168.101.210",
+    wled_effect: "midnoise"
+  });
+  assert.equal(app.run("sendspinWledDirty"), false);
+});

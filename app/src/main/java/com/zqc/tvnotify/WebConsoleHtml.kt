@@ -440,6 +440,44 @@ button {
       <button type="button" class="btn-secondary" onclick="saveSendspinConfig()">保存并连接</button>
       <button type="button" class="btn-secondary" onclick="sendspinCommand('open_ui')">打开电视音乐页</button>
     </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--card-stroke);font-size:12.5px;font-weight:600;color:var(--accent)">播放页样式 &amp; WLED 灯光联动</div>
+    <div class="grid-2" style="margin-top:10px">
+      <div class="form-group">
+        <label for="sendspin-player-style">播放页样式</label>
+        <select id="sendspin-player-style">
+          <option value="vinyl">样式一：经典黑胶</option>
+          <option value="cover_blur">样式二：方形封面 · 高斯模糊</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="sendspin-wled-effect">推荐 WLED 律动效果（点击应用立即生效）</label>
+        <select id="sendspin-wled-effect">
+          <option value="custom">保持灯带当前效果</option>
+          <option value="gravcentric">中轴舒展 (Gravcentric · 推荐)</option>
+          <option value="geq">频谱均衡 (GEQ)</option>
+          <option value="midnoise">柔光噪波 (Midnoise)</option>
+          <option value="waterfall">星河流瀑 (Waterfall)</option>
+          <option value="pixels">星点微光 (Pixels)</option>
+          <option value="gravimeter">呼吸音柱 (Gravimeter)</option>
+          <option value="solid">纯色静谧 (Solid)</option>
+        </select>
+      </div>
+    </div>
+    <div class="checkbox-grid" style="margin:10px 0">
+      <label class="checkbox-item"><input type="checkbox" id="sendspin-wled-sync"><span>WLED 音乐律动 (AudioReactive)</span></label>
+      <label class="checkbox-item"><input type="checkbox" id="sendspin-wled-color"><span>WLED 封面主色调同步</span></label>
+    </div>
+    <div class="grid-2">
+      <div class="form-group">
+        <label for="sendspin-wled-port">WLED 组播 UDP 端口 (1–65535)</label>
+        <input id="sendspin-wled-port" type="number" min="1" max="65535" step="1" placeholder="11988">
+      </div>
+      <div class="form-group">
+        <label for="sendspin-wled-host">WLED 设备 IP / 地址</label>
+        <input id="sendspin-wled-host" type="text" placeholder="192.168.101.206">
+      </div>
+    </div>
+    <button type="button" id="sendspin-wled-apply" class="btn-secondary btn-full" style="margin-top:10px" onclick="saveWledAndStyleConfig()">保存样式与 WLED 设置</button>
   </div>
 
   <!-- 传音简录 (历史记录) -->
@@ -551,7 +589,17 @@ let sendspinSyncDirty = false;
 let sendspinSyncEditVersion = 0;
 let sendspinAddressDirty = false;
 let sendspinAddressEditVersion = 0;
+let sendspinWledDirty = false;
+let sendspinWledEditVersion = 0;
 let sendspinStatusRequest = 0;
+const WLED_FIELD_IDS = [
+  "sendspin-player-style",
+  "sendspin-wled-effect",
+  "sendspin-wled-sync",
+  "sendspin-wled-color",
+  "sendspin-wled-port",
+  "sendspin-wled-host"
+];
 function updateSyncInput() {
   document.getElementById("sendspin-delay").disabled = document.getElementById("sendspin-sync-mode").value === "auto";
 }
@@ -566,6 +614,14 @@ function updateSyncInput() {
   sendspinAddressDirty = true;
   sendspinAddressEditVersion++;
 }));
+WLED_FIELD_IDS.forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  ["input", "change"].forEach(event => el.addEventListener(event, () => {
+    sendspinWledDirty = true;
+    sendspinWledEditVersion++;
+  }));
+});
 function syncStatusText(status) {
   if (status.output_suspended || status.sync_state === "background_suspended") {
     return "后台：本机音频已挂起 · 同步组按 MA 状态继续播放";
@@ -605,6 +661,24 @@ async function fetchSendspinStatus() {
       mode.value = status.sync_mode === "manual" || status.automatic_sync === false ? "manual" : "auto";
       delay.value = status.manual_output_delay_ms != null ? status.manual_output_delay_ms : "";
       updateSyncInput();
+    }
+    const wledEditing = WLED_FIELD_IDS.some(id => {
+      const el = document.getElementById(id);
+      return el && document.activeElement === el;
+    });
+    if (!sendspinWledDirty && !wledEditing) {
+      const styleEl = document.getElementById("sendspin-player-style");
+      if (styleEl) styleEl.value = status.player_style || "vinyl";
+      const effectEl = document.getElementById("sendspin-wled-effect");
+      if (effectEl) effectEl.value = status.wled_effect || "custom";
+      const syncEl = document.getElementById("sendspin-wled-sync");
+      if (syncEl) syncEl.checked = Boolean(status.wled_sync_enabled);
+      const colorEl = document.getElementById("sendspin-wled-color");
+      if (colorEl) colorEl.checked = Boolean(status.wled_color_sync_enabled);
+      const portEl = document.getElementById("sendspin-wled-port");
+      if (portEl) portEl.value = status.wled_sync_port != null ? status.wled_sync_port : 11988;
+      const hostEl = document.getElementById("sendspin-wled-host");
+      if (hostEl) hostEl.value = status.wled_color_host || "192.168.101.206";
     }
   } catch (_) {
     if (request !== sendspinStatusRequest) return;
@@ -674,6 +748,47 @@ async function saveOutputDelay() {
     fetchSendspinStatus();
   } catch (e) { toast("保存失败：" + e.message); }
   finally { button.disabled = false; }
+}
+async function saveWledAndStyleConfig() {
+  const styleEl = document.getElementById("sendspin-player-style");
+  const effectEl = document.getElementById("sendspin-wled-effect");
+  const syncEl = document.getElementById("sendspin-wled-sync");
+  const colorEl = document.getElementById("sendspin-wled-color");
+  const portEl = document.getElementById("sendspin-wled-port");
+  const hostEl = document.getElementById("sendspin-wled-host");
+
+  const playerStyle = styleEl ? styleEl.value : "vinyl";
+  if (!["vinyl", "cover_blur"].includes(playerStyle)) { toast("请选择播放页样式"); return; }
+  const rawPort = portEl ? String(portEl.value).trim() : "11988";
+  if (!/^[0-9]+$/.test(rawPort) || Number(rawPort) < 1 || Number(rawPort) > 65535) {
+    toast("请输入 1–65535 的有效 UDP 端口"); return;
+  }
+  const wledHost = hostEl ? String(hostEl.value).trim() : "";
+  if (!wledHost) { toast("请输入 WLED 设备 IP 或主机名"); return; }
+
+  const body = {
+    action: "config",
+    player_style: playerStyle,
+    wled_sync_enabled: Boolean(syncEl && syncEl.checked),
+    wled_sync_port: Number(rawPort),
+    wled_color_sync_enabled: Boolean(colorEl && colorEl.checked),
+    wled_color_host: wledHost,
+    wled_effect: effectEl ? effectEl.value : "custom"
+  };
+
+  const editVersion = sendspinWledEditVersion;
+  const button = document.getElementById("sendspin-wled-apply");
+  if (button) button.disabled = true;
+  try {
+    const res = await fetch(SENDSPIN_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const result = await res.json();
+    if (!res.ok || result.ok !== true) throw new Error(result.error || "HTTP " + res.status);
+    if (editVersion === sendspinWledEditVersion) sendspinWledDirty = false;
+    sendspinStatusRequest++;
+    toast(body.wled_effect !== "custom" ? "已保存配置并下发 WLED 推荐效果" : "播放页样式与 WLED 设置已保存");
+    fetchSendspinStatus();
+  } catch (e) { toast("保存失败：" + e.message); }
+  finally { if (button) button.disabled = false; }
 }
 setInterval(fetchSendspinStatus, 2500);
 fetchSendspinStatus();

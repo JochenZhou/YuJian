@@ -344,6 +344,33 @@ class WledAudioSyncTest {
         assertTrue("Unexcited gap band should stay low ($gapBand)", gapBand < 60)
     }
 
+    @Test
+    fun `analyzer applies smooth decay release and throttles rapid beat peaks`() {
+        val analyzer = WledAudioAnalyzer()
+        val sampleRate = 48_000
+        val channels = 2
+        val loud = generateSinePcm16(freqHz = 220.0, sampleRate = sampleRate, channels = channels, frames = 1024, amplitude = 0.65)
+        val silence = ByteArray(1024 * channels * 2)
+
+        lateinit var peakMetrics: WledAudioMetrics
+        var peaksTriggered = 0
+        repeat(10) {
+            peakMetrics = analyzer.analyze(loud, 0, loud.size, sampleRate, channels)
+            if (peakMetrics.samplePeak != 0) peaksTriggered++
+        }
+        assertTrue("Steady tone should trigger at most 2 beat peaks in 10 frames ($peaksTriggered)", peaksTriggered <= 2)
+        val peakSmth = peakMetrics.sampleSmth
+        val peakBand = (0..5).maxOf { peakMetrics.fftResult[it].toInt() and 0xFF }
+        assertTrue(peakSmth > 150f)
+        assertTrue(peakBand > 150)
+
+        // First silent frame after tone decays gently instead of snapping to zero
+        val decay1 = analyzer.analyze(silence, 0, silence.size, sampleRate, channels)
+        assertTrue("Smoothed level should fade gradually (${decay1.sampleSmth} vs $peakSmth)", decay1.sampleSmth in (peakSmth * 0.7f)..peakSmth)
+        val decayBand1 = (0..5).maxOf { decay1.fftResult[it].toInt() and 0xFF }
+        assertTrue("FFT bands should fade gradually ($decayBand1 vs $peakBand)", decayBand1 > peakBand / 2)
+    }
+
     private fun generateSinePcm16(
         freqHz: Double,
         sampleRate: Int,

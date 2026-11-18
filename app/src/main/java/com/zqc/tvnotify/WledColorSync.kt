@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import java.io.IOException
 import java.util.concurrent.Executor
 import java.util.concurrent.ExecutorService
@@ -186,18 +187,64 @@ object WledArtworkColorExtractor {
     }
 }
 
+/**
+ * Curated WLED effects tuned for graceful, low-fatigue musical lighting on 1D strips.
+ * Only applied when explicitly chosen by the user; passive artwork/audio sync never overwrites WLED effects.
+ */
+enum class WledEffectPreset(
+    val storageId: String,
+    val displayName: String,
+    val subtitle: String,
+    val wledName: String,
+    val fallbackFxId: Int,
+    val defaultSpeed: Int,
+    val defaultIntensity: Int
+) {
+    CUSTOM("custom", "保持当前效果", "不改动灯带自身效果，仅同步音频律动与封面色彩", "", -1, 128, 128),
+    GRAVCENTRIC("gravcentric", "中轴舒展 (Gravcentric)", "从中点向两端优雅对称扩散，柔和耐看（推荐）", "Gravcentric", 157, 92, 132),
+    GEQ("geq", "频谱均衡 (GEQ)", "高低音随旋律细腻流动，色彩丰富平衡", "GEQ", 139, 96, 136),
+    MIDNOISE("midnoise", "柔光噪波 (Midnoise)", "人声与旋律化作温和起伏的极光波纹", "Midnoise", 135, 82, 126),
+    WATERFALL("waterfall", "星河流瀑 (Waterfall)", "音乐能量如流光般缓慢漫过灯带", "Waterfall", 140, 90, 132),
+    PIXELS("pixels", "星点微光 (Pixels)", "稀疏闪烁的细腻星点，适合静谧夜间听歌", "Pixels", 128, 78, 124),
+    GRAVIMETER("gravimeter", "呼吸音柱 (Gravimeter)", "由底向上的平滑声压柱，低频清晰沉稳", "Gravimeter", 132, 90, 132),
+    SOLID("solid", "纯色静谧 (Solid)", "静静呈现封面主色调，完全不闪烁（助眠/纯享）", "Solid", 0, 128, 128);
+
+    companion object {
+        val RECOMMENDED: List<WledEffectPreset>
+            get() = entries.filter { it != CUSTOM }
+
+        fun tryParse(raw: String?): WledEffectPreset? {
+            val normalized = raw?.trim()?.lowercase() ?: return null
+            if (normalized.isEmpty()) return CUSTOM
+            return entries.firstOrNull {
+                it.storageId == normalized ||
+                    (it.wledName.isNotEmpty() && it.wledName.equals(normalized, ignoreCase = true))
+            }
+        }
+
+        fun fromRaw(raw: String?): WledEffectPreset = tryParse(raw) ?: CUSTOM
+    }
+}
+
 /** Injectable HTTP JSON poster for WLED `/json/state` updates. */
 fun interface WledHttpPoster {
     fun postJson(url: String, jsonBody: String)
 }
 
+/** Injectable HTTP GET reader for WLED `/json/effects` dynamic index resolution. */
+fun interface WledHttpGetter {
+    fun getBody(url: String): String
+}
+
+private fun defaultWledOkHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(1500, TimeUnit.MILLISECONDS)
+    .readTimeout(2000, TimeUnit.MILLISECONDS)
+    .writeTimeout(2000, TimeUnit.MILLISECONDS)
+    .callTimeout(2500, TimeUnit.MILLISECONDS)
+    .build()
+
 class OkHttpWledPoster(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(1500, TimeUnit.MILLISECONDS)
-        .readTimeout(2000, TimeUnit.MILLISECONDS)
-        .writeTimeout(2000, TimeUnit.MILLISECONDS)
-        .callTimeout(2500, TimeUnit.MILLISECONDS)
-        .build()
+    private val client: OkHttpClient = defaultWledOkHttpClient()
 ) : WledHttpPoster {
     override fun postJson(url: String, jsonBody: String) {
         val request = Request.Builder()
@@ -216,14 +263,30 @@ class OkHttpWledPoster(
     }
 }
 
+class OkHttpWledGetter(
+    private val client: OkHttpClient = defaultWledOkHttpClient()
+) : WledHttpGetter {
+    override fun getBody(url: String): String {
+        val request = Request.Builder().url(url).get().build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("WLED HTTP ${response.code}")
+            }
+            return response.body?.string().orEmpty()
+        }
+    }
+}
+
 /**
- * Coordinates opt-in WLED segment 0 primary color synchronization from track album artwork.
- * Never sets power, brightness, effect, or palette fields, preserving active WLED AudioReactive effects.
+ * Coordinates opt-in WLED segment 0 primary color synchronization from track album artwork,
+ * and explicit user-triggered application of curated WLED effects.
+ * Passive artwork/audio sync never alters power, brightness, effect, or palette fields.
  */
 class WledColorSync(
     initialEnabled: Boolean = false,
     initialHost: String = Prefs.DEFAULT_WLED_COLOR_HOST,
     private val poster: WledHttpPoster = OkHttpWledPoster(),
+    private val getter: WledHttpGetter = OkHttpWledGetter(),
     private val bitmapDecoder: (ByteArray) -> Bitmap? = { bytes ->
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
     },
@@ -241,11 +304,41 @@ class WledColorSync(
             return "http://$normalized/json/state"
         }
 
+        fun buildEffectsUrl(rawHost: String): String? {
+            val normalized = Prefs.normalizeWledHost(rawHost) ?: return null
+            return "http://$normalized/json/effects"
+        }
+
         fun buildStateJson(rgb: Int): String {
             val r = Color.red(rgb)
             val g = Color.green(rgb)
             val b = Color.blue(rgb)
             return """{"seg":[{"id":0,"col":[[$r,$g,$b]]}]}"""
+        }
+
+        fun buildEffectStateJson(fxId: Int, speed: Int, intensity: Int): String {
+            val clampedSx = speed.coerceIn(0, 255)
+            val clampedIx = intensity.coerceIn(0, 255)
+            return """{"seg":[{"id":0,"fx":$fxId,"sx":$clampedSx,"ix":$clampedIx}]}"""
+        }
+
+        fun resolveEffectId(preset: WledEffectPreset, effectsJson: String?): Int {
+            if (preset.wledName.isNotEmpty() && !effectsJson.isNullOrBlank()) {
+                val index = runCatching {
+                    val array = JSONArray(effectsJson)
+                    var matched = -1
+                    for (i in 0 until array.length()) {
+                        val candidate = array.optString(i, "").trim()
+                        if (candidate.equals(preset.wledName, ignoreCase = true)) {
+                            matched = i
+                            break
+                        }
+                    }
+                    matched
+                }.getOrDefault(-1)
+                if (index >= 0) return index
+            }
+            return preset.fallbackFxId
         }
 
         private fun signatureOf(bytes: ByteArray?): Long {
@@ -281,6 +374,41 @@ class WledColorSync(
     fun isEnabled(): Boolean = enabled && !closed.get()
 
     fun getHost(): String = host
+
+    /**
+     * Explicitly applies a curated WLED effect preset to segment 0 by resolving the live effect name
+     * against `/json/effects` (falling back to the verified v16 index). Never invoked passively.
+     */
+    fun applyEffectPreset(preset: WledEffectPreset, onResult: ((Boolean, String) -> Unit)? = null) {
+        if (closed.get()) {
+            onResult?.invoke(false, "WLED 服务已关闭")
+            return
+        }
+        if (preset == WledEffectPreset.CUSTOM || preset.fallbackFxId < 0) {
+            onResult?.invoke(true, "已设为保持灯带当前效果")
+            return
+        }
+        val targetHost = host
+        val stateUrl = buildEndpointUrl(targetHost)
+        val effectsUrl = buildEffectsUrl(targetHost)
+        if (stateUrl == null) {
+            onResult?.invoke(false, "无效的 WLED 地址：$targetHost")
+            return
+        }
+        executorOrCreate().execute {
+            if (closed.get()) return@execute
+            try {
+                val effectsJson = effectsUrl?.let { runCatching { getter.getBody(it) }.getOrNull() }
+                val fxId = resolveEffectId(preset, effectsJson)
+                val body = buildEffectStateJson(fxId, preset.defaultSpeed, preset.defaultIntensity)
+                poster.postJson(stateUrl, body)
+                onResult?.invoke(true, "已应用 WLED 效果：${preset.displayName}")
+            } catch (t: Throwable) {
+                logRateLimited("WLED applyEffectPreset failed for $stateUrl", t)
+                onResult?.invoke(false, "应用 WLED 效果失败：无法连接 $targetHost")
+            }
+        }
+    }
 
     fun setEnabled(newEnabled: Boolean) {
         val artworkToPush: ByteArray?

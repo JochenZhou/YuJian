@@ -366,6 +366,52 @@ class SendspinPlayerStyleTest {
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         assertEquals(11988, Prefs.getWledSyncPort(context))
         assertEquals("192.168.101.206", Prefs.getWledColorHost(context))
+
+        // Open settings -> recommended WLED effects dialog and verify preset persistence
+        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        val settingsDialog4 = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        val effectRowIdx = settingsDialog4.itemViews
+            .map { collectAllTexts(it).joinToString(" | ") }
+            .indexOfFirst { it.contains("推荐 WLED 律动效果") }
+        assertTrue("Expected recommended WLED effect row in settings", effectRowIdx >= 0)
+        settingsDialog4.itemViews[effectRowIdx].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+
+        val effectsDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        assertTrue(effectsDialog.isShowing)
+        val gravIdx = effectsDialog.itemViews
+            .map { collectAllTexts(it).joinToString(" | ") }
+            .indexOfFirst { it.contains("Gravcentric") }
+        assertTrue("Expected Gravcentric preset in dialog", gravIdx >= 0)
+        effectsDialog.itemViews[gravIdx].performClick()
+        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("gravcentric", Prefs.getWledEffect(context))
+    }
+
+    @Test
+    fun `playlist store persists catalog across cold restarts`() {
+        val context = RuntimeEnvironment.getApplication()
+        PlaylistStore.update(null)
+        val rawJson = """
+            {
+              "version": 1,
+              "callback": {"url": "http://192.168.101.75:8123/api/yujian/play", "token": "tok"},
+              "playlists": [
+                {"id": "library://playlist/7", "name": "深夜微光", "track_count": 12}
+              ]
+            }
+        """.trimIndent()
+        assertEquals(1, PlaylistStore.updateFromJson(context, rawJson))
+        assertEquals("深夜微光", PlaylistStore.current()?.playlists?.firstOrNull()?.name)
+
+        // Simulate process restart clearing in-memory catalog
+        PlaylistStore.update(null)
+        assertEquals(null, PlaylistStore.current())
+        PlaylistStore.restoreIfEmpty(context)
+        assertEquals(1, PlaylistStore.current()?.playlists?.size)
+        assertEquals("深夜微光", PlaylistStore.current()?.playlists?.firstOrNull()?.name)
+        PlaylistStore.update(null)
     }
 
     private fun collectEditTexts(view: View): List<EditText> {

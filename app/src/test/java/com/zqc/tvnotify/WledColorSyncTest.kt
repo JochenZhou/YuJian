@@ -2,6 +2,7 @@ package com.zqc.tvnotify
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -179,6 +180,51 @@ class WledColorSyncTest {
         assertEquals("http://192.168.101.222/json/state", calls[2].first)
         assertEquals("""{"seg":[{"id":0,"col":[[33,150,243]]}]}""", calls[2].second)
 
+        sync.close()
+    }
+
+    @Test
+    fun `curated WLED effects resolve dynamically or fall back and only push on explicit selection`() {
+        val context = RuntimeEnvironment.getApplication()
+        assertEquals("custom", Prefs.getWledEffect(context))
+        assertFalse(Prefs.setWledEffect(context, "unknown_fx"))
+        assertEquals("custom", Prefs.getWledEffect(context))
+        assertTrue(Prefs.setWledEffect(context, "gravcentric"))
+        assertEquals("gravcentric", Prefs.getWledEffect(context))
+
+        val fakeEffects = JSONArray().apply {
+            put("Solid")
+            for (i in 1 until 199) put("FX_$i")
+            put("Gravcentric")
+        }.toString()
+        assertEquals(199, WledColorSync.resolveEffectId(WledEffectPreset.GRAVCENTRIC, fakeEffects))
+        assertEquals(157, WledColorSync.resolveEffectId(WledEffectPreset.GRAVCENTRIC, null))
+        assertEquals("""{"seg":[{"id":0,"fx":199,"sx":92,"ix":132}]}""", WledColorSync.buildEffectStateJson(199, 92, 132))
+
+        val posts = mutableListOf<Pair<String, String>>()
+        val callbacks = mutableListOf<Pair<Boolean, String>>()
+        val sync = WledColorSync(
+            initialEnabled = false,
+            initialHost = "192.168.101.206",
+            poster = WledHttpPoster { url, body -> posts.add(url to body) },
+            getter = WledHttpGetter { url ->
+                assertEquals("http://192.168.101.206/json/effects", url)
+                fakeEffects
+            },
+            customExecutor = inlineExecutor,
+            debounceMs = 0L
+        )
+        // Choosing CUSTOM preserves lamp effect with zero HTTP traffic
+        sync.applyEffectPreset(WledEffectPreset.CUSTOM) { ok, msg -> callbacks.add(ok to msg) }
+        assertEquals(0, posts.size)
+        assertTrue(callbacks.last().first)
+
+        // Explicit preset selection works even when passive color sync toggle is OFF
+        sync.applyEffectPreset(WledEffectPreset.GRAVCENTRIC) { ok, msg -> callbacks.add(ok to msg) }
+        assertEquals(1, posts.size)
+        assertEquals("http://192.168.101.206/json/state", posts[0].first)
+        assertEquals("""{"seg":[{"id":0,"fx":199,"sx":92,"ix":132}]}""", posts[0].second)
+        assertTrue(callbacks.last().first)
         sync.close()
     }
 }
