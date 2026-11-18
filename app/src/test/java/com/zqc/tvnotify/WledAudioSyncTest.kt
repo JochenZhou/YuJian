@@ -308,6 +308,42 @@ class WledAudioSyncTest {
         sync.close()
     }
 
+    @Test
+    fun `AGC lifts typical quiet digital music across full loudness range and all GEQ octaves`() {
+        val analyzer = WledAudioAnalyzer()
+        val sampleRate = 48_000
+        val channels = 2
+        val frames = 1024
+        val quietMix = ByteArray(frames * channels * 2)
+        var idx = 0
+        for (i in 0 until frames) {
+            val t = i.toDouble() / sampleRate
+            // Quiet music (~0.045 total amplitude across bass 110Hz, mid 660Hz, treble 3500Hz).
+            val v = (sin(2.0 * PI * 110.0 * t) * 0.025 +
+                sin(2.0 * PI * 660.0 * t) * 0.018 +
+                sin(2.0 * PI * 3500.0 * t) * 0.015)
+            val s = (v * 32767.0).roundToInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            for (c in 0 until channels) {
+                quietMix[idx++] = (s and 0xFF).toByte()
+                quietMix[idx++] = ((s ushr 8) and 0xFF).toByte()
+            }
+        }
+        lateinit var last: WledAudioMetrics
+        repeat(6) {
+            last = analyzer.analyze(quietMix, 0, quietMix.size, sampleRate, channels)
+        }
+        assertTrue("Quiet music should drive full-strip sampleRaw (>= 140), got ${last.sampleRaw}", last.sampleRaw >= 140f)
+        assertTrue("Quiet music should drive sampleSmth (>= 120), got ${last.sampleSmth}", last.sampleSmth >= 120f)
+        val bassBand = last.fftResult[1].toInt() and 0xFF
+        val midBand = last.fftResult[6].toInt() and 0xFF
+        val trebleBand = last.fftResult[12].toInt() and 0xFF
+        val gapBand = last.fftResult[9].toInt() and 0xFF
+        assertTrue("Bass band should be strong ($bassBand)", bassBand >= 120)
+        assertTrue("Mid band should be strong ($midBand)", midBand >= 120)
+        assertTrue("Treble band must not collapse ($trebleBand)", trebleBand >= 120)
+        assertTrue("Unexcited gap band should stay low ($gapBand)", gapBand < 60)
+    }
+
     private fun generateSinePcm16(
         freqHz: Double,
         sampleRate: Int,

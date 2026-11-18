@@ -14,7 +14,6 @@ import java.util.concurrent.locks.LockSupport
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.hypot
-import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -123,6 +122,8 @@ class WledAudioAnalyzer {
         const val FFT_SIZE = 1024
         const val NUM_BANDS = 16
         private const val NOISE_FLOOR_RMS = 1e-4
+        private const val INITIAL_AGC_PEAK = 0.04
+        private const val MIN_AGC_PEAK = 0.02
         private val BAND_EDGES_HZ = doubleArrayOf(
             40.0, 86.0, 129.0, 216.0, 301.0, 430.0, 560.0, 818.0,
             1120.0, 1421.0, 1895.0, 2412.0, 3015.0, 3704.0, 4479.0, 7106.0, 11025.0
@@ -141,6 +142,7 @@ class WledAudioAnalyzer {
     private val fftOut = ByteArray(NUM_BANDS)
 
     private var smoothedLevel = 0f
+    private var agcPeak = INITIAL_AGC_PEAK
     private var beatBaseline = 0.0
     private var lastSampleSign = 0
     private var peakCooldownFrames = 0
@@ -155,6 +157,7 @@ class WledAudioAnalyzer {
         binMagnitudes.fill(0.0)
         fftOut.fill(0)
         smoothedLevel = 0f
+        agcPeak = INITIAL_AGC_PEAK
         beatBaseline = 0.0
         lastSampleSign = 0
         peakCooldownFrames = 0
@@ -210,14 +213,21 @@ class WledAudioAnalyzer {
         val rawLevel = if (rms < NOISE_FLOOR_RMS) {
             0f
         } else {
-            val db = (20.0 * log10(rms)).coerceIn(-60.0, 0.0)
-            (((db + 60.0) / 60.0).pow(1.25) * 255.0).toFloat().coerceIn(0f, 255f)
+            if (rms > agcPeak) {
+                agcPeak = max(agcPeak + 0.60 * (rms - agcPeak), rms * 0.90)
+            } else {
+                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.985)
+            }
+            val normRms = (rms / max(agcPeak, MIN_AGC_PEAK)).coerceIn(0.0, 1.35)
+            val base = normRms.coerceAtMost(1.0).pow(0.65) * 235.0
+            val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 20.0
+            (base + burst).toFloat().coerceIn(0f, 255f)
         }
 
         smoothedLevel = if (rawLevel == 0f && smoothedLevel < 0.5f) {
             0f
         } else {
-            val alpha = if (rawLevel >= smoothedLevel) 0.45f else 0.18f
+            val alpha = if (rawLevel >= smoothedLevel) 0.72f else 0.32f
             val next = smoothedLevel + alpha * (rawLevel - smoothedLevel)
             if (next < 0.25f) 0f else next.coerceIn(0f, 255f)
         }
@@ -230,10 +240,10 @@ class WledAudioAnalyzer {
             beatBaseline += baseAlpha * (beatEnergy - beatBaseline)
         }
         if (peakCooldownFrames > 0) peakCooldownFrames--
-        val isPeak = rawLevel >= 24f &&
+        val isPeak = rms >= NOISE_FLOOR_RMS &&
+            rawLevel >= 40f &&
             peakCooldownFrames == 0 &&
-            beatEnergy > beatBaseline * 1.45 &&
-            beatEnergy > 0.015
+            beatEnergy > beatBaseline * 1.32
         if (isPeak) {
             peakCooldownFrames = 4 // ~80 ms at 50 fps
         }
@@ -299,6 +309,7 @@ class WledAudioAnalyzer {
             }
         }
 
+        val agcRef = max(agcPeak, MIN_AGC_PEAK)
         for (band in 0 until NUM_BANDS) {
             val fLow = BAND_EDGES_HZ[band]
             val fHigh = min(BAND_EDGES_HZ[band + 1], sampleRate * 0.49)
@@ -309,17 +320,17 @@ class WledAudioAnalyzer {
             val startBin = max(1, (fLow / binHz).toInt())
             val endBin = min(half - 1, max(startBin, (fHigh / binHz).roundToInt()))
             var bandEnergy = 0.0
-            var count = 0
             for (b in startBin..endBin) {
                 bandEnergy += binMagnitudes[b] * binMagnitudes[b]
-                count++
             }
-            val bandRms = if (count > 0) sqrt(bandEnergy / count) else 0.0
-            val bandByte = if (bandRms < 0.001) {
+            // Parseval total band energy avoids crushing wide upper-octave bands, plus +0.09/band treble tilt.
+            val bandRms = sqrt(bandEnergy)
+            val tilt = 1.0 + band * 0.09
+            val bandNorm = (bandRms * tilt) / (agcRef * 0.72)
+            val bandByte = if (bandRms < 0.0003 || bandNorm < 0.04) {
                 0
             } else {
-                val db = (20.0 * log10(bandRms)).coerceIn(-56.0, 0.0)
-                (((db + 56.0) / 56.0).pow(1.1) * 255.0).roundToInt().coerceIn(0, 255)
+                (bandNorm.coerceIn(0.0, 1.0).pow(0.62) * 254.0).roundToInt().coerceIn(0, 254)
             }
             fftOut[band] = bandByte.toByte()
         }
@@ -331,7 +342,7 @@ class WledAudioAnalyzer {
             frameCounter = counter,
             fftResult = fftOut.copyOf(),
             zeroCrossingCount = zeroCrossings.coerceIn(0, 65535),
-            fftMagnitude = (peakMag * 2048.0).toFloat(),
+            fftMagnitude = ((peakMag / agcRef) * 220.0).toFloat().coerceIn(0f, 512f),
             majorPeakHz = majorPeakHz
         )
     }
