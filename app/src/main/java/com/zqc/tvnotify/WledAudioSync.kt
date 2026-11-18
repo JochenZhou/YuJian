@@ -102,7 +102,7 @@ object WledAudioSyncPacket {
         buf.put(metrics.samplePeak.coerceIn(0, 255).toByte())
         buf.put((metrics.frameCounter and 0xFF).toByte())
         for (i in 0 until 16) {
-            val value = if (i < metrics.fftResult.size) metrics.fftResult[i] else 0
+            val value: Byte = if (i < metrics.fftResult.size) metrics.fftResult[i] else 0.toByte()
             buf.put(value)
         }
         buf.putShort(metrics.zeroCrossingCount.coerceIn(0, 65535).toShort())
@@ -340,11 +340,13 @@ class WledAudioAnalyzer {
         smoothedLevel = 0f
         beatBaseline = 0.0
         fftOut.fill(0)
+        val counter = frameCounter
+        frameCounter = (frameCounter + 1) and 0xFF
         return WledAudioMetrics(
             sampleRaw = 0f,
             sampleSmth = 0f,
             samplePeak = 0,
-            frameCounter = frameCounter.also { frameCounter = (frameCounter + 1) and 0xFF },
+            frameCounter = counter,
             fftResult = ByteArray(NUM_BANDS),
             zeroCrossingCount = 0,
             fftMagnitude = 0f,
