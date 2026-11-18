@@ -316,19 +316,23 @@ class WledColorSync(
     }
 
     fun onArtworkBytes(bytes: ByteArray?) {
-        val shouldPush: Boolean
-        synchronized(stateLock) {
-            if (closed.get()) return
-            if (bytes == null || bytes.isEmpty()) {
+        if (bytes == null || bytes.isEmpty()) {
+            synchronized(stateLock) {
+                if (closed.get()) return
                 cachedArtwork = null
                 cachedSignature = 0L
                 lastSentUrl = null
                 lastSentRgb = null
                 generation.incrementAndGet()
-                return
             }
+            return
+        }
+        val shouldPush: Boolean
+        synchronized(stateLock) {
+            if (closed.get()) return
             val sig = signatureOf(bytes)
-            if (sig == cachedSignature && cachedArtwork != null && bytes.contentEquals(cachedArtwork)) {
+            val prev = cachedArtwork
+            if (sig == cachedSignature && prev != null && bytes.contentEquals(prev)) {
                 return
             }
             cachedArtwork = bytes
