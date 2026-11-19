@@ -454,12 +454,11 @@ button {
         <select id="sendspin-wled-effect">
           <option value="custom">保持灯带当前效果</option>
           <option value="gravcentric">中轴舒展 (Gravcentric · 推荐)</option>
-          <option value="geq">频谱均衡 (GEQ)</option>
-          <option value="midnoise">柔光噪波 (Midnoise)</option>
-          <option value="waterfall">星河流瀑 (Waterfall)</option>
-          <option value="pixels">星点微光 (Pixels)</option>
           <option value="gravimeter">呼吸音柱 (Gravimeter)</option>
-          <option value="solid">纯色静谧 (Solid)</option>
+          <option value="gravfreq">频谱音柱 (Gravfreq)</option>
+          <option value="pixelwave">音浪流光 (Pixelwave)</option>
+          <option value="pixels">星点跃动 (Pixels)</option>
+          <option value="puddles">音律涟漪 (Puddles)</option>
         </select>
       </div>
     </div>

@@ -207,9 +207,14 @@ test("console syncs, validates, and submits player style and all WLED settings c
   assert.equal(app.requests.filter(r => r.method === "POST").length, 0);
   assert.match(app.toasts.at(-1), /1–65535/);
 
+  // Removed low-impact WLED presets must not appear in the WebUI selector
+  for (const removed of ["geq", "midnoise", "waterfall", "solid"]) {
+    assert.doesNotMatch(html, new RegExp(`<option value="${removed}"`));
+  }
+
   // Valid edits post complete config payload and clear dirty flag
   app.element("sendspin-player-style").emit("change", "vinyl");
-  app.element("sendspin-wled-effect").emit("change", "midnoise");
+  app.element("sendspin-wled-effect").emit("change", "pixelwave");
   app.element("sendspin-wled-sync").checked = false;
   app.element("sendspin-wled-sync").emit("change", "off");
   app.element("sendspin-wled-color").checked = true;
@@ -225,7 +230,7 @@ test("console syncs, validates, and submits player style and all WLED settings c
     wled_sync_port: 11988,
     wled_color_sync_enabled: true,
     wled_color_host: "192.168.101.210",
-    wled_effect: "midnoise"
+    wled_effect: "pixelwave"
   });
   assert.equal(app.run("sendspinWledDirty"), false);
 });

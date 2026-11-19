@@ -31,11 +31,15 @@ data class WledArtworkColors(
 
 /**
  * Extracts dominant primary and distinct secondary colors from album artwork bitmaps.
- * If the primary color is black / near-black (relative luminance < 0.025), falls back
- * to the secondary color; if neither is sufficiently lit, yields null.
+ * Any color that displays poorly on WLED RGB strips (black, near-black, dark dim shades,
+ * or gray / low-saturation dull tones) is skipped in favor of a vivid secondary color;
+ * if no sufficiently visible color exists, yields null.
  */
 object WledArtworkColorExtractor {
-    const val DARK_LUMINANCE_THRESHOLD = 0.025
+    const val DARK_LUMINANCE_THRESHOLD = 0.035
+    const val MIN_VISIBLE_CHANNEL = 88
+    const val MIN_VISIBLE_CHROMA = 34
+    const val MIN_VISIBLE_SATURATION = 0.24
     private const val SAMPLE_MAX_DIM = 32
     private const val HIST_BITS = 4
     private const val HIST_SIDE = 1 shl HIST_BITS
@@ -62,7 +66,28 @@ object WledArtworkColorExtractor {
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
     }
 
-    fun isDarkColor(rgb: Int): Boolean = relativeLuminance(rgb) < DARK_LUMINANCE_THRESHOLD
+    /** True when the color is too dark / dim to show cleanly on an RGB LED strip. */
+    fun isDarkColor(rgb: Int): Boolean {
+        val maxC = maxOf(Color.red(rgb), Color.green(rgb), Color.blue(rgb))
+        if (maxC < MIN_VISIBLE_CHANNEL) return true
+        return relativeLuminance(rgb) < DARK_LUMINANCE_THRESHOLD && maxC < 120
+    }
+
+    /**
+     * True when the color is either too dark OR too grayish / washed-out to produce
+     * an obvious, vivid color on WLED LEDs (black, charcoal, dark/mid/light gray, dull beige).
+     */
+    fun isWeakOrDarkColor(rgb: Int): Boolean {
+        if (isDarkColor(rgb)) return true
+        val r = Color.red(rgb)
+        val g = Color.green(rgb)
+        val b = Color.blue(rgb)
+        val maxC = maxOf(r, g, b)
+        val minC = minOf(r, g, b)
+        val chroma = maxC - minC
+        val saturation = if (maxC == 0) 0.0 else chroma.toDouble() / maxC.toDouble()
+        return chroma < MIN_VISIBLE_CHROMA || saturation < MIN_VISIBLE_SATURATION
+    }
 
     fun extract(bitmap: Bitmap): WledArtworkColors {
         if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) {
@@ -140,15 +165,30 @@ object WledArtworkColorExtractor {
 
         val primaryCluster = merged[0]
         val primaryRgb = primaryCluster.toRgbInt()
+        val minSecondaryCount = maxOf(2, opaqueCount / 100)
 
         var secondaryRgb: Int? = null
-        if (isDarkColor(primaryRgb)) {
+        if (isWeakOrDarkColor(primaryRgb)) {
+            // Prefer a distinct, clearly visible chromatic secondary cluster first.
             for (i in 1 until merged.size) {
                 val candidate = merged[i]
+                if (candidate.count < minSecondaryCount) continue
                 val candidateRgb = candidate.toRgbInt()
-                if (!isDarkColor(candidateRgb) && rgbDistance(primaryCluster, candidate) >= DISTINCT_DISTANCE) {
+                if (!isWeakOrDarkColor(candidateRgb) && rgbDistance(primaryCluster, candidate) >= DISTINCT_DISTANCE) {
                     secondaryRgb = candidateRgb
                     break
+                }
+            }
+            // Fallback: allow a nearby vibrant cluster when primary is mid-gray / muted.
+            if (secondaryRgb == null) {
+                for (i in 1 until merged.size) {
+                    val candidate = merged[i]
+                    if (candidate.count < minSecondaryCount) continue
+                    val candidateRgb = candidate.toRgbInt()
+                    if (!isWeakOrDarkColor(candidateRgb)) {
+                        secondaryRgb = candidateRgb
+                        break
+                    }
                 }
             }
         }
@@ -163,8 +203,8 @@ object WledArtworkColorExtractor {
         }
 
         val selectedRgb = when {
-            !isDarkColor(primaryRgb) -> primaryRgb
-            secondaryRgb != null && !isDarkColor(secondaryRgb) -> secondaryRgb
+            !isWeakOrDarkColor(primaryRgb) -> primaryRgb
+            secondaryRgb != null && !isWeakOrDarkColor(secondaryRgb) -> secondaryRgb
             else -> null
         }
         return WledArtworkColors(
@@ -188,7 +228,7 @@ object WledArtworkColorExtractor {
 }
 
 /**
- * Curated WLED effects tuned for graceful, low-fatigue musical lighting on 1D strips.
+ * Curated 1D AudioReactive WLED effects verified against WLED v16 `/json/fxdata`.
  * Only applied when explicitly chosen by the user; passive artwork/audio sync never overwrites WLED effects.
  */
 enum class WledEffectPreset(
@@ -201,13 +241,12 @@ enum class WledEffectPreset(
     val defaultIntensity: Int
 ) {
     CUSTOM("custom", "保持当前效果", "不改动灯带自身效果，仅同步音频律动与封面色彩", "", -1, 128, 128),
-    GRAVCENTRIC("gravcentric", "中轴舒展 (Gravcentric)", "从中点向两端优雅对称扩散，柔和耐看（推荐）", "Gravcentric", 157, 92, 132),
-    GEQ("geq", "频谱均衡 (GEQ)", "高低音随旋律细腻流动，色彩丰富平衡", "GEQ", 139, 96, 136),
-    MIDNOISE("midnoise", "柔光噪波 (Midnoise)", "人声与旋律化作温和起伏的极光波纹", "Midnoise", 135, 82, 126),
-    WATERFALL("waterfall", "星河流瀑 (Waterfall)", "音乐能量如流光般缓慢漫过灯带", "Waterfall", 140, 90, 132),
-    PIXELS("pixels", "星点微光 (Pixels)", "稀疏闪烁的细腻星点，适合静谧夜间听歌", "Pixels", 128, 78, 124),
-    GRAVIMETER("gravimeter", "呼吸音柱 (Gravimeter)", "由底向上的平滑声压柱，低频清晰沉稳", "Gravimeter", 132, 90, 132),
-    SOLID("solid", "纯色静谧 (Solid)", "静静呈现封面主色调，完全不闪烁（助眠/纯享）", "Solid", 0, 128, 128);
+    GRAVCENTRIC("gravcentric", "中轴舒展 (Gravcentric)", "从中点向两端实时对称扩散，一维灯带最耐看（推荐）", "Gravcentric", 157, 128, 165),
+    GRAVIMETER("gravimeter", "呼吸音柱 (Gravimeter)", "由底向上的实时声压音柱，低频与人声起伏清晰", "Gravimeter", 132, 128, 165),
+    GRAVFREQ("gravfreq", "频谱音柱 (Gravfreq)", "按实时主频变色的动态音柱，高低音层次鲜明", "Gravfreq", 158, 128, 165),
+    PIXELWAVE("pixelwave", "音浪流光 (Pixelwave)", "从中心向两侧涌动的实时音乐光浪", "Pixelwave", 129, 136, 148),
+    PIXELS("pixels", "星点跃动 (Pixels)", "随节拍闪烁跃动的彩色星点，轻盈灵动", "Pixels", 128, 128, 160),
+    PUDDLES("puddles", "音律涟漪 (Puddles)", "由音乐节拍触发的扩散水波光晕", "Puddles", 134, 132, 160);
 
     companion object {
         val RECOMMENDED: List<WledEffectPreset>

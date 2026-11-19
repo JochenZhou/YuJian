@@ -67,6 +67,10 @@ class SendspinConfigTest {
             """{"wled_color_host":"ftp://192.168.101.206"}""",
             """{"wled_color_host":""}""",
             """{"wled_effect":"nonexistent_fx"}""",
+            """{"wled_effect":"geq"}""",
+            """{"wled_effect":"midnoise"}""",
+            """{"wled_effect":"waterfall"}""",
+            """{"wled_effect":"solid"}""",
             """{"wled_effect":128}""",
         )) {
             assertThrows(invalid, IllegalArgumentException::class.java) {

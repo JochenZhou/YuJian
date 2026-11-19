@@ -91,6 +91,32 @@ class WledColorSyncTest {
     }
 
     @Test
+    fun `falls back to secondary color when primary color is gray or dim on WLED and keeps vivid deep blue`() {
+        val vividOrange = Color.rgb(255, 138, 40)
+        for (weakPrimary in listOf(
+            Color.rgb(55, 55, 55),     // dark gray
+            Color.rgb(122, 122, 125),  // mid gray
+            Color.rgb(195, 195, 198),  // pale gray
+            Color.rgb(68, 48, 42)      // dark dim brown
+        )) {
+            val bitmap = buildSplitBitmap(topRatio = 0.72, topColor = weakPrimary, bottomColor = vividOrange)
+            val colors = WledArtworkColorExtractor.extract(bitmap)
+            assertTrue("Expected weak primary $weakPrimary", WledArtworkColorExtractor.isWeakOrDarkColor(colors.primaryRgb!!))
+            assertEquals("Expected vivid secondary for weak primary $weakPrimary", vividOrange, colors.selectedRgb)
+        }
+
+        // Pure gray cover with no vivid color returns null rather than pushing dull gray to WLED
+        val allGray = buildSplitBitmap(topRatio = 0.6, topColor = Color.rgb(70, 70, 70), bottomColor = Color.rgb(140, 140, 142))
+        assertNull(WledArtworkColorExtractor.extract(allGray).selectedRgb)
+
+        // Vivid deep blue is bright on WS2812 LEDs even with low Rec.709 luminance
+        val deepBlue = Color.rgb(12, 48, 224)
+        assertFalse(WledArtworkColorExtractor.isWeakOrDarkColor(deepBlue))
+        val blueBitmap = buildSplitBitmap(topRatio = 0.8, topColor = deepBlue, bottomColor = Color.rgb(20, 20, 20))
+        assertEquals(deepBlue, WledArtworkColorExtractor.extract(blueBitmap).selectedRgb)
+    }
+
+    @Test
     fun `skips all-black or near-black and transparent bitmaps cleanly`() {
         val allBlack = buildSplitBitmap(topRatio = 0.6, topColor = Color.rgb(0, 0, 0), bottomColor = Color.rgb(18, 18, 18))
         val darkColors = WledArtworkColorExtractor.extract(allBlack)
@@ -199,7 +225,7 @@ class WledColorSyncTest {
         }.toString()
         assertEquals(199, WledColorSync.resolveEffectId(WledEffectPreset.GRAVCENTRIC, fakeEffects))
         assertEquals(157, WledColorSync.resolveEffectId(WledEffectPreset.GRAVCENTRIC, null))
-        assertEquals("""{"seg":[{"id":0,"fx":199,"sx":92,"ix":132}]}""", WledColorSync.buildEffectStateJson(199, 92, 132))
+        assertEquals("""{"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""", WledColorSync.buildEffectStateJson(199, 128, 165))
 
         val posts = mutableListOf<Pair<String, String>>()
         val callbacks = mutableListOf<Pair<Boolean, String>>()
@@ -223,7 +249,7 @@ class WledColorSyncTest {
         sync.applyEffectPreset(WledEffectPreset.GRAVCENTRIC) { ok, msg -> callbacks.add(ok to msg) }
         assertEquals(1, posts.size)
         assertEquals("http://192.168.101.206/json/state", posts[0].first)
-        assertEquals("""{"seg":[{"id":0,"fx":199,"sx":92,"ix":132}]}""", posts[0].second)
+        assertEquals("""{"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""", posts[0].second)
         assertTrue(callbacks.last().first)
         sync.close()
     }

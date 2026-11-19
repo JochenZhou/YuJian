@@ -1182,7 +1182,7 @@ class SendspinActivity : Activity() {
                 trailingBadge = when {
                     selected -> "当前"
                     preset == WledEffectPreset.GRAVCENTRIC -> "推荐"
-                    preset == WledEffectPreset.SOLID -> "静态"
+                    preset == WledEffectPreset.GRAVFREQ -> "频谱"
                     else -> "切换"
                 },
                 selected = selected

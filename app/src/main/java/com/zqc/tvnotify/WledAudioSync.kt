@@ -216,21 +216,25 @@ class WledAudioAnalyzer {
             0f
         } else {
             if (rms > agcPeak) {
-                agcPeak = max(agcPeak + 0.55 * (rms - agcPeak), rms * 0.90)
+                agcPeak = max(agcPeak + 0.58 * (rms - agcPeak), rms * 0.90)
             } else {
-                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.988)
+                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.984)
             }
             val normRms = (rms / max(agcPeak, MIN_AGC_PEAK)).coerceIn(0.0, 1.35)
-            val base = normRms.coerceAtMost(1.0).pow(0.75) * 232.0
-            val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 23.0
-            (base + burst).toFloat().coerceIn(0f, 255f)
+            if (normRms < 0.08) {
+                0f
+            } else {
+                val base = ((normRms.coerceAtMost(1.0) - 0.05) / 0.95).coerceIn(0.0, 1.0).pow(0.85) * 230.0
+                val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 25.0
+                (base + burst).toFloat().coerceIn(0f, 255f)
+            }
         }
 
         smoothedLevel = if (rawLevel == 0f && smoothedLevel < 0.5f) {
             0f
         } else {
-            // Velvet asymmetric smoothing: calm rise, unhurried fade-out without strobing.
-            val alpha = if (rawLevel >= smoothedLevel) 0.28f else 0.085f
+            // Responsive musical smoothing: crisp real-time beat rise with smooth, non-strobing decay.
+            val alpha = if (rawLevel >= smoothedLevel) 0.56f else 0.18f
             val next = smoothedLevel + alpha * (rawLevel - smoothedLevel)
             if (next < 0.25f) 0f else next.coerceIn(0f, 255f)
         }
@@ -239,16 +243,16 @@ class WledAudioAnalyzer {
         if (beatBaseline == 0.0) {
             beatBaseline = beatEnergy
         } else {
-            val baseAlpha = if (beatEnergy > beatBaseline) 0.10 else 0.035
+            val baseAlpha = if (beatEnergy > beatBaseline) 0.09 else 0.04
             beatBaseline += baseAlpha * (beatEnergy - beatBaseline)
         }
         if (peakCooldownFrames > 0) peakCooldownFrames--
         val isPeak = rms >= NOISE_FLOOR_RMS &&
-            rawLevel >= 65f &&
+            rawLevel >= 48f &&
             peakCooldownFrames == 0 &&
-            beatEnergy > beatBaseline * 1.48
+            beatEnergy > beatBaseline * 1.34
         if (isPeak) {
-            peakCooldownFrames = 9 // ~270-300 ms at 33 fps to avoid harsh beat strobing
+            peakCooldownFrames = 5 // ~100 ms at 50 fps: lively beats without wild strobe
         }
 
         var windowSumSq = 0.0
@@ -269,7 +273,7 @@ class WledAudioAnalyzer {
 
         if (windowSumSq < NOISE_FLOOR_RMS * NOISE_FLOOR_RMS * FFT_SIZE) {
             for (band in 0 until NUM_BANDS) {
-                val faded = if (smoothedBands[band] < 1.0) 0.0 else smoothedBands[band] * 0.91
+                val faded = if (smoothedBands[band] < 1.0) 0.0 else smoothedBands[band] * 0.78
                 smoothedBands[band] = faded
                 fftOut[band] = faded.roundToInt().coerceIn(0, 254).toByte()
             }
@@ -333,14 +337,14 @@ class WledAudioAnalyzer {
                 val bandRms = sqrt(bandEnergy)
                 val tilt = 1.0 + band * 0.09
                 val bandNorm = (bandRms * tilt) / (agcRef * 0.72)
-                if (bandRms < 0.0003 || bandNorm < 0.04) {
+                if (bandRms < 0.0003 || bandNorm < 0.08) {
                     0.0
                 } else {
-                    bandNorm.coerceIn(0.0, 1.0).pow(0.72) * 254.0
+                    ((bandNorm.coerceIn(0.0, 1.0) - 0.06) / 0.94).coerceIn(0.0, 1.0).pow(0.80) * 254.0
                 }
             }
             val prevBand = smoothedBands[band]
-            val bandAlpha = if (targetBand >= prevBand) 0.30 else 0.09
+            val bandAlpha = if (targetBand >= prevBand) 0.62 else 0.22
             val nextBand = if (targetBand == 0.0 && prevBand < 1.0) {
                 0.0
             } else {
@@ -506,7 +510,7 @@ class WledAudioSync(
     private val multicastLease: MulticastLease =
         if (context != null) AndroidMulticastLease(context) else NoOpMulticastLease,
     private val nowNs: () -> Long = System::nanoTime,
-    private val minIntervalNs: Long = 30_000_000L,
+    private val minIntervalNs: Long = 20_000_000L,
     private val maxFrameAgeNs: Long = 150_000_000L
 ) : WledAudioTap, AutoCloseable {
 

@@ -414,6 +414,27 @@ class SendspinPlayerStyleTest {
         PlaylistStore.update(null)
     }
 
+    @Test
+    fun `vinyl record renders cleanly without center spindle hole`() {
+        val context = RuntimeEnvironment.getApplication()
+        val view = VinylRecordView(context, Color.rgb(66, 165, 245))
+        val cover = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply {
+            eraseColor(Color.rgb(230, 80, 60))
+        }
+        view.setArtwork(cover)
+        view.layout(0, 0, 240, 240)
+        view.setPlaying(true)
+
+        val out = Bitmap.createBitmap(240, 240, Bitmap.Config.ARGB_8888)
+        view.draw(android.graphics.Canvas(out))
+
+        // Verify enlarged unobstructed artwork radius and complete removal of center spindle hole
+        val radius = VinylRecordView::class.java.getDeclaredField("radius").apply { isAccessible = true }.getFloat(view)
+        val labelRadius = VinylRecordView::class.java.getDeclaredField("labelRadius").apply { isAccessible = true }.getFloat(view)
+        assertTrue("Expected larger clean artwork radius ($labelRadius vs $radius)", labelRadius > radius * 0.50f)
+        assertTrue(VinylRecordView::class.java.declaredFields.none { it.name == "spindlePaint" })
+    }
+
     private fun collectEditTexts(view: View): List<EditText> {
         val result = mutableListOf<EditText>()
         if (view is EditText) {

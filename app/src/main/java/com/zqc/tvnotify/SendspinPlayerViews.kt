@@ -16,6 +16,7 @@ import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.graphics.SweepGradient
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
@@ -685,14 +686,22 @@ internal fun applyThreePassGaussianBlur(pixels: IntArray, w: Int, h: Int, radius
     }
 }
 
-/** Custom-drawn rotating vinyl disc with concentric grooves and circular center artwork label. */
+/**
+ * Hi-Fi rotating vinyl turntable with stationary studio anisotropic light sheen,
+ * dense micro-grooves, smooth motor spin-up/coast-down inertia, minimalist animated tonearm,
+ * and a clean, full circular album cover (without a center spindle hole).
+ */
 internal class VinylRecordView(context: Context, initialAccent: Int) : View(context) {
     private var accent = initialAccent
     private var artwork: Bitmap? = null
     private var artworkShader: BitmapShader? = null
     private val shaderMatrix = Matrix()
+    private val sheenMatrix = Matrix()
     private var playing = false
     private var rotationDegrees = 0f
+    private var angularVelocity = 0f
+    private var armProgress = 0f
+    private var haloPhase = 0f
     private var lastFrameNs = 0L
 
     private var cx = 0f
@@ -701,18 +710,29 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
     private var labelRadius = 0f
 
     private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val platterPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val platterShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val platterRimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val vinylPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.FILL
-        color = Color.argb(18, 255, 255, 255)
-    }
+    private val sheenPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val groovePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    private val labelShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val labelBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val artworkPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
-    private val spindlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
-    private val vinylBounds = RectF()
+    private val armShadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+        color = Color.argb(95, 0, 0, 0)
+    }
+    private val armPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val armFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+    private val armPath = Path()
+    private val grooveRingPath = Path()
     private val noteDrawable = SendspinIconDrawable(context, SendspinIcon.NOTE, Color.WHITE)
 
     init {
@@ -742,7 +762,7 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
         if (playing == isPlaying) return
         playing = isPlaying
         lastFrameNs = 0L
-        if (playing && isAttachedToWindow && windowVisibility == VISIBLE) {
+        if (isAttachedToWindow && windowVisibility == VISIBLE) {
             postInvalidateOnAnimation()
         }
     }
@@ -751,9 +771,12 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
         super.onSizeChanged(w, h, oldw, oldh)
         cx = w / 2f
         cy = h / 2f
-        radius = min(w, h) * 0.44f
-        labelRadius = radius * 0.45f
-        vinylBounds.set(cx - radius, cy - radius, cx + radius, cy + radius)
+        radius = min(w, h) * 0.425f
+        labelRadius = radius * 0.54f
+        grooveRingPath.reset()
+        grooveRingPath.fillType = Path.FillType.EVEN_ODD
+        grooveRingPath.addCircle(cx, cy, radius * 0.992f, Path.Direction.CW)
+        grooveRingPath.addCircle(cx, cy, labelRadius * 1.035f, Path.Direction.CW)
         rebuildShaders()
         updateArtworkMatrix()
     }
@@ -762,7 +785,7 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
         super.onVisibilityChanged(changedView, visibility)
         if (visibility != VISIBLE) {
             lastFrameNs = 0L
-        } else if (playing && isAttachedToWindow) {
+        } else if (needsAnimationFrame() && isAttachedToWindow) {
             lastFrameNs = 0L
             postInvalidateOnAnimation()
         }
@@ -773,18 +796,67 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
         super.onDetachedFromWindow()
     }
 
+    private fun needsAnimationFrame(): Boolean {
+        val targetArm = if (playing) 1f else 0f
+        return playing || angularVelocity > 0.08f || abs(armProgress - targetArm) > 0.004f
+    }
+
     private fun rebuildShaders() {
         if (radius <= 0f) return
         glowPaint.shader = RadialGradient(
-            cx, cy, radius * 1.16f,
-            intArrayOf(playerAlpha(accent, 44), playerAlpha(accent, 14), Color.TRANSPARENT),
-            floatArrayOf(0.65f, 0.86f, 1f),
+            cx, cy, radius * 1.22f,
+            intArrayOf(playerAlpha(accent, 64), playerAlpha(accent, 22), Color.TRANSPARENT),
+            floatArrayOf(0.56f, 0.82f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        platterShadowPaint.shader = RadialGradient(
+            cx, cy + radius * 0.035f, radius * 1.09f,
+            intArrayOf(Color.argb(148, 0, 0, 0), Color.argb(72, 0, 0, 0), Color.TRANSPARENT),
+            floatArrayOf(0.80f, 0.93f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        platterRimPaint.shader = LinearGradient(
+            cx - radius, cy - radius, cx + radius, cy + radius,
+            intArrayOf(Color.argb(115, 255, 255, 255), Color.argb(26, 255, 255, 255), Color.argb(78, 220, 232, 238)),
+            floatArrayOf(0f, 0.52f, 1f),
             Shader.TileMode.CLAMP
         )
         vinylPaint.shader = RadialGradient(
             cx, cy, radius,
-            intArrayOf(Color.rgb(22, 25, 30), Color.rgb(16, 18, 22), Color.rgb(26, 29, 35), Color.rgb(13, 15, 18)),
-            floatArrayOf(0.40f, 0.62f, 0.82f, 1f),
+            intArrayOf(
+                Color.rgb(21, 23, 28),
+                Color.rgb(12, 13, 17),
+                Color.rgb(24, 26, 32),
+                Color.rgb(14, 16, 20),
+                Color.rgb(9, 10, 13)
+            ),
+            floatArrayOf(0.52f, 0.65f, 0.78f, 0.91f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        // Stationary anisotropic brushed-vinyl studio light reflection across opposite quadrants.
+        val sweep = SweepGradient(
+            cx, cy,
+            intArrayOf(
+                Color.argb(0, 255, 255, 255),
+                Color.argb(38, 255, 255, 255),
+                playerAlpha(accent, 26),
+                Color.argb(0, 255, 255, 255),
+                Color.argb(0, 255, 255, 255),
+                Color.argb(32, 255, 255, 255),
+                Color.argb(12, 220, 232, 240),
+                Color.argb(0, 255, 255, 255)
+            ),
+            floatArrayOf(0.0f, 0.08f, 0.14f, 0.24f, 0.50f, 0.58f, 0.64f, 0.74f)
+        )
+        sheenMatrix.reset()
+        sheenMatrix.setRotate(-34f, cx, cy)
+        sweep.setLocalMatrix(sheenMatrix)
+        sheenPaint.shader = sweep
+
+        labelShadowPaint.shader = RadialGradient(
+            cx, cy, labelRadius * 1.12f,
+            intArrayOf(Color.argb(120, 0, 0, 0), Color.argb(46, 0, 0, 0), Color.TRANSPARENT),
+            floatArrayOf(0.84f, 0.94f, 1f),
             Shader.TileMode.CLAMP
         )
     }
@@ -805,82 +877,165 @@ internal class VinylRecordView(context: Context, initialAccent: Int) : View(cont
 
     override fun onDraw(canvas: Canvas) {
         if (radius <= 0f) return
+        val strokeBase = max(1f, radius / 165f)
 
-        // Ambient glow & outer turntable platter bezel
-        canvas.drawCircle(cx, cy, radius * 1.15f, glowPaint)
-        platterPaint.color = Color.argb(26, 255, 255, 255)
-        canvas.drawCircle(cx, cy, radius * 1.032f, platterPaint)
+        // Soft breathing ambient glow + floating turntable platter shadow & brushed rim
+        val haloScale = 1.14f + 0.05f * sin(haloPhase) * (angularVelocity / TARGET_ANGULAR_VELOCITY).coerceIn(0f, 1f)
+        glowPaint.alpha = (185 + (70f * (angularVelocity / TARGET_ANGULAR_VELOCITY).coerceIn(0f, 1f)).toInt()).coerceIn(0, 255)
+        canvas.drawCircle(cx, cy, radius * haloScale, glowPaint)
+        canvas.drawCircle(cx, cy + radius * 0.035f, radius * 1.09f, platterShadowPaint)
+        platterRimPaint.strokeWidth = strokeBase * 1.7f
+        canvas.drawCircle(cx, cy, radius * 1.024f, platterRimPaint)
 
-        val save = canvas.save()
+        // Rotating vinyl record + dense micro-grooves + clean full circular cover art (no center hole)
+        val saveDisc = canvas.save()
         canvas.rotate(rotationDegrees, cx, cy)
 
-        // Main black vinyl body
         canvas.drawCircle(cx, cy, radius, vinylPaint)
 
-        // Specular light sheen wedges to convey rotation even with symmetrical labels
-        canvas.drawArc(vinylBounds, -38f, 48f, true, sheenPaint)
-        canvas.drawArc(vinylBounds, 142f, 48f, true, sheenPaint)
-
-        // Concentric vinyl grooves
-        val strokeBase = max(1f, radius / 160f)
-        groovePaint.strokeWidth = strokeBase
-        val grooveFractions = floatArrayOf(0.51f, 0.57f, 0.63f, 0.69f, 0.75f, 0.81f, 0.87f, 0.93f)
-        for (index in grooveFractions.indices) {
-            groovePaint.color = Color.argb(if (index % 2 == 0) 28 else 16, 255, 255, 255)
-            canvas.drawCircle(cx, cy, radius * grooveFractions[index], groovePaint)
+        // Subtle dense micro-grooves across the playing area
+        groovePaint.strokeWidth = strokeBase * 0.85f
+        val grooveCount = 15
+        val grooveStart = 0.60f
+        val grooveEnd = 0.955f
+        for (i in 0 until grooveCount) {
+            val frac = grooveStart + (grooveEnd - grooveStart) * i / (grooveCount - 1).toFloat()
+            val alpha = when {
+                i == 0 || i == grooveCount - 1 -> 34
+                i % 3 == 0 -> 24
+                else -> 13
+            }
+            groovePaint.color = Color.argb(alpha, 255, 255, 255)
+            canvas.drawCircle(cx, cy, radius * frac, groovePaint)
         }
 
-        // Outer vinyl bevel rim
-        rimPaint.strokeWidth = strokeBase * 1.5f
-        rimPaint.color = Color.argb(42, 255, 255, 255)
-        canvas.drawCircle(cx, cy, radius * 0.985f, rimPaint)
+        // Subtle dark run-out deadwax border & soft depth shadow around center artwork
+        canvas.drawCircle(cx, cy, labelRadius * 1.12f, labelShadowPaint)
 
-        // Center album art label or accent vinyl label
+        // Clean full circular album artwork without any center circle or spindle hole
         if (artworkShader != null) {
-            labelBgPaint.color = Color.rgb(28, 31, 36)
+            labelBgPaint.color = Color.rgb(24, 27, 33)
             canvas.drawCircle(cx, cy, labelRadius, labelBgPaint)
             canvas.drawCircle(cx, cy, labelRadius, artworkPaint)
         } else {
-            labelBgPaint.color = playerBlend(Color.rgb(30, 35, 42), accent, 0.36f)
+            labelBgPaint.color = playerBlend(Color.rgb(28, 33, 42), accent, 0.36f)
             canvas.drawCircle(cx, cy, labelRadius, labelBgPaint)
-            rimPaint.strokeWidth = strokeBase * 1.2f
-            rimPaint.color = Color.argb(38, 255, 255, 255)
-            canvas.drawCircle(cx, cy, labelRadius * 0.78f, rimPaint)
-            val noteHalf = (labelRadius * 0.36f).toInt()
+            val noteHalf = (labelRadius * 0.34f).toInt()
             noteDrawable.setBounds(
                 cx.toInt() - noteHalf,
                 cy.toInt() - noteHalf,
                 cx.toInt() + noteHalf,
                 cy.toInt() + noteHalf
             )
-            noteDrawable.alpha = 210
+            noteDrawable.alpha = 215
             noteDrawable.draw(canvas)
         }
+        canvas.restoreToCount(saveDisc)
 
-        // Label border ring
-        rimPaint.strokeWidth = strokeBase * 1.8f
-        rimPaint.color = Color.argb(95, 255, 255, 255)
+        // Stationary studio anisotropic specular sheen across the vinyl grooves (never rotates with disc)
+        canvas.drawPath(grooveRingPath, sheenPaint)
+
+        // Crisp stationary rim highlights framing outer vinyl edge and artwork bezel
+        rimPaint.strokeWidth = strokeBase * 1.35f
+        rimPaint.color = Color.argb(56, 255, 255, 255)
+        canvas.drawCircle(cx, cy, radius * 0.992f, rimPaint)
+        rimPaint.strokeWidth = strokeBase * 1.45f
+        rimPaint.color = playerBlend(Color.argb(128, 255, 255, 255), playerAlpha(accent, 145), 0.28f)
         canvas.drawCircle(cx, cy, labelRadius, rimPaint)
 
-        // Center spindle collar & hole
-        spindlePaint.color = playerBlend(Color.rgb(205, 214, 218), accent, 0.25f)
-        canvas.drawCircle(cx, cy, radius * 0.088f, spindlePaint)
-        spindlePaint.color = Color.rgb(16, 18, 22)
-        canvas.drawCircle(cx, cy, radius * 0.056f, spindlePaint)
+        // Minimalist floating metallic tonearm resting on outer vinyl track while playing
+        drawTonearm(canvas, strokeBase)
 
-        canvas.restoreToCount(save)
-
-        if (playing && isAttachedToWindow && windowVisibility == VISIBLE) {
+        if (needsAnimationFrame() && isAttachedToWindow && windowVisibility == VISIBLE) {
             val nowNs = System.nanoTime()
             if (lastFrameNs != 0L) {
                 val dtSec = ((nowNs - lastFrameNs) / 1_000_000_000f).coerceIn(0f, 0.05f)
-                rotationDegrees = (rotationDegrees + dtSec * 18f) % 360f
+                val targetVel = if (playing) TARGET_ANGULAR_VELOCITY else 0f
+                val velRate = if (playing) 4.2f else 5.2f
+                angularVelocity += (targetVel - angularVelocity) * min(1f, dtSec * velRate)
+                if (!playing && angularVelocity < 0.08f) angularVelocity = 0f
+                rotationDegrees = (rotationDegrees + dtSec * angularVelocity) % 360f
+
+                val targetArm = if (playing) 1f else 0f
+                armProgress += (targetArm - armProgress) * min(1f, dtSec * 6.5f)
+                if (abs(armProgress - targetArm) < 0.004f) armProgress = targetArm
+
+                haloPhase = (haloPhase + dtSec * 1.75f) % (2f * kotlin.math.PI.toFloat())
             }
             lastFrameNs = nowNs
             postInvalidateOnAnimation()
         } else {
             lastFrameNs = 0L
         }
+    }
+
+    private fun drawTonearm(canvas: Canvas, strokeBase: Float) {
+        val pivotX = cx + radius * 0.85f
+        val pivotY = cy - radius * 0.83f
+        val pivotRadius = radius * 0.085f
+        // Smoothly pivot from parked (-25 deg, off-disc) to playing (-7 deg, cleanly on outer groove ring)
+        val angleDeg = -25f + 18f * armProgress
+
+        val saveArm = canvas.save()
+        canvas.translate(pivotX, pivotY)
+        canvas.rotate(angleDeg)
+
+        val armLen1 = radius * 0.62f
+        val armEndX = -radius * 0.24f
+        val armEndY = radius * 0.86f
+        armPath.reset()
+        armPath.moveTo(0f, -pivotRadius * 0.9f)
+        armPath.lineTo(0f, armLen1)
+        armPath.lineTo(armEndX, armEndY)
+
+        // Soft cast shadow beneath tonearm
+        armShadowPaint.strokeWidth = strokeBase * 3.8f
+        canvas.save()
+        canvas.translate(strokeBase * 2.2f, strokeBase * 3.2f)
+        canvas.drawPath(armPath, armShadowPaint)
+        canvas.restore()
+
+        // Brushed titanium tonearm wand
+        armPaint.strokeWidth = strokeBase * 3.0f
+        armPaint.color = Color.rgb(214, 222, 228)
+        canvas.drawPath(armPath, armPaint)
+        armPaint.strokeWidth = strokeBase * 1.1f
+        armPaint.color = Color.argb(140, 255, 255, 255)
+        canvas.drawPath(armPath, armPaint)
+
+        // Sleek headshell cartridge at tip
+        val shellW = radius * 0.068f
+        val shellH = radius * 0.13f
+        canvas.save()
+        canvas.translate(armEndX, armEndY)
+        canvas.rotate(24f)
+        armFillPaint.color = Color.rgb(34, 38, 46)
+        canvas.drawRoundRect(-shellW / 2f, -shellH * 0.25f, shellW / 2f, shellH * 0.75f, strokeBase * 2f, strokeBase * 2f, armFillPaint)
+        rimPaint.strokeWidth = strokeBase * 1.0f
+        rimPaint.color = Color.argb(115, 255, 255, 255)
+        canvas.drawRoundRect(-shellW / 2f, -shellH * 0.25f, shellW / 2f, shellH * 0.75f, strokeBase * 2f, strokeBase * 2f, rimPaint)
+        if (armProgress > 0.35f) {
+            armFillPaint.color = playerAlpha(accent, (220f * armProgress).toInt().coerceIn(0, 255))
+            canvas.drawCircle(0f, shellH * 0.52f, strokeBase * 2.1f, armFillPaint)
+        }
+        canvas.restore()
+
+        // Counterweight cap & brushed pivot gimbal
+        armFillPaint.color = Color.rgb(52, 57, 66)
+        canvas.drawRoundRect(-pivotRadius * 0.55f, -pivotRadius * 1.45f, pivotRadius * 0.55f, -pivotRadius * 0.65f, strokeBase * 2f, strokeBase * 2f, armFillPaint)
+        armFillPaint.color = Color.rgb(42, 46, 54)
+        canvas.drawCircle(0f, 0f, pivotRadius, armFillPaint)
+        rimPaint.strokeWidth = strokeBase * 1.4f
+        rimPaint.color = Color.argb(150, 232, 238, 244)
+        canvas.drawCircle(0f, 0f, pivotRadius, rimPaint)
+        armFillPaint.color = Color.rgb(198, 206, 214)
+        canvas.drawCircle(0f, 0f, pivotRadius * 0.38f, armFillPaint)
+
+        canvas.restoreToCount(saveArm)
+    }
+
+    companion object {
+        private const val TARGET_ANGULAR_VELOCITY = 22f
     }
 }
 
