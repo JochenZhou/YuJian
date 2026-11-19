@@ -372,11 +372,12 @@ class WledAudioSyncTest {
     }
 
     @Test
-    fun `extractUdpHost strips scheme path and port cleanly`() {
+    fun `extractUdpHost strips scheme trailing slash and port cleanly`() {
         assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("192.168.101.206"))
-        assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("http://192.168.101.206:80/json/state"))
+        assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("http://192.168.101.206:80/"))
         assertEquals("wled-living.local", WledAudioSync.extractUdpHost("https://wled-living.local:443/"))
         assertEquals("::1", WledAudioSync.extractUdpHost("http://[::1]:8080"))
+        assertNull(WledAudioSync.extractUdpHost("http://192.168.101.206/json/state"))
         assertNull(WledAudioSync.extractUdpHost("   "))
         assertNull(WledAudioSync.extractUdpHost(null))
     }

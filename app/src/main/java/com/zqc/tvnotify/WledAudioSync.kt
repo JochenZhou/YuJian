@@ -516,7 +516,7 @@ class WledAudioSync(
         private const val ERROR_LOG_THROTTLE_NS = 5_000_000_000L
 
         internal fun extractUdpHost(rawHost: String?): String? {
-            val normalized = Prefs.normalizeWledHost(rawHost.orEmpty())
+            val normalized = Prefs.normalizeWledHost(rawHost.orEmpty()) ?: return null
             if (normalized.isEmpty()) return null
             val hostOnly = when {
                 normalized.startsWith("[") -> normalized.substringAfter("[").substringBefore("]")
