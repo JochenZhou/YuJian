@@ -113,6 +113,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         context = app,
         initialEnabled = Prefs.isWledSyncEnabled(app),
         initialPort = Prefs.getWledSyncPort(app),
+        initialUnicastHost = Prefs.getWledColorHost(app),
     )
     private val wledColorSync = WledColorSync(
         initialEnabled = Prefs.isWledColorSyncEnabled(app),
@@ -227,6 +228,7 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun configureWledColorSync(enabled: Boolean, host: String) {
         wledColorSync.setHost(host)
         wledColorSync.setEnabled(enabled)
+        wledAudioSync.setUnicastHost(host)
     }
 
     /** Apply all persisted WLED and visual player settings without reconnecting Sendspin audio. */

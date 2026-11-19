@@ -313,11 +313,11 @@ class SendspinActivity : Activity() {
         playPause = iconButton(SendspinIcon.PLAY, "播放", primary = true) { togglePlayback() }
         next = iconButton(SendspinIcon.NEXT, "下一首") { send("next") }
 
-        playlistLabel = text("歌单", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
+        playlistLabel = text("列表", 12f, Color.rgb(176, 189, 193)).apply { setSingleLine(true) }
         playlistButton = SendspinFocusPill(this, accent).apply {
             id = View.generateViewId()
             setPadding(dp(11), 0, dp(11), 0)
-            contentDescription = "当前歌单详单"
+            contentDescription = "当前歌单播放列表"
             addView(ImageView(this@SendspinActivity).apply {
                 setImageDrawable(SendspinIconDrawable(this@SendspinActivity, SendspinIcon.PLAYLIST, Color.rgb(176, 189, 193), 18f))
             }, LinearLayout.LayoutParams(dp(18), dp(18)))
@@ -968,9 +968,16 @@ class SendspinActivity : Activity() {
                 playPlaylist(entry)
             }
         )
+        val hasStrictPlayingTrack = entry.tracks.any {
+            it.matchesPlaying(currentStatus.title, currentStatus.artist, requireArtist = true)
+        }
         for ((index, track) in entry.tracks.withIndex()) {
             val number = String.format(Locale.ROOT, "%02d", index + 1)
-            val isPlayingTrack = track.matchesPlaying(currentStatus.title, currentStatus.artist)
+            val isPlayingTrack = track.matchesPlaying(
+                currentStatus.title,
+                currentStatus.artist,
+                requireArtist = hasStrictPlayingTrack
+            )
             items.add(
                 ThemeDialogItem(
                     title = "$number. ${track.name}",
@@ -990,7 +997,7 @@ class SendspinActivity : Activity() {
             null
         }
         val dialog = ThemedDialogBuilder(this, theme)
-            .setTitle(entry.name + (entry.effectiveTrackCount?.let { "（$it 首）" }.orEmpty()))
+            .setTitle("播放列表 · ${entry.name}" + (entry.effectiveTrackCount?.let { "（$it 首）" }.orEmpty()))
             .setMessage(emptyTracksNote)
             .setItems(items)
             .setMaxWidthDp(580)

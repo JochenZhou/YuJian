@@ -136,6 +136,40 @@ class PlaylistCatalogTest {
     }
 
     @Test
+    fun resolvesActivePlaylistWithDifferentMultiArtistSeparatorsOrTitleFallback() {
+        val catalog = PlaylistCatalog.parse(
+            """
+            {
+              "playlists": [
+                {
+                  "id": "library://playlist/22",
+                  "name": "「爱是永不止息」",
+                  "tracks": [
+                    {"id": "library://track/501", "name": "窗外大雨", "artist": "黄霄雲, LBI利比"}
+                  ]
+                }
+              ]
+            }
+            """.trimIndent()
+        )!!
+        PlaylistStore.update(catalog)
+
+        // Slash-separated artists from Sendspin match comma-separated artists from Music Assistant
+        assertEquals(
+            "library://playlist/22",
+            PlaylistStore.resolveActivePlaylist("窗外大雨", "黄霄雲/LBI利比")?.id
+        )
+        assertTrue(
+            catalog.playlists[0].tracks[0].matchesPlaying("窗外大雨", "黄霄雲/LBI利比")
+        )
+        // Title-only fallback still resolves when artist string differs completely
+        assertEquals(
+            "library://playlist/22",
+            PlaylistStore.resolveActivePlaylist("窗外大雨", "未知歌手")?.id
+        )
+    }
+
+    @Test
     fun playlistPlayerPayloadIncludesTrackOnlyWhenProvided() {
         val whole = PlaylistPlayer.buildRequestPayload("library://playlist/1", "我的歌单", model = "MiTV4")
         assertEquals("library://playlist/1", whole.getString("id"))

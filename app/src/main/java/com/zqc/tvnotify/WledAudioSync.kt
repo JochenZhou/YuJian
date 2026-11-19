@@ -438,21 +438,16 @@ interface DatagramSink {
     fun close()
 }
 
-/** Standard non-throwing UDP datagram sink; resolves group address lazily once. */
+/** Standard non-throwing UDP datagram sink; caches resolved InetAddress per destination host. */
 class AndroidDatagramSink : DatagramSink {
     private var socket: MulticastSocket? = null
-    private var cachedHost: String? = null
-    private var cachedAddr: InetAddress? = null
+    private val addrCache = HashMap<String, InetAddress>(4)
 
     @Synchronized
     override fun send(packet: ByteArray, length: Int, host: String, port: Int) {
-        val target = if (cachedHost == host && cachedAddr != null) {
-            cachedAddr!!
-        } else {
-            InetAddress.getByName(host).also {
-                cachedHost = host
-                cachedAddr = it
-            }
+        val target = addrCache[host] ?: InetAddress.getByName(host).also {
+            if (addrCache.size >= 8) addrCache.clear()
+            addrCache[host] = it
         }
         val activeSocket = socket ?: MulticastSocket().apply {
             timeToLive = 1
@@ -465,6 +460,7 @@ class AndroidDatagramSink : DatagramSink {
     override fun close() {
         runCatching { socket?.close() }
         socket = null
+        addrCache.clear()
     }
 }
 
@@ -506,6 +502,7 @@ class WledAudioSync(
     context: Context? = null,
     initialEnabled: Boolean = false,
     initialPort: Int = WledAudioSyncPacket.DEFAULT_PORT,
+    initialUnicastHost: String? = null,
     private val sinkFactory: () -> DatagramSink = { AndroidDatagramSink() },
     private val multicastLease: MulticastLease =
         if (context != null) AndroidMulticastLease(context) else NoOpMulticastLease,
@@ -517,6 +514,18 @@ class WledAudioSync(
     companion object {
         private const val TAG = "WledAudioSync"
         private const val ERROR_LOG_THROTTLE_NS = 5_000_000_000L
+
+        internal fun extractUdpHost(rawHost: String?): String? {
+            val normalized = Prefs.normalizeWledHost(rawHost.orEmpty())
+            if (normalized.isEmpty()) return null
+            val hostOnly = when {
+                normalized.startsWith("[") -> normalized.substringAfter("[").substringBefore("]")
+                normalized.indexOf(':') == normalized.lastIndexOf(':') && normalized.contains(':') ->
+                    normalized.substringBefore(':')
+                else -> normalized
+            }.trim()
+            return hostOnly.ifEmpty { null }
+        }
     }
 
     private data class PcmFrame(
@@ -548,6 +557,9 @@ class WledAudioSync(
     @Volatile
     private var port: Int = if (initialPort in 1..65535) initialPort else WledAudioSyncPacket.DEFAULT_PORT
 
+    @Volatile
+    private var unicastHost: String? = extractUdpHost(initialUnicastHost)
+
     private var workerThread: Thread? = null
     private var activeSink: DatagramSink? = null
     private var workerRunning = AtomicBoolean(false)
@@ -570,6 +582,13 @@ class WledAudioSync(
             if (closed.get()) return false
             port = newPort
             return true
+        }
+    }
+
+    fun setUnicastHost(rawHost: String?) {
+        synchronized(stateLock) {
+            if (closed.get()) return
+            unicastHost = extractUdpHost(rawHost)
         }
     }
 
@@ -700,13 +719,28 @@ class WledAudioSync(
             }
             WledAudioSyncPacket.encodeV2(metrics, packetBuf)
             val sendPort = port
+            val directHost = unicastHost
+            var sentAny = false
             try {
                 sink.send(packetBuf, WledAudioSyncPacket.PACKET_SIZE, WledAudioSyncPacket.MULTICAST_GROUP, sendPort)
-                lastSendNs = nowNs()
+                sentAny = true
             } catch (t: Throwable) {
                 if (workerRunning.get() && isActive()) {
-                    logRateLimited("WLED UDP send failed on port $sendPort", t)
+                    logRateLimited("WLED UDP multicast send failed on port $sendPort", t)
                 }
+            }
+            if (!directHost.isNullOrEmpty() && directHost != WledAudioSyncPacket.MULTICAST_GROUP) {
+                try {
+                    sink.send(packetBuf, WledAudioSyncPacket.PACKET_SIZE, directHost, sendPort)
+                    sentAny = true
+                } catch (t: Throwable) {
+                    if (workerRunning.get() && isActive()) {
+                        logRateLimited("WLED UDP unicast send failed to $directHost:$sendPort", t)
+                    }
+                }
+            }
+            if (sentAny) {
+                lastSendNs = nowNs()
             }
         }
     }

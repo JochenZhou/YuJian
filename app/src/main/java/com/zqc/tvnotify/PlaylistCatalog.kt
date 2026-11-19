@@ -18,7 +18,7 @@ data class PlaylistTrack(
     val name: String,
     val artist: String? = null
 ) {
-    /** 判断曲目是否与播放器当前显示的歌名/歌手匹配。 */
+    /** 判断曲目是否与播放器当前显示的歌名/歌手匹配（兼容多歌手分隔符差异）。 */
     fun matchesPlaying(currentTitle: String?, currentArtist: String? = null, requireArtist: Boolean = false): Boolean {
         val playingTitle = currentTitle?.trim()?.takeIf { it.isNotEmpty() } ?: return false
         val cleanName = name.trim()
@@ -28,11 +28,33 @@ data class PlaylistTrack(
             combined.equals(playingTitle, ignoreCase = true)
         if (!titleMatches) return false
         val playingArtist = currentArtist?.trim().orEmpty()
-        if (cleanArtist.isNotEmpty() && playingArtist.isNotEmpty()) {
-            return playingArtist.contains(cleanArtist, ignoreCase = true) ||
-                cleanArtist.contains(playingArtist, ignoreCase = true)
+        if (cleanArtist.isEmpty() || playingArtist.isEmpty()) {
+            return !requireArtist
+        }
+        if (playingArtist.contains(cleanArtist, ignoreCase = true) ||
+            cleanArtist.contains(playingArtist, ignoreCase = true)
+        ) {
+            return true
+        }
+        val trackTokens = splitArtistTokens(cleanArtist)
+        val playingTokens = splitArtistTokens(playingArtist)
+        if (trackTokens.isNotEmpty() && playingTokens.isNotEmpty() &&
+            trackTokens.any { token -> token in playingTokens }
+        ) {
+            return true
         }
         return !requireArtist
+    }
+
+    companion object {
+        private val ARTIST_DELIMITERS = Regex("[/,、&;，+|·]+")
+
+        private fun splitArtistTokens(raw: String): Set<String> =
+            raw.lowercase()
+                .split(ARTIST_DELIMITERS)
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
     }
 }
 
@@ -193,13 +215,20 @@ object PlaylistStore {
         val cleanTitle = currentTitle?.trim().orEmpty()
         if (activeEntry != null) {
             if (cleanTitle.isEmpty() || activeEntry.tracks.isEmpty()) return activeEntry
-            if (activeEntry.tracks.any { it.matchesPlaying(cleanTitle, currentArtist) }) return activeEntry
+            if (activeEntry.tracks.any { it.matchesPlaying(cleanTitle, currentArtist, requireArtist = true) }) {
+                return activeEntry
+            }
         }
         if (cleanTitle.isNotEmpty()) {
             val strictMatch = currentCatalog.playlists.firstOrNull { entry ->
                 entry.tracks.any { it.matchesPlaying(cleanTitle, currentArtist, requireArtist = true) }
             }
             if (strictMatch != null) return strictMatch
+            if (activeEntry != null &&
+                activeEntry.tracks.any { it.matchesPlaying(cleanTitle, currentArtist, requireArtist = false) }
+            ) {
+                return activeEntry
+            }
             val titleMatch = currentCatalog.playlists.firstOrNull { entry ->
                 entry.tracks.any { it.matchesPlaying(cleanTitle, currentArtist, requireArtist = false) }
             }

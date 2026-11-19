@@ -371,6 +371,68 @@ class WledAudioSyncTest {
         assertTrue("FFT bands should fade gradually ($decayBand1 vs $peakBand)", decayBand1 > peakBand / 2)
     }
 
+    @Test
+    fun `extractUdpHost strips scheme path and port cleanly`() {
+        assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("192.168.101.206"))
+        assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("http://192.168.101.206:80/json/state"))
+        assertEquals("wled-living.local", WledAudioSync.extractUdpHost("https://wled-living.local:443/"))
+        assertEquals("::1", WledAudioSync.extractUdpHost("http://[::1]:8080"))
+        assertNull(WledAudioSync.extractUdpHost("   "))
+        assertNull(WledAudioSync.extractUdpHost(null))
+    }
+
+    @Test
+    fun `audio sync sends V2 packets to both multicast and direct unicast host and survives multicast failure`() {
+        val destinations = CopyOnWriteArrayList<String>()
+        val bothReceived = CountDownLatch(2)
+        val unicastAfterFail = CountDownLatch(1)
+        val failMulticast = AtomicBoolean(false)
+        val clockNs = AtomicLong(1_000_000_000L)
+
+        val sink = object : DatagramSink {
+            override fun send(packet: ByteArray, length: Int, host: String, port: Int) {
+                if (failMulticast.get() && host == WledAudioSyncPacket.MULTICAST_GROUP) {
+                    throw IOException("Simulated router multicast drop")
+                }
+                assertEquals(WledAudioSyncPacket.PACKET_SIZE, length)
+                assertEquals(11988, port)
+                destinations.add("$host:$port")
+                bothReceived.countDown()
+                if (failMulticast.get() && host == "192.168.101.206") {
+                    unicastAfterFail.countDown()
+                }
+            }
+
+            override fun close() = Unit
+        }
+
+        val sync = WledAudioSync(
+            initialEnabled = true,
+            initialPort = 11988,
+            initialUnicastHost = "http://192.168.101.206:80",
+            sinkFactory = { sink },
+            multicastLease = FakeMulticastLease(),
+            nowNs = { clockNs.get() },
+            minIntervalNs = 1_000_000L,
+            maxFrameAgeNs = 500_000_000L
+        )
+        try {
+            sync.setPlaybackActive(true)
+            val pcm = generateSinePcm16(freqHz = 220.0, sampleRate = 48_000, channels = 2, frames = 1024, amplitude = 0.5)
+            sync.onPcmWritten(pcm, 0, pcm.size, 48_000, 2, 0L)
+            assertTrue("Should deliver to both multicast and unicast", bothReceived.await(3, TimeUnit.SECONDS))
+            assertTrue(destinations.contains("239.0.0.1:11988"))
+            assertTrue(destinations.contains("192.168.101.206:11988"))
+
+            failMulticast.set(true)
+            clockNs.addAndGet(50_000_000L)
+            sync.onPcmWritten(pcm, 0, pcm.size, 48_000, 2, 20_000L)
+            assertTrue("Unicast must still deliver when multicast throws", unicastAfterFail.await(3, TimeUnit.SECONDS))
+        } finally {
+            sync.close()
+        }
+    }
+
     private fun generateSinePcm16(
         freqHz: Double,
         sampleRate: Int,
