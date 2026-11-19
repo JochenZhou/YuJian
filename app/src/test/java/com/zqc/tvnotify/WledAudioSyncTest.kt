@@ -372,6 +372,37 @@ class WledAudioSyncTest {
     }
 
     @Test
+    fun `gain percent scales overall level and deepens valleys cleanly`() {
+        val context = RuntimeEnvironment.getApplication()
+        assertEquals(Prefs.DEFAULT_WLED_SYNC_GAIN, Prefs.getWledSyncGain(context))
+        assertTrue(Prefs.setWledSyncGain(context, 45))
+        assertEquals(45, Prefs.getWledSyncGain(context))
+        assertFalse(Prefs.setWledSyncGain(context, 5))
+        assertFalse(Prefs.setWledSyncGain(context, 250))
+        assertEquals(45, Prefs.getWledSyncGain(context))
+
+        val pcm = generateSinePcm16(freqHz = 220.0, sampleRate = 48_000, channels = 2, frames = 1024, amplitude = 0.4)
+        val fullAnalyzer = WledAudioAnalyzer().apply { setGainPercent(100) }
+        val lowAnalyzer = WledAudioAnalyzer().apply { setGainPercent(40) }
+        lateinit var fullMetrics: WledAudioMetrics
+        lateinit var lowMetrics: WledAudioMetrics
+        repeat(4) {
+            fullMetrics = fullAnalyzer.analyze(pcm, 0, pcm.size, 48_000, 2)
+            lowMetrics = lowAnalyzer.analyze(pcm, 0, pcm.size, 48_000, 2)
+        }
+        assertTrue(
+            "40% gain should substantially lower sampleRaw (${lowMetrics.sampleRaw} vs ${fullMetrics.sampleRaw})",
+            lowMetrics.sampleRaw < fullMetrics.sampleRaw * 0.55f
+        )
+        val fullPeakBand = fullMetrics.fftResult.maxOf { it.toInt() and 0xFF }
+        val lowPeakBand = lowMetrics.fftResult.maxOf { it.toInt() and 0xFF }
+        assertTrue(
+            "40% gain should substantially lower FFT bands ($lowPeakBand vs $fullPeakBand)",
+            lowPeakBand < fullPeakBand * 0.55
+        )
+    }
+
+    @Test
     fun `extractUdpHost strips scheme trailing slash and port cleanly`() {
         assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("192.168.101.206"))
         assertEquals("192.168.101.206", WledAudioSync.extractUdpHost("http://192.168.101.206:80/"))

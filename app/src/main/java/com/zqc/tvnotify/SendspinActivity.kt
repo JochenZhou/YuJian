@@ -807,6 +807,7 @@ class SendspinActivity : Activity() {
         val serverSummary = if (savedUrl.isEmpty()) "当前使用局域网自动发现，点击可手动指定地址" else "当前地址：$savedUrl"
         val wledAudioEnabled = Prefs.isWledSyncEnabled(this)
         val wledPort = Prefs.getWledSyncPort(this)
+        val wledGain = Prefs.getWledSyncGain(this)
         val wledColorEnabled = Prefs.isWledColorSyncEnabled(this)
         val wledHost = Prefs.getWledColorHost(this)
         val wledEffect = WledEffectPreset.fromRaw(Prefs.getWledEffect(this))
@@ -842,10 +843,18 @@ class SendspinActivity : Activity() {
             },
             ThemeDialogItem(
                 title = "WLED 音乐律动：${if (wledAudioEnabled) "已开启" else "已关闭"}",
-                subtitle = "向局域网组播 239.0.0.1:$wledPort 广播 AudioReactive V2 音频律动",
+                subtitle = "向局域网组播 239.0.0.1:$wledPort 及 $wledHost 发送 AudioReactive V2 律动",
                 trailingBadge = if (wledAudioEnabled) "已开启" else "已关闭"
             ) {
                 toggleWledAudioSync()
+            },
+            ThemeDialogItem(
+                title = "WLED 律动灵敏度：$wledGain%",
+                subtitle = "觉得律动整体偏高、低处不明显时可调低；点击实时生效",
+                trailingBadge = "$wledGain%",
+                dismissOnClick = false
+            ) {
+                showWledGainDialog()
             },
             ThemeDialogItem(
                 title = "WLED 封面色彩同步：${if (wledColorEnabled) "已开启" else "已关闭"}",
@@ -1158,12 +1167,57 @@ class SendspinActivity : Activity() {
         val enabled = !Prefs.isWledSyncEnabled(this)
         Prefs.setWledSyncEnabled(this, enabled)
         val port = Prefs.getWledSyncPort(this)
-        runtime?.configureWledAudioSync(enabled, port)
+        val gain = Prefs.getWledSyncGain(this)
+        runtime?.configureWledAudioSync(enabled, port, gain)
         Toast.makeText(
             this,
-            if (enabled) "已开启 WLED 音乐律动（239.0.0.1:$port）" else "已关闭 WLED 音乐律动",
+            if (enabled) "已开启 WLED 音乐律动（灵敏度 $gain%）" else "已关闭 WLED 音乐律动",
             Toast.LENGTH_SHORT
         ).show()
+    }
+
+    private fun showWledGainDialog() {
+        val currentGain = Prefs.getWledSyncGain(this)
+        val presets = listOf(
+            25 to "极柔和（低谷很深，微弱呼吸感）",
+            40 to "柔和（低处落差明显，不刺眼）",
+            55 to "偏低（整体适中，起伏清晰）",
+            70 to "均衡（推荐默认，高低层次分明）",
+            85 to "偏高（节奏更有存在感）",
+            100 to "标准满幅（原灵敏度）",
+            130 to "高灵敏（适合轻音乐/小音量）",
+            160 to "超高灵敏（极弱信号放大）",
+        )
+        val items = presets.map { (value, desc) ->
+            val selected = value == currentGain
+            ThemeDialogItem(
+                title = "$value%",
+                subtitle = desc,
+                trailingBadge = if (selected) "当前" else null,
+                selected = selected,
+                dismissOnClick = true
+            ) {
+                Prefs.setWledSyncGain(this, value)
+                runtime?.configureWledAudioSync(
+                    Prefs.isWledSyncEnabled(this),
+                    Prefs.getWledSyncPort(this),
+                    value
+                )
+                Toast.makeText(this, "WLED 律动灵敏度已设为 $value%", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("WLED 律动灵敏度（当前 $currentGain%）")
+            .setMessage("觉得律动整体偏高、低处不明显时，调低即可拉大高低起伏；在网页控制台或 HA 中也可拖动滑块微调（10%–200%）。")
+            .setItems(items)
+            .setMaxWidthDp(520)
+            .setNegativeButton("关闭")
+            .create()
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
     }
 
     private fun toggleWledColorSync() {

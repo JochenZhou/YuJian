@@ -185,6 +185,7 @@ test("console syncs, validates, and submits player style and all WLED settings c
     player_style: "cover_blur",
     wled_sync_enabled: true,
     wled_sync_port: 12000,
+    wled_sync_gain: 55,
     wled_color_sync_enabled: false,
     wled_color_host: "192.168.101.206",
     wled_effect: "gravcentric"
@@ -195,6 +196,8 @@ test("console syncs, validates, and submits player style and all WLED settings c
   assert.equal(app.element("sendspin-wled-sync").checked, true);
   assert.equal(app.element("sendspin-wled-color").checked, false);
   assert.equal(app.element("sendspin-wled-port").value, 12000);
+  assert.equal(app.element("sendspin-wled-gain").value, 55);
+  assert.equal(app.element("sendspin-wled-gain-val").textContent, "55%");
   assert.equal(app.element("sendspin-wled-host").value, "192.168.101.206");
 
   // Dirty user edits survive background polling
@@ -220,6 +223,8 @@ test("console syncs, validates, and submits player style and all WLED settings c
   app.element("sendspin-wled-color").checked = true;
   app.element("sendspin-wled-color").emit("change", "on");
   app.element("sendspin-wled-port").emit("input", "11988");
+  app.element("sendspin-wled-gain").emit("input", "45");
+  assert.equal(app.element("sendspin-wled-gain-val").textContent, "45%");
   app.element("sendspin-wled-host").emit("input", "192.168.101.210");
   await app.context.saveWledAndStyleConfig();
   const postReq = app.requests.find(r => r.method === "POST");
@@ -228,6 +233,7 @@ test("console syncs, validates, and submits player style and all WLED settings c
     player_style: "vinyl",
     wled_sync_enabled: false,
     wled_sync_port: 11988,
+    wled_sync_gain: 45,
     wled_color_sync_enabled: true,
     wled_color_host: "192.168.101.210",
     wled_effect: "pixelwave"
