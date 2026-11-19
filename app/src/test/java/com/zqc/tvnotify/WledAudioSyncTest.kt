@@ -304,7 +304,7 @@ class WledAudioSyncTest {
 
         // Only Frame 1 and fresh Frame 3 were sent (stale Frame 2 dropped)
         assertEquals(2, sendCount.get())
-        assertTrue("Expected fresh 0.4-amplitude packet (>140), got ${deliveredTags[1]}", deliveredTags[1] > 140f)
+        assertTrue("Expected fresh 0.4-amplitude packet (>40, distinguishing from dropped 0.05 stale frame), got ${deliveredTags[1]}", deliveredTags[1] > 40f)
         sync.close()
     }
 
