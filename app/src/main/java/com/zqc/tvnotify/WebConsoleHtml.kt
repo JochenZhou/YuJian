@@ -477,11 +477,11 @@ button {
       </div>
     </div>
     <div class="form-group" style="margin-top:8px">
-      <label for="sendspin-wled-gain" style="display:flex;justify-content:space-between;align-items:center">
-        <span>WLED 律动灵敏度（调低可拉大低谷落差）</span>
-        <span id="sendspin-wled-gain-val" style="color:var(--accent);font-weight:700">70%</span>
+      <label for="sendspin-wled-dynamics" style="display:flex;justify-content:space-between;align-items:center">
+        <span>WLED 律动解析度（越高轻声与高潮层次越分明，峰值仍可顶满）</span>
+        <span id="sendspin-wled-dynamics-val" style="color:var(--accent);font-weight:700">60%</span>
       </label>
-      <input id="sendspin-wled-gain" type="range" min="10" max="200" step="5" value="70" style="width:100%;accent-color:var(--accent)">
+      <input id="sendspin-wled-dynamics" type="range" min="0" max="100" step="5" value="60" style="width:100%;accent-color:var(--accent)">
     </div>
     <button type="button" id="sendspin-wled-apply" class="btn-secondary btn-full" style="margin-top:10px" onclick="saveWledAndStyleConfig()">保存样式与 WLED 设置</button>
   </div>
@@ -605,11 +605,11 @@ const WLED_FIELD_IDS = [
   "sendspin-wled-color",
   "sendspin-wled-port",
   "sendspin-wled-host",
-  "sendspin-wled-gain"
+  "sendspin-wled-dynamics"
 ];
-function updateWledGainLabel(value) {
-  const badge = document.getElementById("sendspin-wled-gain-val");
-  if (badge) badge.textContent = (value != null ? value : 70) + "%";
+function updateWledDynamicsLabel(value) {
+  const badge = document.getElementById("sendspin-wled-dynamics-val");
+  if (badge) badge.textContent = (value != null ? value : 60) + "%";
 }
 function updateSyncInput() {
   document.getElementById("sendspin-delay").disabled = document.getElementById("sendspin-sync-mode").value === "auto";
@@ -631,7 +631,7 @@ WLED_FIELD_IDS.forEach(id => {
   ["input", "change"].forEach(event => el.addEventListener(event, () => {
     sendspinWledDirty = true;
     sendspinWledEditVersion++;
-    if (id === "sendspin-wled-gain") updateWledGainLabel(el.value);
+    if (id === "sendspin-wled-dynamics") updateWledDynamicsLabel(el.value);
   }));
 });
 function syncStatusText(status) {
@@ -691,10 +691,10 @@ async function fetchSendspinStatus() {
       if (portEl) portEl.value = status.wled_sync_port != null ? status.wled_sync_port : 11988;
       const hostEl = document.getElementById("sendspin-wled-host");
       if (hostEl) hostEl.value = status.wled_color_host || "192.168.101.206";
-      const gainEl = document.getElementById("sendspin-wled-gain");
-      const gainVal = status.wled_sync_gain != null ? status.wled_sync_gain : 70;
-      if (gainEl) gainEl.value = gainVal;
-      updateWledGainLabel(gainVal);
+      const dynamicsEl = document.getElementById("sendspin-wled-dynamics");
+      const dynamicsVal = status.wled_sync_dynamics != null ? status.wled_sync_dynamics : 60;
+      if (dynamicsEl) dynamicsEl.value = dynamicsVal;
+      updateWledDynamicsLabel(dynamicsVal);
     }
   } catch (_) {
     if (request !== sendspinStatusRequest) return;
@@ -772,7 +772,7 @@ async function saveWledAndStyleConfig() {
   const colorEl = document.getElementById("sendspin-wled-color");
   const portEl = document.getElementById("sendspin-wled-port");
   const hostEl = document.getElementById("sendspin-wled-host");
-  const gainEl = document.getElementById("sendspin-wled-gain");
+  const dynamicsEl = document.getElementById("sendspin-wled-dynamics");
 
   const playerStyle = styleEl ? styleEl.value : "vinyl";
   if (!["vinyl", "cover_blur"].includes(playerStyle)) { toast("请选择播放页样式"); return; }
@@ -780,9 +780,9 @@ async function saveWledAndStyleConfig() {
   if (!/^[0-9]+$/.test(rawPort) || Number(rawPort) < 1 || Number(rawPort) > 65535) {
     toast("请输入 1–65535 的有效 UDP 端口"); return;
   }
-  const rawGain = gainEl ? String(gainEl.value).trim() : "70";
-  if (!/^[0-9]+$/.test(rawGain) || Number(rawGain) < 10 || Number(rawGain) > 200) {
-    toast("请输入 10–200% 的有效律动灵敏度"); return;
+  const rawDynamics = dynamicsEl ? String(dynamicsEl.value).trim() : "60";
+  if (!/^[0-9]+$/.test(rawDynamics) || Number(rawDynamics) < 0 || Number(rawDynamics) > 100) {
+    toast("请输入 0–100% 的有效律动解析度"); return;
   }
   const wledHost = hostEl ? String(hostEl.value).trim() : "";
   if (!wledHost) { toast("请输入 WLED 设备 IP 或主机名"); return; }
@@ -792,7 +792,7 @@ async function saveWledAndStyleConfig() {
     player_style: playerStyle,
     wled_sync_enabled: Boolean(syncEl && syncEl.checked),
     wled_sync_port: Number(rawPort),
-    wled_sync_gain: Number(rawGain),
+    wled_sync_dynamics: Number(rawDynamics),
     wled_color_sync_enabled: Boolean(colorEl && colorEl.checked),
     wled_color_host: wledHost,
     wled_effect: effectEl ? effectEl.value : "custom"

@@ -28,15 +28,15 @@ object Prefs {
     private const val KEY_SENDSPIN_PLAYER_STYLE = "sendspin_player_style"
     private const val KEY_WLED_SYNC_ENABLED = "wled_sync_enabled"
     private const val KEY_WLED_SYNC_PORT = "wled_sync_port"
-    private const val KEY_WLED_SYNC_GAIN = "wled_sync_gain"
+    private const val KEY_WLED_SYNC_DYNAMICS = "wled_sync_dynamics"
     private const val KEY_WLED_COLOR_SYNC_ENABLED = "wled_color_sync_enabled"
     private const val KEY_WLED_COLOR_HOST = "wled_color_host"
     private const val KEY_WLED_EFFECT = "wled_effect"
 
     const val DEFAULT_WLED_SYNC_PORT = 11988
-    const val DEFAULT_WLED_SYNC_GAIN = 70
-    const val MIN_WLED_SYNC_GAIN = 10
-    const val MAX_WLED_SYNC_GAIN = 200
+    const val DEFAULT_WLED_SYNC_DYNAMICS = 60
+    const val MIN_WLED_SYNC_DYNAMICS = 0
+    const val MAX_WLED_SYNC_DYNAMICS = 100
     const val DEFAULT_WLED_COLOR_HOST = "192.168.101.206"
     val DEFAULT_WLED_EFFECT: String get() = WledEffectPreset.CUSTOM.storageId
 
@@ -200,23 +200,23 @@ object Prefs {
         return if (port in 1..65535) port else null
     }
 
-    /** 读取 WLED 音乐律动灵敏度百分比（10–200，默认 70）。 */
-    fun getWledSyncGain(context: Context): Int {
-        val gain = prefs(context).getInt(KEY_WLED_SYNC_GAIN, DEFAULT_WLED_SYNC_GAIN)
-        return if (gain in MIN_WLED_SYNC_GAIN..MAX_WLED_SYNC_GAIN) gain else DEFAULT_WLED_SYNC_GAIN
+    /** 读取 WLED 音乐律动解析度/动态对比（0–100，默认 60；越高轻声与高潮层次越分明）。 */
+    fun getWledSyncDynamics(context: Context): Int {
+        val value = prefs(context).getInt(KEY_WLED_SYNC_DYNAMICS, DEFAULT_WLED_SYNC_DYNAMICS)
+        return if (value in MIN_WLED_SYNC_DYNAMICS..MAX_WLED_SYNC_DYNAMICS) value else DEFAULT_WLED_SYNC_DYNAMICS
     }
 
-    /** 持久化 WLED 音乐律动灵敏度（10–200）；越界值拒绝且不覆盖原配置。 */
-    fun setWledSyncGain(context: Context, gainPercent: Int): Boolean {
-        if (gainPercent !in MIN_WLED_SYNC_GAIN..MAX_WLED_SYNC_GAIN) return false
-        prefs(context).edit().putInt(KEY_WLED_SYNC_GAIN, gainPercent).apply()
+    /** 持久化 WLED 音乐律动解析度（0–100）；越界值拒绝且不覆盖原配置。 */
+    fun setWledSyncDynamics(context: Context, dynamics: Int): Boolean {
+        if (dynamics !in MIN_WLED_SYNC_DYNAMICS..MAX_WLED_SYNC_DYNAMICS) return false
+        prefs(context).edit().putInt(KEY_WLED_SYNC_DYNAMICS, dynamics).apply()
         return true
     }
 
-    /** 解析并校验 WLED 律动灵敏度百分比字符串。 */
-    fun parseWledSyncGain(raw: String): Int? {
-        val gain = raw.trim().removeSuffix("%").trim().toIntOrNull() ?: return null
-        return if (gain in MIN_WLED_SYNC_GAIN..MAX_WLED_SYNC_GAIN) gain else null
+    /** 解析并校验 WLED 律动解析度百分比字符串。 */
+    fun parseWledSyncDynamics(raw: String): Int? {
+        val value = raw.trim().removeSuffix("%").trim().toIntOrNull() ?: return null
+        return if (value in MIN_WLED_SYNC_DYNAMICS..MAX_WLED_SYNC_DYNAMICS) value else null
     }
 
     /** 是否开启 WLED 封面主色调同步；默认关闭。 */

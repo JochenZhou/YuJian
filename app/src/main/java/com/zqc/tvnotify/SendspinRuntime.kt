@@ -114,7 +114,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         initialEnabled = Prefs.isWledSyncEnabled(app),
         initialPort = Prefs.getWledSyncPort(app),
         initialUnicastHost = Prefs.getWledColorHost(app),
-        initialGainPercent = Prefs.getWledSyncGain(app),
+        initialDynamics = Prefs.getWledSyncDynamics(app),
     )
     private val wledColorSync = WledColorSync(
         initialEnabled = Prefs.isWledColorSyncEnabled(app),
@@ -223,10 +223,10 @@ class SendspinRuntime private constructor(private val context: Context) {
     fun configureWledAudioSync(
         enabled: Boolean,
         port: Int,
-        gainPercent: Int = Prefs.getWledSyncGain(app),
+        dynamics: Int = Prefs.getWledSyncDynamics(app),
     ) {
         wledAudioSync.setPort(port)
-        wledAudioSync.setGainPercent(gainPercent)
+        wledAudioSync.setDynamics(dynamics)
         wledAudioSync.setEnabled(enabled)
         syncWledPlaybackState()
     }
@@ -242,7 +242,7 @@ class SendspinRuntime private constructor(private val context: Context) {
         configureWledAudioSync(
             Prefs.isWledSyncEnabled(app),
             Prefs.getWledSyncPort(app),
-            Prefs.getWledSyncGain(app),
+            Prefs.getWledSyncDynamics(app),
         )
         configureWledColorSync(Prefs.isWledColorSyncEnabled(app), Prefs.getWledColorHost(app))
         updateStatus { it }

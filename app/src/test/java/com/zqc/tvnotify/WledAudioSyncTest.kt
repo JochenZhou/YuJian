@@ -318,10 +318,10 @@ class WledAudioSyncTest {
         var idx = 0
         for (i in 0 until frames) {
             val t = i.toDouble() / sampleRate
-            // Quiet music (~0.045 total amplitude across bass 110Hz, mid 660Hz, treble 3500Hz).
-            val v = (sin(2.0 * PI * 110.0 * t) * 0.025 +
-                sin(2.0 * PI * 660.0 * t) * 0.018 +
-                sin(2.0 * PI * 3500.0 * t) * 0.015)
+            // Typical digital music (~0.06 RMS across bass 110Hz, mid 660Hz, treble 3500Hz).
+            val v = (sin(2.0 * PI * 110.0 * t) * 0.060 +
+                sin(2.0 * PI * 660.0 * t) * 0.045 +
+                sin(2.0 * PI * 3500.0 * t) * 0.035)
             val s = (v * 32767.0).roundToInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
             for (c in 0 until channels) {
                 quietMix[idx++] = (s and 0xFF).toByte()
@@ -372,33 +372,45 @@ class WledAudioSyncTest {
     }
 
     @Test
-    fun `gain percent scales overall level and deepens valleys cleanly`() {
+    fun `dynamics separates 30 percent soft vocals from chorus while preserving full-scale peaks`() {
         val context = RuntimeEnvironment.getApplication()
-        assertEquals(Prefs.DEFAULT_WLED_SYNC_GAIN, Prefs.getWledSyncGain(context))
-        assertTrue(Prefs.setWledSyncGain(context, 45))
-        assertEquals(45, Prefs.getWledSyncGain(context))
-        assertFalse(Prefs.setWledSyncGain(context, 5))
-        assertFalse(Prefs.setWledSyncGain(context, 250))
-        assertEquals(45, Prefs.getWledSyncGain(context))
+        assertEquals(Prefs.DEFAULT_WLED_SYNC_DYNAMICS, Prefs.getWledSyncDynamics(context))
+        assertTrue(Prefs.setWledSyncDynamics(context, 75))
+        assertEquals(75, Prefs.getWledSyncDynamics(context))
+        assertFalse(Prefs.setWledSyncDynamics(context, -5))
+        assertFalse(Prefs.setWledSyncDynamics(context, 120))
+        assertEquals(75, Prefs.getWledSyncDynamics(context))
 
-        val pcm = generateSinePcm16(freqHz = 220.0, sampleRate = 48_000, channels = 2, frames = 1024, amplitude = 0.4)
-        val fullAnalyzer = WledAudioAnalyzer().apply { setGainPercent(100) }
-        val lowAnalyzer = WledAudioAnalyzer().apply { setGainPercent(40) }
-        lateinit var fullMetrics: WledAudioMetrics
-        lateinit var lowMetrics: WledAudioMetrics
-        repeat(4) {
-            fullMetrics = fullAnalyzer.analyze(pcm, 0, pcm.size, 48_000, 2)
-            lowMetrics = lowAnalyzer.analyze(pcm, 0, pcm.size, 48_000, 2)
+        val chorus = generateSinePcm16(freqHz = 220.0, sampleRate = 48_000, channels = 2, frames = 1024, amplitude = 0.60)
+        val softVerse = generateSinePcm16(freqHz = 220.0, sampleRate = 48_000, channels = 2, frames = 1024, amplitude = 0.18) // 30% of chorus
+
+        val highRes = WledAudioAnalyzer().apply { setDynamics(75) }
+        val lowRes = WledAudioAnalyzer().apply { setDynamics(10) }
+
+        lateinit var highChorus: WledAudioMetrics
+        lateinit var lowChorus: WledAudioMetrics
+        repeat(8) {
+            highChorus = highRes.analyze(chorus, 0, chorus.size, 48_000, 2)
+            lowChorus = lowRes.analyze(chorus, 0, chorus.size, 48_000, 2)
+        }
+        // Full chorus still hits near full scale regardless of resolution setting
+        assertTrue("Chorus peak should remain near full scale (${highChorus.sampleRaw})", highChorus.sampleRaw >= 230f)
+        assertTrue("Low-res chorus peak should remain near full scale (${lowChorus.sampleRaw})", lowChorus.sampleRaw >= 230f)
+
+        // After 1 second (50 frames) of 30%-volume soft verse, slow AGC must NOT lift it back to 80%+
+        lateinit var highVerse: WledAudioMetrics
+        lateinit var lowVerse: WledAudioMetrics
+        repeat(50) {
+            highVerse = highRes.analyze(softVerse, 0, softVerse.size, 48_000, 2)
+            lowVerse = lowRes.analyze(softVerse, 0, softVerse.size, 48_000, 2)
         }
         assertTrue(
-            "40% gain should substantially lower sampleRaw (${lowMetrics.sampleRaw} vs ${fullMetrics.sampleRaw})",
-            lowMetrics.sampleRaw < fullMetrics.sampleRaw * 0.55f
+            "30% soft verse at 75% resolution should stay low (< 60), got ${highVerse.sampleRaw}",
+            highVerse.sampleRaw < 60f
         )
-        val fullPeakBand = fullMetrics.fftResult.maxOf { it.toInt() and 0xFF }
-        val lowPeakBand = lowMetrics.fftResult.maxOf { it.toInt() and 0xFF }
         assertTrue(
-            "40% gain should substantially lower FFT bands ($lowPeakBand vs $fullPeakBand)",
-            lowPeakBand < fullPeakBand * 0.55
+            "Higher dynamics setting should separate soft verse more strongly than low setting (${highVerse.sampleRaw} vs ${lowVerse.sampleRaw})",
+            highVerse.sampleRaw < lowVerse.sampleRaw * 0.65f
         )
     }
 

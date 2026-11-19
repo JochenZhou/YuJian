@@ -150,13 +150,13 @@ class WledAudioAnalyzer {
     private var frameCounter = 0
 
     @Volatile
-    private var gainPercent: Int = 100
+    private var dynamics: Int = Prefs.DEFAULT_WLED_SYNC_DYNAMICS
 
-    fun setGainPercent(percent: Int) {
-        gainPercent = percent.coerceIn(Prefs.MIN_WLED_SYNC_GAIN, Prefs.MAX_WLED_SYNC_GAIN)
+    fun setDynamics(value: Int) {
+        dynamics = value.coerceIn(Prefs.MIN_WLED_SYNC_DYNAMICS, Prefs.MAX_WLED_SYNC_DYNAMICS)
     }
 
-    fun getGainPercent(): Int = gainPercent
+    fun getDynamics(): Int = dynamics
 
     fun reset() {
         ring.fill(0.0)
@@ -220,27 +220,31 @@ class WledAudioAnalyzer {
             if (ringFilled < FFT_SIZE) ringFilled++
         }
 
-        val gainScale = gainPercent / 100.0
-        val extraContrast = (1.0 - gainScale).coerceAtLeast(0.0)
-        val rawExp = 0.85 + extraContrast * 0.75
-        val bandExp = 0.80 + extraContrast * 0.70
+        val d = dynamics / 100.0
+        val rawGate = 0.04 + d * 0.12
+        val rawGamma = 0.90 + d * 1.45
+        val bandGate = 0.05 + d * 0.13
+        val bandGamma = 0.85 + d * 1.40
 
         val rms = sqrt(sumSquares / frameCount)
         val rawLevel = if (rms < NOISE_FLOOR_RMS) {
             0f
         } else {
             if (rms > agcPeak) {
-                agcPeak = max(agcPeak + 0.58 * (rms - agcPeak), rms * 0.90)
+                agcPeak = max(agcPeak + 0.50 * (rms - agcPeak), rms * 0.92)
             } else {
-                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.984)
+                // Slow ~9s half-life AGC decay preserves real verse-vs-chorus loudness scale.
+                agcPeak = max(MIN_AGC_PEAK, agcPeak * 0.9985)
             }
             val normRms = (rms / max(agcPeak, MIN_AGC_PEAK)).coerceIn(0.0, 1.35)
-            if (normRms < 0.08) {
+            if (normRms <= rawGate) {
                 0f
             } else {
-                val base = ((normRms.coerceAtMost(1.0) - 0.05) / 0.95).coerceIn(0.0, 1.0).pow(rawExp) * 230.0
-                val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 25.0
-                ((base + burst) * gainScale).toFloat().coerceIn(0f, 255f)
+                val base = ((normRms.coerceAtMost(1.0) - rawGate) / (1.0 - rawGate))
+                    .coerceIn(0.0, 1.0)
+                    .pow(rawGamma) * 242.0
+                val burst = ((normRms - 1.0).coerceAtLeast(0.0) / 0.35) * 13.0
+                (base + burst).toFloat().coerceIn(0f, 255f)
             }
         }
 
@@ -350,11 +354,13 @@ class WledAudioAnalyzer {
                 // Parseval total band energy avoids crushing wide upper-octave bands, plus +0.09/band treble tilt.
                 val bandRms = sqrt(bandEnergy)
                 val tilt = 1.0 + band * 0.09
-                val bandNorm = (bandRms * tilt) / (agcRef * 0.72)
-                if (bandRms < 0.0003 || bandNorm < 0.08) {
+                val bandNorm = (bandRms * tilt) / agcRef
+                if (bandRms < 0.0003 || bandNorm <= bandGate) {
                     0.0
                 } else {
-                    (((bandNorm.coerceIn(0.0, 1.0) - 0.06) / 0.94).coerceIn(0.0, 1.0).pow(bandExp) * 254.0 * gainScale)
+                    (((bandNorm.coerceIn(0.0, 1.0) - bandGate) / (1.0 - bandGate))
+                        .coerceIn(0.0, 1.0)
+                        .pow(bandGamma) * 254.0)
                         .coerceIn(0.0, 254.0)
                 }
             }
@@ -376,7 +382,7 @@ class WledAudioAnalyzer {
             frameCounter = counter,
             fftResult = fftOut.copyOf(),
             zeroCrossingCount = zeroCrossings.coerceIn(0, 65535),
-            fftMagnitude = ((peakMag / agcRef) * 220.0 * gainScale).toFloat().coerceIn(0f, 512f),
+            fftMagnitude = ((peakMag / agcRef) * 220.0).toFloat().coerceIn(0f, 512f),
             majorPeakHz = majorPeakHz
         )
     }
@@ -518,7 +524,7 @@ class WledAudioSync(
     initialEnabled: Boolean = false,
     initialPort: Int = WledAudioSyncPacket.DEFAULT_PORT,
     initialUnicastHost: String? = null,
-    initialGainPercent: Int = 100,
+    initialDynamics: Int = Prefs.DEFAULT_WLED_SYNC_DYNAMICS,
     private val sinkFactory: () -> DatagramSink = { AndroidDatagramSink() },
     private val multicastLease: MulticastLease =
         if (context != null) AndroidMulticastLease(context) else NoOpMulticastLease,
@@ -562,7 +568,7 @@ class WledAudioSync(
     private val closed = AtomicBoolean(false)
     private val latestFrame = AtomicReference<PcmFrame?>(null)
     private val analyzer = WledAudioAnalyzer().apply {
-        setGainPercent(initialGainPercent)
+        setDynamics(initialDynamics)
     }
     private val packetBuf = ByteArray(WledAudioSyncPacket.PACKET_SIZE)
 
@@ -603,11 +609,11 @@ class WledAudioSync(
         }
     }
 
-    fun setGainPercent(newGainPercent: Int): Boolean {
-        if (newGainPercent !in Prefs.MIN_WLED_SYNC_GAIN..Prefs.MAX_WLED_SYNC_GAIN) return false
+    fun setDynamics(newDynamics: Int): Boolean {
+        if (newDynamics !in Prefs.MIN_WLED_SYNC_DYNAMICS..Prefs.MAX_WLED_SYNC_DYNAMICS) return false
         synchronized(stateLock) {
             if (closed.get()) return false
-            analyzer.setGainPercent(newGainPercent)
+            analyzer.setDynamics(newDynamics)
             return true
         }
     }

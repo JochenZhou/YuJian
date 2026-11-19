@@ -279,7 +279,7 @@ class NotifyHttpServer(
             val wledOrStyleChanged = config.playerStyle != null ||
                 config.wledSyncEnabled != null ||
                 config.wledSyncPort != null ||
-                config.wledSyncGain != null ||
+                config.wledSyncDynamics != null ||
                 config.wledColorSyncEnabled != null ||
                 config.wledColorHost != null ||
                 config.wledEffect != null
@@ -290,7 +290,7 @@ class NotifyHttpServer(
             config.playerStyle?.let { Prefs.setSendspinPlayerStyle(context, it) }
             config.wledSyncEnabled?.let { Prefs.setWledSyncEnabled(context, it) }
             config.wledSyncPort?.let { Prefs.setWledSyncPort(context, it) }
-            config.wledSyncGain?.let { Prefs.setWledSyncGain(context, it) }
+            config.wledSyncDynamics?.let { Prefs.setWledSyncDynamics(context, it) }
             config.wledColorSyncEnabled?.let { Prefs.setWledColorSyncEnabled(context, it) }
             config.wledColorHost?.let { Prefs.setWledColorHost(context, it) }
             config.wledEffect?.let { Prefs.setWledEffect(context, it.storageId) }
@@ -346,7 +346,7 @@ class NotifyHttpServer(
         json.put("player_style", Prefs.getSendspinPlayerStyle(context).storageId)
         json.put("wled_sync_enabled", Prefs.isWledSyncEnabled(context))
         json.put("wled_sync_port", Prefs.getWledSyncPort(context))
-        json.put("wled_sync_gain", Prefs.getWledSyncGain(context))
+        json.put("wled_sync_dynamics", Prefs.getWledSyncDynamics(context))
         json.put("wled_color_sync_enabled", Prefs.isWledColorSyncEnabled(context))
         json.put("wled_color_host", Prefs.getWledColorHost(context))
         json.put("wled_effect", Prefs.getWledEffect(context))
@@ -730,7 +730,7 @@ internal data class SendspinConfig(
     val playerStyle: Prefs.SendspinPlayerStyle? = null,
     val wledSyncEnabled: Boolean? = null,
     val wledSyncPort: Int? = null,
-    val wledSyncGain: Int? = null,
+    val wledSyncDynamics: Int? = null,
     val wledColorSyncEnabled: Boolean? = null,
     val wledColorHost: String? = null,
     val wledEffect: WledEffectPreset? = null,
@@ -769,7 +769,7 @@ internal fun parseSendspinConfig(json: JSONObject): SendspinConfig {
             ?: throw IllegalArgumentException("player_style must be vinyl or cover_blur")
     }
     val wledPort = optionalIntInRange("wled_sync_port", 1..65535)
-    val wledGain = optionalIntInRange("wled_sync_gain", Prefs.MIN_WLED_SYNC_GAIN..Prefs.MAX_WLED_SYNC_GAIN)
+    val wledDynamics = optionalIntInRange("wled_sync_dynamics", Prefs.MIN_WLED_SYNC_DYNAMICS..Prefs.MAX_WLED_SYNC_DYNAMICS)
     val wledHostRaw = optionalString("wled_color_host")
     val wledHost = wledHostRaw?.let {
         Prefs.normalizeWledHost(it)
@@ -790,7 +790,7 @@ internal fun parseSendspinConfig(json: JSONObject): SendspinConfig {
         playerStyle = playerStyle,
         wledSyncEnabled = optionalBoolean("wled_sync_enabled"),
         wledSyncPort = wledPort,
-        wledSyncGain = wledGain,
+        wledSyncDynamics = wledDynamics,
         wledColorSyncEnabled = optionalBoolean("wled_color_sync_enabled"),
         wledColorHost = wledHost,
         wledEffect = wledEffect,
