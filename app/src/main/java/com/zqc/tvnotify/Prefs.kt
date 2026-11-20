@@ -27,6 +27,7 @@ object Prefs {
     private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
     private const val KEY_SENDSPIN_PLAYER_STYLE = "sendspin_player_style"
+    private const val KEY_SENDSPIN_LAST_CENTERED = "sendspin_last_centered"
     private const val KEY_WLED_SYNC_ENABLED = "wled_sync_enabled"
     private const val KEY_WLED_SYNC_PORT = "wled_sync_port"
     private const val KEY_WLED_SYNC_DYNAMICS = "wled_sync_dynamics"
@@ -179,6 +180,15 @@ object Prefs {
     /** 持久化播放页视觉样式。 */
     fun setSendspinPlayerStyle(context: Context, style: SendspinPlayerStyle) {
         prefs(context).edit().putString(KEY_SENDSPIN_PLAYER_STYLE, style.storageId).apply()
+    }
+
+    /** 读取播放页上一次稳定的版面样式（true=居中大封面，false=双栏歌词；默认 true）。 */
+    fun isSendspinPresentationCentered(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_SENDSPIN_LAST_CENTERED, true)
+
+    /** 持久化播放页版面样式，保证退出播放页再进或重启后保持上次样式。 */
+    fun setSendspinPresentationCentered(context: Context, centered: Boolean) {
+        prefs(context).edit().putBoolean(KEY_SENDSPIN_LAST_CENTERED, centered).apply()
     }
 
     /** 是否开启 WLED 音乐律动 UDP 广播；默认关闭。 */

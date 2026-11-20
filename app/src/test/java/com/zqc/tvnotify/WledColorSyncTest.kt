@@ -253,4 +253,109 @@ class WledColorSyncTest {
         assertTrue(callbacks.last().first)
         sync.close()
     }
+
+    @Test
+    fun `playback start powers on WLED, reapplies effect preset, and resyncs cached artwork color`() {
+        val fakeEffects = JSONArray().apply {
+            put("Solid")
+            for (i in 1 until 199) put("FX_$i")
+            put("Gravcentric")
+        }.toString()
+        val blueBitmap = buildSplitBitmap(topRatio = 0.75, topColor = Color.rgb(33, 150, 243), bottomColor = Color.WHITE)
+        val posts = mutableListOf<Pair<String, String>>()
+
+        assertEquals("""{"on":true}""", WledColorSync.buildPowerStateJson(true))
+        assertEquals(
+            """{"on":true,"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""",
+            WledColorSync.buildEffectStateJson(199, 128, 165, turnOn = true)
+        )
+
+        val sync = WledColorSync(
+            initialEnabled = true,
+            initialHost = "192.168.101.206",
+            poster = WledHttpPoster { url, body -> posts.add(url to body) },
+            getter = WledHttpGetter { fakeEffects },
+            bitmapDecoder = { blueBitmap },
+            customExecutor = inlineExecutor,
+            debounceMs = 0L
+        )
+
+        // Initial artwork push
+        sync.onArtworkBytes(byteArrayOf(1, 2, 3))
+        assertEquals(1, posts.size)
+        assertEquals("""{"seg":[{"id":0,"col":[[33,150,243]]}]}""", posts[0].second)
+        posts.clear()
+
+        // Playback start with preset + turnOn + resyncColor -> turns lamp on, restores effect, and re-pushes color
+        sync.applyPlaybackStart(WledEffectPreset.GRAVCENTRIC, turnOn = true, resyncColor = true)
+        assertEquals(2, posts.size)
+        assertEquals("""{"on":true,"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""", posts[0].second)
+        assertEquals("""{"seg":[{"id":0,"col":[[33,150,243]]}]}""", posts[1].second)
+        posts.clear()
+
+        // Playback start with CUSTOM preset still turns lamp on without overriding segment fx
+        sync.applyPlaybackStart(WledEffectPreset.CUSTOM, turnOn = true, resyncColor = false)
+        assertEquals(1, posts.size)
+        assertEquals("""{"on":true}""", posts[0].second)
+        sync.close()
+    }
+
+    @Test
+    fun `playback coordinator triggers power and effect on inactive-to-playing edges with cooldown`() {
+        var nowNs = 1_000_000_000L
+        var audioSyncEnabled = false
+        var colorSyncEnabled = false
+        var preset = WledEffectPreset.GRAVFREQ
+        val audioStates = mutableListOf<Boolean>()
+        val applied = mutableListOf<Triple<WledEffectPreset, Boolean, Boolean>>()
+
+        val coordinator = WledPlaybackCoordinator(
+            isAudioSyncEnabled = { audioSyncEnabled },
+            isColorSyncEnabled = { colorSyncEnabled },
+            getWledHost = { "192.168.101.206" },
+            getWledEffect = { preset },
+            setAudioPlaybackActive = { active -> audioStates.add(active) },
+            applyWledPlaybackStart = { _, fx, turnOn, resyncColor ->
+                applied.add(Triple(fx, turnOn, resyncColor))
+            },
+            cooldownNs = 3_000_000_000L,
+            nowNs = { nowNs }
+        )
+
+        // Disabled WLED toggles: playback edge forwards audio flag only, no WLED power/effect triggers
+        coordinator.updatePlaybackActive(true)
+        assertEquals(listOf(true), audioStates)
+        assertTrue(applied.isEmpty())
+        coordinator.updatePlaybackActive(false)
+
+        // Enable audio sync -> inactive-to-playing edge turns light on and sets configured effect
+        audioSyncEnabled = true
+        nowNs += 500_000_000L
+        coordinator.updatePlaybackActive(true)
+        assertEquals(1, applied.size)
+        assertEquals(Triple(WledEffectPreset.GRAVFREQ, true, false), applied[0])
+
+        // Redundant true emissions do not re-trigger
+        coordinator.updatePlaybackActive(true)
+        assertEquals(1, applied.size)
+
+        // Quick drop/resume within 3s cooldown does not spam WLED
+        coordinator.updatePlaybackActive(false)
+        nowNs += 1_000_000_000L
+        coordinator.updatePlaybackActive(true)
+        assertEquals(1, applied.size)
+
+        // Pause -> resume after cooldown re-applies effect + powers on + color resync if enabled
+        coordinator.updatePlaybackActive(false)
+        nowNs += 3_100_000_000L
+        colorSyncEnabled = true
+        coordinator.updatePlaybackActive(true)
+        assertEquals(2, applied.size)
+        assertEquals(Triple(WledEffectPreset.GRAVFREQ, true, true), applied[1])
+
+        // Session reset clears cooldown and active state
+        coordinator.resetSession()
+        coordinator.updatePlaybackActive(true)
+        assertEquals(3, applied.size)
+    }
 }

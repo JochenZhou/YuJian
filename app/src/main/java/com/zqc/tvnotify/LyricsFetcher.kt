@@ -140,6 +140,7 @@ object LyricsFetcher {
 
     private const val TAG = "LyricsFetcher"
     private const val MAX_DISK_CACHE_FILES = 100
+    private const val MAX_MEMORY_CACHE_ENTRIES = 24
     private const val USER_AGENT = "YuJian-TV/${BuildConfig.VERSION_NAME} (https://github.com/JochenZhou/YuJian)"
 
     private val QQ_HEADERS = mapOf("Referer" to "https://y.qq.com/")
@@ -185,8 +186,49 @@ object LyricsFetcher {
     )
 
     private val latestRequestId = AtomicLong(0L)
+    private val memCacheLock = Any()
+    private val memCache = object : LinkedHashMap<String, ParsedLyrics>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ParsedLyrics>?): Boolean =
+            size > MAX_MEMORY_CACHE_ENTRIES
+    }
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { task ->
         Thread(task, "sendspin-lyrics").apply { isDaemon = true }
+    }
+
+    private fun buildCacheKey(cleanTitle: String, cleanArtist: String, durationMs: Long): String {
+        val durSec = (durationMs / 1000L).coerceAtLeast(0L)
+        return sha256Hex("${cleanTitle.lowercase(Locale.ROOT)}|${cleanArtist.lowercase(Locale.ROOT)}|$durSec")
+    }
+
+    private fun putMemoryCache(cacheKey: String, parsed: ParsedLyrics) {
+        if (parsed.lines.isEmpty()) return
+        synchronized(memCacheLock) {
+            memCache[cacheKey] = parsed
+        }
+    }
+
+    internal fun clearMemoryCache() {
+        synchronized(memCacheLock) {
+            memCache.clear()
+        }
+    }
+
+    /** 同步检索当前进程内存缓存或内嵌歌词，用于退出播放页再重进时零闪烁秒恢复。 */
+    fun peekCachedLyrics(
+        title: String,
+        artist: String,
+        durationMs: Long,
+        embeddedLyrics: String = ""
+    ): ParsedLyrics? {
+        val cleanTitle = title.trim()
+        if (cleanTitle.isEmpty()) return null
+        val usableEmbedded = extractUsableLyrics(embeddedLyrics)
+        if (usableEmbedded != null) {
+            val parsed = LrcParser.parse(usableEmbedded, "embedded")
+            if (parsed.lines.isNotEmpty()) return parsed
+        }
+        val key = buildCacheKey(cleanTitle, artist.trim(), durationMs)
+        return synchronized(memCacheLock) { memCache[key] }
     }
 
     fun fetchAsync(
@@ -241,10 +283,7 @@ object LyricsFetcher {
 
         val requestId = latestRequestId.incrementAndGet()
         val cleanAlbum = album.trim()
-        val durSec = (durationMs / 1000L).coerceAtLeast(0L)
-        val cacheKey = sha256Hex(
-            "${cleanTitle.lowercase(Locale.ROOT)}|${cleanArtist.lowercase(Locale.ROOT)}|$durSec"
-        )
+        val cacheKey = buildCacheKey(cleanTitle, cleanArtist, durationMs)
 
         // 2 & 3. 磁盘缓存读取与多源联网检索均在单线程守护线程池内串行执行
         executor.execute {
@@ -261,6 +300,7 @@ object LyricsFetcher {
                     if (usableCached != null) {
                         val parsed = LrcParser.parse(usableCached, "disk_cache")
                         if (parsed.lines.isNotEmpty()) {
+                            putMemoryCache(cacheKey, parsed)
                             if (requestId == latestRequestId.get()) onResult(parsed)
                             return@execute
                         }
@@ -296,8 +336,10 @@ object LyricsFetcher {
                             Log.w(TAG, "写入歌词缓存失败", e)
                         }
                     }
+                    val parsed = LrcParser.parse(outcome.rawText, outcome.source)
+                    putMemoryCache(cacheKey, parsed)
                     if (requestId == latestRequestId.get()) {
-                        onResult(LrcParser.parse(outcome.rawText, outcome.source))
+                        onResult(parsed)
                     }
                 } else if (requestId == latestRequestId.get()) {
                     onResult(null)

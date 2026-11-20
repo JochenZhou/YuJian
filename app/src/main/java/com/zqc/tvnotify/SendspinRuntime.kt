@@ -122,6 +122,21 @@ class SendspinRuntime private constructor(private val context: Context) {
         poster = OkHttpWledPoster(wledHttpClient),
         getter = OkHttpWledGetter(wledHttpClient),
     )
+    private val wledPlaybackCoordinator = WledPlaybackCoordinator(
+        isAudioSyncEnabled = { Prefs.isWledSyncEnabled(app) },
+        isColorSyncEnabled = { Prefs.isWledColorSyncEnabled(app) },
+        getWledHost = { Prefs.getWledColorHost(app) },
+        getWledEffect = { WledEffectPreset.fromRaw(Prefs.getWledEffect(app)) },
+        setAudioPlaybackActive = { active -> wledAudioSync.setPlaybackActive(active) },
+        applyWledPlaybackStart = { host, preset, turnOn, resyncColor ->
+            wledColorSync.setHost(host)
+            wledColorSync.applyPlaybackStart(
+                preset = preset,
+                turnOn = turnOn,
+                resyncColor = resyncColor,
+            )
+        },
+    )
 
     @Volatile private var client: SendSpinClient? = null
     @Volatile private var discoveryJob: Job? = null
@@ -213,7 +228,7 @@ class SendspinRuntime private constructor(private val context: Context) {
             localPlayer = null
             resetProgressSession()
         }
-        wledAudioSync.setPlaybackActive(false)
+        wledPlaybackCoordinator.resetSession()
         wledAudioSync.reset()
         wledColorSync.onArtworkBytes(null)
         releaseMulticastLock()
@@ -254,14 +269,17 @@ class SendspinRuntime private constructor(private val context: Context) {
         wledColorSync.applyEffectPreset(preset, onResult)
     }
 
-    private fun syncWledPlaybackState() {
-        val current = client
-        val active = enabled &&
+    private fun computeWledPlaybackActive(instance: SendSpinClient? = client): Boolean =
+        enabled &&
             appVisible &&
-            current != null &&
-            current.state.value == ClientState.STREAMING &&
-            current.audioPlayer.isPlaying
-        wledAudioSync.setPlaybackActive(active)
+            instance != null &&
+            instance.state.value == ClientState.STREAMING &&
+            instance.audioPlayer.isPlaying &&
+            instance.groupPlaybackState.value != GroupPlaybackState.PAUSED &&
+            instance.groupPlaybackState.value != GroupPlaybackState.STOPPED
+
+    private fun syncWledPlaybackState() {
+        wledPlaybackCoordinator.updatePlaybackActive(computeWledPlaybackActive())
     }
 
     fun setActivityVisible(visible: Boolean) {
@@ -504,14 +522,10 @@ class SendspinRuntime private constructor(private val context: Context) {
                         if (progressSessionActive) progressTracker.setGroupPlaybackState(state, nowUs)
                         it.withProgress(nowUs)
                     }
-                    if (state != GroupPlaybackState.PLAYING) {
-                        wledAudioSync.setPlaybackActive(false)
-                        if (state == GroupPlaybackState.STOPPED) {
-                            wledAudioSync.reset()
-                        }
-                    } else {
-                        syncWledPlaybackState()
+                    if (state == GroupPlaybackState.STOPPED) {
+                        wledAudioSync.reset()
                     }
+                    syncWledPlaybackState()
                 }
             }
             launch {
@@ -538,7 +552,6 @@ class SendspinRuntime private constructor(private val context: Context) {
                     updateClientStatus(instance) {
                         val streaming = instance.state.value == ClientState.STREAMING
                         val outputPlaying = appVisible && streaming && instance.audioPlayer.isPlaying
-                        wledAudioSync.setPlaybackActive(outputPlaying)
                         val outputSync = instance.audioPlayer.outputSync
                         openUi = appVisible && outputPlaying && !it.outputPlaying && !activityVisible
                         val next = it.copy(
@@ -559,6 +572,7 @@ class SendspinRuntime private constructor(private val context: Context) {
                         )
                         if (streaming) next else next.withoutOutputTiming(instance.state.value)
                     }
+                    syncWledPlaybackState()
                     if (openUi && appVisible) onOpenUiRequested?.invoke(true)
                 }
             }

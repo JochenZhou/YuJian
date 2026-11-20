@@ -168,6 +168,7 @@ class SendspinActivity : Activity() {
             lyricsView.setLoading(false)
             lastLyricsTrackKey = ""
         }
+        lyricsView.clearAnimation()
         for (view in arrayOf(back, artworkSwitcher, progress, previous, playPause, next, volumeControl, playlistButton, settings)) view.animate().cancel()
         playerDialog?.dismiss()
         playerDialog = null
@@ -204,6 +205,7 @@ class SendspinActivity : Activity() {
     }
 
     private fun buildUi() {
+        presentationCentered = Prefs.isSendspinPresentationCentered(this)
         ambient = SendspinAmbientDrawable(playerBase, accent)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -747,11 +749,10 @@ class SendspinActivity : Activity() {
     private fun updateLyricsForTrack(state: SendspinRuntime.Status) {
         val cleanTitle = state.title.trim()
         if (cleanTitle.isEmpty()) {
-            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading || hasLyrics || !presentationCentered) {
+            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading || hasLyrics) {
                 lyricsGeneration++
                 lyricsLoading = false
                 hasLyrics = false
-                presentationCentered = true
                 lastLyricsTrackKey = ""
                 lyricsView.setLoading(false)
                 lyricsView.setLyrics(null)
@@ -762,8 +763,14 @@ class SendspinActivity : Activity() {
         val trackKey = "$cleanTitle|${state.artist.trim()}|${state.album.trim()}"
         if (trackKey == lastLyricsTrackKey) return
 
+        val isFirstTrackBind = lastLyricsTrackKey.isEmpty()
         lastLyricsTrackKey = trackKey
         val generation = ++lyricsGeneration
+        val memCached = LyricsFetcher.peekCachedLyrics(cleanTitle, state.artist, state.durationMs)
+        if (memCached != null && memCached.lines.isNotEmpty()) {
+            applyLyricsSearchResult(memCached, animate = visible && !isFirstTrackBind)
+            return
+        }
         lyricsLoading = true
         hasLyrics = false
         lyricsView.setLyrics(null)
@@ -792,7 +799,9 @@ class SendspinActivity : Activity() {
         lyricsView.setLoading(false)
         lyricsView.setLyrics(parsed)
         lyricsView.updatePosition(projectedPosition())
-        presentationCentered = !found
+        val centered = !found
+        presentationCentered = centered
+        Prefs.setSendspinPresentationCentered(this, centered)
         syncLyricsPresentationMode(animate = animate)
     }
 

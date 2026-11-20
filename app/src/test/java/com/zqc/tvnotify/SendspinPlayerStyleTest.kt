@@ -439,6 +439,79 @@ class SendspinPlayerStyleTest {
     }
 
     @Test
+    fun `reentering player preserves last layout style even during transient empty metadata and restores cached lyrics immediately`() {
+        val context = RuntimeEnvironment.getApplication()
+        LyricsFetcher.clearMemoryCache()
+        Prefs.setSendspinPresentationCentered(context, true)
+
+        // 1. Simulate previous session ending in two-column lyrics mode
+        val firstActivity = buildPreparedSendspinActivity()
+        val clazz = SendspinActivity::class.java
+        val applyResult = clazz.getDeclaredMethod("applyLyricsSearchResult", ParsedLyrics::class.java, Boolean::class.java).apply { isAccessible = true }
+        val sampleLyrics = ParsedLyrics(
+            synced = true,
+            lines = listOf(LrcLine(0L, "第一句歌词"), LrcLine(4000L, "第二句歌词")),
+            source = "lrclib"
+        )
+        applyResult.invoke(firstActivity, sampleLyrics, false)
+        assertFalse(Prefs.isSendspinPresentationCentered(context))
+
+        // Populate LyricsFetcher memory cache for this track
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val cacheDir = kotlin.io.path.createTempDirectory("yujian-lyrics-test").toFile()
+        try {
+            LyricsFetcher.fetchWithCacheDirAsync(
+                cacheRootProvider = { cacheDir },
+                title = "晴天",
+                artist = "周杰伦",
+                album = "叶惠美",
+                durationMs = 269_000L,
+                networkFetcher = { _, _, _, _ -> "[00:00.00]故事的小黄花\n[00:04.00]从出生那年就飘着" },
+                onResult = { latch.countDown() }
+            )
+            assertTrue(latch.await(3, java.util.concurrent.TimeUnit.SECONDS))
+
+            // 2. Exit and re-enter SendspinActivity with initially empty metadata: MUST keep two-column style!
+            val reenteredEmpty = buildPreparedSendspinActivity()
+            val stageEmpty = clazz.getDeclaredField("stage").apply { isAccessible = true }.get(reenteredEmpty) as SendspinStageLayout
+            val lyricsViewEmpty = clazz.getDeclaredField("lyricsView").apply { isAccessible = true }.get(reenteredEmpty) as LyricsScrollView
+            assertFalse("Re-entering player should remember two-column style instead of resetting to centered", stageEmpty.isCenteredMode())
+            assertEquals(View.VISIBLE, lyricsViewEmpty.visibility)
+
+            // 3. Re-entering while same track is playing synchronously hits memory cache without flashing loading state
+            val render = clazz.getDeclaredMethod("render", SendspinRuntime.Status::class.java).apply { isAccessible = true }
+            render.invoke(
+                reenteredEmpty,
+                SendspinRuntime.Status(
+                    state = "connected",
+                    title = "晴天",
+                    artist = "周杰伦",
+                    album = "叶惠美",
+                    durationMs = 269_000L,
+                    playing = true
+                )
+            )
+            val lyricsLoadingField = clazz.getDeclaredField("lyricsLoading").apply { isAccessible = true }
+            val hasLyricsField = clazz.getDeclaredField("hasLyrics").apply { isAccessible = true }
+            assertFalse("Cached track must not flash async loading", lyricsLoadingField.getBoolean(reenteredEmpty))
+            assertTrue(hasLyricsField.getBoolean(reenteredEmpty))
+            assertFalse(stageEmpty.isCenteredMode())
+            assertEquals(View.VISIBLE, lyricsViewEmpty.visibility)
+
+            // 4. Switch to a track without lyrics -> collapses to centered & remembers centered style across re-entry
+            applyResult.invoke(reenteredEmpty, null, false)
+            assertTrue(Prefs.isSendspinPresentationCentered(context))
+
+            val reenteredCentered = buildPreparedSendspinActivity()
+            val stageCentered = clazz.getDeclaredField("stage").apply { isAccessible = true }.get(reenteredCentered) as SendspinStageLayout
+            assertTrue("Re-entering after no-lyrics session should remember centered style", stageCentered.isCenteredMode())
+        } finally {
+            cacheDir.deleteRecursively()
+            LyricsFetcher.clearMemoryCache()
+        }
+    }
+
+    @Test
     fun `playlist store persists catalog across cold restarts`() {
         val context = RuntimeEnvironment.getApplication()
         PlaylistStore.update(null)
