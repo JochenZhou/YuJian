@@ -349,11 +349,19 @@ class MainFocusLayoutTest {
         }
 
         // Verify zero emoji codepoints appear in any TextView/Button across all tabs
-        val emojiRegex = Regex("[\\uD83C-\\uDBFF\\uDC00-\\uDFFF\\u2600-\\u27BF]")
+        fun containsEmoji(text: String): Boolean {
+            var i = 0
+            while (i < text.length) {
+                val cp = text.codePointAt(i)
+                if (cp in 0x1F300..0x1FAFF || cp in 0x2600..0x27BF || cp == 0xFE0F) return true
+                i += Character.charCount(cp)
+            }
+            return false
+        }
         fun checkNoEmoji(view: View) {
             if (view is android.widget.TextView) {
                 val text = view.text?.toString().orEmpty()
-                assertFalse("TV UI text must not contain emoji (renders as tofu on Android 6): '$text'", emojiRegex.containsMatchIn(text))
+                assertFalse("TV UI text must not contain emoji (renders as tofu on Android 6): '$text'", containsEmoji(text))
             }
             if (view is ViewGroup) {
                 for (i in 0 until view.childCount) checkNoEmoji(view.getChildAt(i))
