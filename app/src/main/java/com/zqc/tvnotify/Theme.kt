@@ -277,10 +277,14 @@ enum class Theme(
             WUKONG -> "黑神话 · 天命感应"
             MATRIX -> "root@tv-node: 链路就绪"
             INK_LIGHT -> "江南竹韵 · 尺素传书"
-            GAMER -> "🏆 已解锁奖杯：千里传音"
-            MINECRAFT -> "💎 已解锁成就：千里传音"
+            GAMER -> "已解锁奖杯：千里传音"
+            MINECRAFT -> "已解锁成就：千里传音"
             DEFAULT -> "演示通知"
         }
+
+    /** 不含 Emoji 的主题完整展示文案（适配 Android 6 电视无 Emoji 字体环境）。 */
+    val displayLabel: String
+        get() = fullName.removePrefix(emoji).trim()
 
     val testBannerText: String
         get() = when (this) {
@@ -305,13 +309,13 @@ enum class Theme(
         }
 
     fun mainTabTitle(tab: MainTab): String = when (tab) {
-        MainTab.OVERVIEW -> if (isXianxia) "灵台总览" else "总览与互联"
-        MainTab.PRACTICE -> if (isXianxia) "演法调阵" else "演练与调控"
-        MainTab.SYSTEM -> if (isXianxia) "符钥天机" else "系统与运维"
+        MainTab.OVERVIEW -> if (isXianxia) "玉简首页" else "首页"
+        MainTab.PRACTICE -> if (isXianxia) "传音与法相" else "通知与外观"
+        MainTab.SYSTEM -> if (isXianxia) "互联与天机" else "互联与系统"
     }
 
     val quickActionsTitle: String get() =
-        if (isXianxia) "快捷入口 · 灵音与试炼" else "快捷入口 · 音乐与测试"
+        if (isXianxia) "日常常用 · 快捷施法" else "常用快捷"
 
     val practiceCardTitle: String get() =
         if (isXianxia) "四大演法 · 横幅试炼" else "通知演练 · 效果预览"
@@ -332,15 +336,15 @@ enum class Theme(
         else "回看最近 20 条历史通知，切换横幅弹出位置、静音免扰与 ${entries.size} 款主题风格"
 
     val controlCardHint: String get() =
-        if (isXianxia) "当前法相：$fullName\n提示：短按主题按钮可列表选款，长按可直接循环切换下一法相。"
-        else "当前主题：$fullName\n提示：短按主题按钮可打开列表选择，长按可快速循环切换下一主题。"
+        if (isXianxia) "当前法相：$displayLabel\n提示：短按主题按钮可列表选款，长按可直接循环切换下一法相。"
+        else "当前主题：$displayLabel\n提示：短按主题按钮可打开列表选择，长按可快速循环切换下一主题。"
 
     val systemCardTitle: String get() =
-        if (isXianxia) "符钥管理 · 破境溯源" else "接口管理 · 版本与关于"
+        if (isXianxia) "符钥管理 · 直达与破境" else "接口配置 · 直达与更新"
 
     val systemCardSubtitle: String get() =
-        if (isXianxia) "抄录或重铸传音符钥，感应新简破境飞升，查阅简牍溯源信息"
-        else "复制或重置接口 Token，在线检查版本更新，查看项目仓库与致谢"
+        if (isXianxia) "管理传音符钥、启动直达音乐页、版本更新与常驻保活指南"
+        else "管理接口 Token、启动直达播放页、检查更新与后台保活指南"
 
     val keepAliveCardTitle: String get() =
         if (isXianxia) "护山大阵 · 常驻与保活指南" else "后台常驻 · ADB 保活说明"

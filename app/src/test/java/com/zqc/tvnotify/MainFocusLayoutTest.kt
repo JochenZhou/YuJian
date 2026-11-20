@@ -50,14 +50,16 @@ class MainFocusLayoutTest {
                 val names = when (tab) {
                     MainTab.OVERVIEW -> listOf(
                         "overviewTabButton", "systemTabButton",
-                        "musicButton", "quickTestButton", "quickHistoryButton",
-                        "haTabButton", "tokenTabButton"
+                        "musicButton", "quickHistoryButton", "quickThemeButton", "quickConnectButton"
                     )
                     MainTab.PRACTICE -> listOf(
                         "testButton", "imageTestButton", "videoTestButton", "ttsTestButton",
                         "historyButton", "positionButton", "muteButton", "themeButton"
                     )
-                    MainTab.SYSTEM -> listOf("copyButton", "resetButton", "updateButton", "aboutButton")
+                    MainTab.SYSTEM -> listOf(
+                        "copyButton", "resetButton", "launchPlayerButton", "updateButton", "aboutButton",
+                        "haTabButton", "tokenTabButton"
+                    )
                 }
                 for (name in names) {
                     val button = field(activity, name) as Button
@@ -119,8 +121,8 @@ class MainFocusLayoutTest {
     @Test fun `service status is informational and down navigation enters real controls`() {
         val (_, activity) = activity()
         val overview = field(activity, "overviewPage") as ViewGroup
-        val leftColumn = overview.getChildAt(0) as LinearLayout
-        val statusCard = leftColumn.getChildAt(0)
+        val rightColumn = overview.getChildAt(1) as LinearLayout
+        val statusCard = rightColumn.getChildAt(0)
         assertFalse("Status card must not be a D-pad target", statusCard.isFocusable)
         assertFalse("Status card has no action", statusCard.isClickable)
         val tab = field(activity, "overviewTabButton")
@@ -133,11 +135,11 @@ class MainFocusLayoutTest {
         assertTrue(focusables.contains(music))
     }
 
-    @Test fun `quick test, practice test and copy buttons are not pre-selected by default`() {
+    @Test fun `overview, practice and system buttons are not pre-selected by default`() {
         for (theme in listOf(Theme.XIUXIAN, Theme.DEFAULT, Theme.MINECRAFT)) {
             val (_, activity) = activity(theme)
             val pairs = listOf(
-                Triple(MainTab.OVERVIEW, "quickTestButton", "musicButton"),
+                Triple(MainTab.OVERVIEW, "quickHistoryButton", "musicButton"),
                 Triple(MainTab.PRACTICE, "testButton", "imageTestButton"),
                 Triple(MainTab.SYSTEM, "copyButton", "resetButton")
             )
@@ -243,6 +245,7 @@ class MainFocusLayoutTest {
         runInKeyMode(activity) {
             val musicButton = field(activity, "musicButton")
             val quickHistoryButton = field(activity, "quickHistoryButton")
+            val quickThemeButton = field(activity, "quickThemeButton")
             val haTabButton = field(activity, "haTabButton")
             val tokenTabButton = field(activity, "tokenTabButton")
             val imageTestButton = field(activity, "imageTestButton")
@@ -252,33 +255,35 @@ class MainFocusLayoutTest {
             val resetButton = field(activity, "resetButton")
             val aboutButton = field(activity, "aboutButton")
 
-            assertEquals(haTabButton.id, quickHistoryButton.nextFocusRightId)
-            assertEquals(quickHistoryButton.id, haTabButton.nextFocusLeftId)
+            assertEquals(quickHistoryButton.id, musicButton.nextFocusRightId)
+            assertEquals(musicButton.id, quickHistoryButton.nextFocusLeftId)
             assertEquals(historyButton.id, imageTestButton.nextFocusRightId)
             assertEquals(imageTestButton.id, historyButton.nextFocusLeftId)
             assertEquals(muteButton.id, ttsTestButton.nextFocusRightId)
             assertEquals(ttsTestButton.id, muteButton.nextFocusLeftId)
+            assertEquals(haTabButton.id, resetButton.nextFocusRightId)
+            assertEquals(haTabButton.id, aboutButton.nextFocusRightId)
+            assertEquals(resetButton.id, haTabButton.nextFocusLeftId)
 
             assertEquals(musicButton.id, musicButton.nextFocusLeftId)
-            assertEquals(resetButton.id, resetButton.nextFocusRightId)
-            assertEquals(aboutButton.id, aboutButton.nextFocusRightId)
+            assertEquals(tokenTabButton.id, tokenTabButton.nextFocusRightId)
 
             assertTrue(musicButton.requestFocus())
             assertFalse(musicButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, 0)))
             assertEquals(MainTab.OVERVIEW, activeTab(activity))
 
-            assertTrue(tokenTabButton.requestFocus())
-            assertFalse(tokenTabButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT, 0)))
+            assertTrue(quickThemeButton.requestFocus())
+            assertFalse(quickThemeButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_RIGHT, 0)))
             assertEquals(MainTab.OVERVIEW, activeTab(activity))
-            assertTrue(tokenTabButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 1)))
+            assertTrue(quickThemeButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 1)))
             assertEquals(MainTab.OVERVIEW, activeTab(activity))
-            assertTrue(tokenTabButton.isFocused)
+            assertTrue(quickThemeButton.isFocused)
 
-            pressDpadEdge(activity, "tokenTabButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.PRACTICE, "testButton")
-            pressDpadEdge(activity, "testButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "tokenTabButton")
+            pressDpadEdge(activity, "quickThemeButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.PRACTICE, "testButton")
+            pressDpadEdge(activity, "testButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "quickThemeButton")
 
             selectTab(activity, MainTab.PRACTICE)
-            pressDpadEdge(activity, "videoTestButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "tokenTabButton")
+            pressDpadEdge(activity, "videoTestButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "quickConnectButton")
 
             selectTab(activity, MainTab.PRACTICE)
             pressDpadEdge(activity, "positionButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.SYSTEM, "copyButton")
@@ -287,10 +292,8 @@ class MainFocusLayoutTest {
             pressDpadEdge(activity, "updateButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.PRACTICE, "themeButton")
 
             selectTab(activity, MainTab.SYSTEM)
-            assertTrue(resetButton.requestFocus())
-            assertFalse(resetButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 0)))
-            assertTrue(aboutButton.requestFocus())
-            assertFalse(aboutButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 0)))
+            assertTrue(tokenTabButton.requestFocus())
+            assertFalse(tokenTabButton.dispatchKeyEvent(KeyEvent(0L, 0L, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_RIGHT, 0)))
             assertEquals(MainTab.SYSTEM, activeTab(activity))
         }
     }
@@ -299,24 +302,24 @@ class MainFocusLayoutTest {
     @Test fun `narrow layout jumps across stacked card edges between pages`() {
         val (_, activity) = activity()
         runInKeyMode(activity) {
+            val quickThemeButton = field(activity, "quickThemeButton")
             val quickHistoryButton = field(activity, "quickHistoryButton")
-            val haTabButton = field(activity, "haTabButton")
             val imageTestButton = field(activity, "imageTestButton")
             val ttsTestButton = field(activity, "ttsTestButton")
             val historyButton = field(activity, "historyButton")
             val muteButton = field(activity, "muteButton")
 
-            assertEquals(View.NO_ID, quickHistoryButton.nextFocusRightId)
-            assertEquals(haTabButton.id, haTabButton.nextFocusLeftId)
+            assertEquals(View.NO_ID, quickThemeButton.nextFocusRightId)
+            assertEquals(quickHistoryButton.id, quickHistoryButton.nextFocusLeftId)
             assertEquals(View.NO_ID, imageTestButton.nextFocusRightId)
             assertEquals(View.NO_ID, ttsTestButton.nextFocusRightId)
             assertEquals(View.NO_ID, historyButton.nextFocusLeftId)
             assertEquals(View.NO_ID, muteButton.nextFocusLeftId)
 
-            pressDpadEdge(activity, "quickHistoryButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.PRACTICE, "testButton")
-            pressDpadEdge(activity, "historyButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "tokenTabButton")
-            pressDpadEdge(activity, "tokenTabButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.PRACTICE, "testButton")
-            pressDpadEdge(activity, "muteButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "tokenTabButton")
+            pressDpadEdge(activity, "quickThemeButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.PRACTICE, "testButton")
+            pressDpadEdge(activity, "historyButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "quickThemeButton")
+            pressDpadEdge(activity, "quickConnectButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.PRACTICE, "videoTestButton")
+            pressDpadEdge(activity, "muteButton", KeyEvent.KEYCODE_DPAD_LEFT, MainTab.OVERVIEW, "quickConnectButton")
 
             selectTab(activity, MainTab.PRACTICE)
             pressDpadEdge(activity, "imageTestButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.SYSTEM, "copyButton")
@@ -328,5 +331,41 @@ class MainFocusLayoutTest {
             selectTab(activity, MainTab.PRACTICE)
             pressDpadEdge(activity, "themeButton", KeyEvent.KEYCODE_DPAD_RIGHT, MainTab.SYSTEM, "updateButton")
         }
+    }
+
+    @Test fun `all tv vector icons draw cleanly and tv dashboard contains zero emojis`() {
+        val (_, activity) = activity(Theme.XIUXIAN)
+        MainActivity::class.java.getDeclaredMethod("updateStateAndQr", String::class.java, Boolean::class.java, Boolean::class.java, String::class.java)
+            .apply { isAccessible = true }
+            .invoke(activity, "abc12345", true, true, null)
+
+        // Every TvIcon must render onto a Canvas without throwing on API 23
+        val bmp = android.graphics.Bitmap.createBitmap(48, 48, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        for (icon in TvIcon.entries) {
+            val drawable = TvVectorIconDrawable(activity, icon, Color.CYAN, 20f)
+            drawable.setBounds(0, 0, 48, 48)
+            drawable.draw(canvas)
+        }
+
+        // Verify zero emoji codepoints appear in any TextView/Button across all tabs
+        val emojiRegex = Regex("[\\uD83C-\\uDBFF\\uDC00-\\uDFFF\\u2600-\\u27BF]")
+        fun checkNoEmoji(view: View) {
+            if (view is android.widget.TextView) {
+                val text = view.text?.toString().orEmpty()
+                assertFalse("TV UI text must not contain emoji (renders as tofu on Android 6): '$text'", emojiRegex.containsMatchIn(text))
+            }
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) checkNoEmoji(view.getChildAt(i))
+            }
+        }
+        checkNoEmoji(activity.findViewById(android.R.id.content))
+
+        // Verify launch-to-player pref defaults false and persists cleanly
+        assertFalse(Prefs.isLaunchToPlayer(activity))
+        Prefs.setLaunchToPlayer(activity, true)
+        assertTrue(Prefs.isLaunchToPlayer(activity))
+        Prefs.setLaunchToPlayer(activity, false)
+        assertFalse(Prefs.isLaunchToPlayer(activity))
     }
 }

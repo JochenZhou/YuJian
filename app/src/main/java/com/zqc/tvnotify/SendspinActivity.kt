@@ -234,7 +234,10 @@ class SendspinActivity : Activity() {
         header.addView(brandRow, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(14) })
         wledBadge = text("", 11f, Color.rgb(218, 236, 234), true).apply {
             setSingleLine(true)
-            setPadding(dp(9), dp(4), dp(9), dp(4))
+            gravity = Gravity.CENTER_VERTICAL
+            compoundDrawablePadding = dp(5)
+            setPadding(dp(9), dp(4), dp(10), dp(4))
+            setCompoundDrawables(TvVectorIconDrawable(this@SendspinActivity, TvIcon.WLED_SPARK, accent, 13f, 1.8f), null, null, null)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(14).toFloat()
@@ -491,9 +494,9 @@ class SendspinActivity : Activity() {
         } else {
             val dynamics = Prefs.getWledSyncDynamics(this)
             val label = when {
-                audioOn && colorOn -> "● WLED 律动 $dynamics% · 色彩"
-                audioOn -> "● WLED 律动 $dynamics%"
-                else -> "● WLED 封面色彩"
+                audioOn && colorOn -> "WLED 律动 $dynamics% · 色彩"
+                audioOn -> "WLED 律动 $dynamics%"
+                else -> "WLED 封面色彩"
             }
             setTextIfChanged(wledBadge, label)
             wledBadge.visibility = View.VISIBLE
@@ -905,6 +908,7 @@ class SendspinActivity : Activity() {
             "样式二（方形封面 · 高斯模糊）"
         }
         val autoEnabled = Prefs.isSendspinAutoPopup(this)
+        val launchToPlayer = Prefs.isLaunchToPlayer(this)
         val savedUrl = Prefs.getSendspinServerUrl(this).trim()
         val serverSummary = if (savedUrl.isEmpty()) "当前使用局域网自动发现，点击可手动指定地址" else "当前地址：$savedUrl"
         val playlistCount = PlaylistStore.current()?.playlists?.size ?: 0
@@ -921,6 +925,7 @@ class SendspinActivity : Activity() {
             ThemeDialogItem(
                 title = "浏览歌单",
                 subtitle = if (playlistCount > 0) "已同步 $playlistCount 张歌单，查看曲目或选歌点播" else "查看已同步歌单与曲目详单，或选歌点播",
+                leadingIcon = TvIcon.MUSIC_NOTE,
                 trailingBadge = if (playlistCount > 0) "$playlistCount 张" else "歌单",
                 dismissOnClick = false
             ) {
@@ -929,6 +934,7 @@ class SendspinActivity : Activity() {
             ThemeDialogItem(
                 title = "WLED 灯光联动",
                 subtitle = wledSummary,
+                leadingIcon = TvIcon.WLED_SPARK,
                 trailingBadge = if (wledAudioEnabled || wledColorEnabled) "已开启" else "配置",
                 dismissOnClick = false
             ) {
@@ -937,6 +943,7 @@ class SendspinActivity : Activity() {
             ThemeDialogItem(
                 title = "播放页样式：$styleLabel",
                 subtitle = "备用入口：也可以直接点击左侧黑胶唱片或方形封面切换",
+                leadingIcon = TvIcon.MUSIC_DISC,
                 trailingBadge = if (playerStyle == Prefs.SendspinPlayerStyle.VINYL) "样式一" else "样式二"
             ) {
                 togglePlayerStyle()
@@ -944,13 +951,23 @@ class SendspinActivity : Activity() {
             ThemeDialogItem(
                 title = "播放时自动打开：${if (autoEnabled) "已开启" else "已关闭"}",
                 subtitle = "检测到局域网音乐推流播放时自动弹出此页面",
+                leadingIcon = TvIcon.PLAY_TRIANGLE,
                 trailingBadge = if (autoEnabled) "已开启" else "已关闭"
             ) {
                 toggleAutoPopup()
             },
             ThemeDialogItem(
+                title = "启动时直达播放页：${if (launchToPlayer) "已开启" else "已关闭"}",
+                subtitle = "开启后点击玉简图标直接进入音乐播放页，按返回键回到主界面",
+                leadingIcon = TvIcon.ROCKET,
+                trailingBadge = if (launchToPlayer) "已开启" else "已关闭"
+            ) {
+                toggleLaunchToPlayer()
+            },
+            ThemeDialogItem(
                 title = "连接 Music Assistant",
                 subtitle = serverSummary,
+                leadingIcon = TvIcon.NETWORK,
                 dismissOnClick = false
             ) {
                 showConnectionDialog()
@@ -1096,8 +1113,9 @@ class SendspinActivity : Activity() {
         if (playlistCount > 1) {
             items.add(
                 ThemeDialogItem(
-                    title = "⇄ 切换其他歌单",
+                    title = "切换其他歌单",
                     subtitle = "已同步 $playlistCount 张歌单，点击切换",
+                    leadingIcon = TvIcon.SWITCH_ARROWS,
                     trailingBadge = "全部歌单",
                     dismissOnClick = false
                 ) {
@@ -1107,8 +1125,9 @@ class SendspinActivity : Activity() {
         }
         items.add(
             ThemeDialogItem(
-                title = "▶ 从头播放整张歌单",
+                title = "从头播放整张歌单",
                 subtitle = trackCountText ?: "从第 1 首开始播放整张歌单",
+                leadingIcon = TvIcon.PLAY_TRIANGLE,
                 trailingBadge = "整单",
                 dismissOnClick = false
             ) { dialog ->
@@ -1300,6 +1319,16 @@ class SendspinActivity : Activity() {
         val enabled = !Prefs.isSendspinAutoPopup(this)
         Prefs.setSendspinAutoPopup(this, enabled)
         Toast.makeText(this, if (enabled) "播放时自动打开音乐页" else "已关闭自动打开", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun toggleLaunchToPlayer() {
+        val enabled = !Prefs.isLaunchToPlayer(this)
+        Prefs.setLaunchToPlayer(this, enabled)
+        Toast.makeText(
+            this,
+            if (enabled) "已开启：下次启动玉简直接进入音乐播放页" else "已关闭：启动玉简默认进入首页",
+            Toast.LENGTH_SHORT
+        ).show()
     }
 
     private fun toggleWledAudioSync() {

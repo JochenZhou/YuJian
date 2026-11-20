@@ -19,6 +19,7 @@ import android.view.ViewGroup
 import android.view.Window
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -313,6 +314,8 @@ internal data class ThemeDialogItem(
     val title: String,
     val subtitle: String? = null,
     val selected: Boolean = false,
+    val leadingIcon: TvIcon? = null,
+    val leadingIconColor: Int = Color.TRANSPARENT,
     val leadingBadge: String? = null,
     val leadingBadgeColor: Int = Color.TRANSPARENT,
     val swatchFill: Int? = null,
@@ -660,6 +663,17 @@ internal class ThemedDialogBuilder(
             }.also { row.addView(it, LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(10) }) }
         }
 
+        val leadingIconIdleColor = if (item.leadingIconColor != Color.TRANSPARENT) item.leadingIconColor else palette.accentColor
+        val leadingIconDrawable = item.leadingIcon?.let { icon ->
+            TvVectorIconDrawable(context, icon, leadingIconIdleColor, sizeDp = 18f, strokeDp = 1.85f).also { drawable ->
+                val iv = ImageView(context).apply {
+                    setImageDrawable(drawable)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                }
+                row.addView(iv, LinearLayout.LayoutParams(dp(20), dp(20)).apply { rightMargin = dp(10) })
+            }
+        }
+
         val leadingBadgeIdleColor = if (item.leadingBadgeColor != Color.TRANSPARENT) item.leadingBadgeColor else palette.accentColor
         val leadingBadgeView = item.leadingBadge?.takeIf { it.isNotBlank() }?.let { badgeText ->
             TextView(context).apply {
@@ -733,6 +747,7 @@ internal class ThemedDialogBuilder(
             titleView.setTextColor(fg)
             subtitleView?.setTextColor(subFg)
             trailingView?.setTextColor(if (hasFocus) palette.focusedTextColor else if (item.selected) palette.accentColor else subColorIdle)
+            leadingIconDrawable?.setIconColor(if (hasFocus) palette.focusedTextColor else leadingIconIdleColor)
             (swatchView?.background as? GradientDrawable)?.setStroke(
                 dp(if (hasFocus) 2f else 1.5f),
                 if (hasFocus) palette.focusRingColor else swatchIdleStroke

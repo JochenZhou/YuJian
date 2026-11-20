@@ -23,6 +23,7 @@ object Prefs {
     private const val KEY_HISTORY = "notify_history"
     private const val KEY_SENDSPIN_ENABLED = "sendspin_enabled"
     private const val KEY_SENDSPIN_AUTO_POPUP = "sendspin_auto_popup"
+    private const val KEY_LAUNCH_TO_PLAYER = "launch_to_player"
     private const val KEY_SENDSPIN_SERVER_URL = "sendspin_server_url"
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
     private const val KEY_SENDSPIN_PLAYER_STYLE = "sendspin_player_style"
@@ -145,6 +146,14 @@ object Prefs {
 
     fun setSendspinAutoPopup(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_SENDSPIN_AUTO_POPUP, enabled).apply()
+    }
+
+    /** 启动玉简 App 时是否自动直达音乐播放页；默认关闭。 */
+    fun isLaunchToPlayer(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_LAUNCH_TO_PLAYER, false)
+
+    fun setLaunchToPlayer(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_LAUNCH_TO_PLAYER, enabled).apply()
     }
 
     fun getSendspinServerUrl(context: Context): String =

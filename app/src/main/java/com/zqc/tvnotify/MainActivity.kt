@@ -76,10 +76,11 @@ class MainActivity : Activity() {
 
     private lateinit var headerBadgeView: TextView
     private lateinit var stateMetricValue: TextView
-    private lateinit var portMetricValue: TextView
     private lateinit var overlayMetricValue: TextView
     private lateinit var ipMetricValue: TextView
-    private lateinit var mediaSummaryValue: TextView
+    private lateinit var wledMetricValue: TextView
+    private lateinit var musicHeroTitle: TextView
+    private lateinit var musicHeroSubtitle: TextView
     private lateinit var wledSummaryBadge: TextView
     private lateinit var tokenValue: TextView
     private lateinit var urlValue: TextView
@@ -90,10 +91,11 @@ class MainActivity : Activity() {
     private lateinit var haTabButton: Button
     private lateinit var tokenTabButton: Button
 
-    // Tab 1 快捷入口
+    // Tab 1 首页：音乐中枢主按钮 + 日常快捷入口
     private lateinit var musicButton: Button
-    private lateinit var quickTestButton: Button
     private lateinit var quickHistoryButton: Button
+    private lateinit var quickThemeButton: Button
+    private lateinit var quickConnectButton: Button
 
     // Tab 2 左卡：演练测试
     private lateinit var testButton: Button
@@ -101,23 +103,23 @@ class MainActivity : Activity() {
     private lateinit var videoTestButton: Button
     private lateinit var ttsTestButton: Button
 
-    // Tab 2 右卡：阵法调控
+    // Tab 2 右卡：通知与外观调控
     private lateinit var historyButton: Button
     private lateinit var positionButton: Button
     private lateinit var muteButton: Button
     private lateinit var themeButton: Button
     private lateinit var controlHintView: TextView
 
-    // Tab 3 左卡：符钥与系统
+    // Tab 3 左卡：互联与系统管理
     private lateinit var copyButton: Button
     private lateinit var resetButton: Button
+    private lateinit var launchPlayerButton: Button
     private lateinit var aboutButton: Button
     private lateinit var updateButton: Button
 
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
     private lateinit var callInfoTitleView: TextView
-    private lateinit var footerView: TextView
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -151,6 +153,11 @@ class MainActivity : Activity() {
         }
 
         currentMainTabButton().requestFocus()
+
+        // 仅在冷启动且用户开启「启动直达播放页」时跳转一次；播放页按返回可平滑退回主界面
+        if (savedInstanceState == null && Prefs.isLaunchToPlayer(this)) {
+            startActivity(Intent(this, SendspinActivity::class.java))
+        }
     }
 
     override fun onResume() {
@@ -239,10 +246,10 @@ class MainActivity : Activity() {
         contentContainer.addView(systemPage, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         rootColumn.addView(contentContainer, linearParams(topMargin = dp(12)))
 
-        // 4. 底部遥控器快捷键引导条（不抢占焦点）
+        // 4. 底部遥控器快捷键引导条（纯中文零特殊字符，不抢占焦点）
         val navHint = makeText(
-            if (theme.isXianxia) "◀▶ 切换页签  ·  ▲▼ 移动焦距  ·  确认 施法  ·  返回 归位导航"
-            else "◀▶ 切换页签  ·  ▲▼ 移动焦点  ·  确认 执行  ·  返回 回到导航",
+            if (theme.isXianxia) "方向键 切换页签与焦距  ·  确认 施法  ·  返回 归位导航"
+            else "方向键 切换页签与移动焦点  ·  确认 执行  ·  返回 回到导航",
             11.5f,
             theme.hintColor,
             false
@@ -419,7 +426,245 @@ class MainActivity : Activity() {
     }
 
     private fun buildOverviewPage(isWideScreen: Boolean): View {
-        // 左栏：2x2 状态指标网格 + 符钥接口卡片 + 高频快捷入口
+        // 左栏：音乐播放中枢大卡片（配置稳定后最高频的日常主入口）
+        val leftColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            isFocusable = false
+        }
+        val musicCard = makeCard(padH = 20, padV = 18).apply {
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val heroHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = false
+        }
+        val heroDiscView = ImageView(this).apply {
+            setImageDrawable(TvVectorIconDrawable(this@MainActivity, TvIcon.MUSIC_DISC, theme.accentColor, 42f, 2.0f))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            isFocusable = false
+        }
+        val heroTitleCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isFocusable = false
+        }
+        heroTitleCol.addView(
+            makeText(
+                if (theme.isXianxia) "灵音传韵中枢" else "音乐播放中枢",
+                18f,
+                Color.WHITE,
+                true
+            ).apply { typeface = theme.bannerTitleTypeface }
+        )
+        heroTitleCol.addView(
+            makeText(
+                if (theme.isXianxia) "Sendspin 局域网无损推流与歌单点播" else "Sendspin 局域网无损音乐与歌单点播",
+                12f,
+                theme.hintColor,
+                false
+            ).apply { setPadding(0, dp(3), 0, 0) }
+        )
+        wledSummaryBadge = makeText("WLED 未开启", 11.5f, theme.hintColor, true).apply {
+            setSingleLine(true)
+            gravity = Gravity.CENTER_VERTICAL
+            compoundDrawablePadding = dp(5)
+            setPadding(dp(9), dp(4), dp(10), dp(4))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(12).toFloat(),
+                Color.argb(0x2A, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)),
+                dp(1),
+                Color.argb(0x60, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
+            )
+        }
+        heroHeader.addView(heroDiscView, LinearLayout.LayoutParams(dp(44), dp(44)).apply { rightMargin = dp(14) })
+        heroHeader.addView(heroTitleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(8) })
+        heroHeader.addView(wledSummaryBadge, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        musicCard.addView(heroHeader)
+
+        val nowPlayingBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(10).toFloat(),
+                Color.argb(0x46, 0x00, 0x00, 0x00),
+                dp(1),
+                Color.argb(0x42, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
+            )
+            isFocusable = false
+        }
+        musicHeroTitle = makeText("音乐待机中", 17f, Color.WHITE, true).apply {
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            compoundDrawablePadding = dp(8)
+        }
+        musicHeroSubtitle = makeText("已连接 Music Assistant 后即可大屏听歌、看歌词与灯光律动", 12.5f, theme.hintColor, false).apply {
+            setLineSpacing(dp(2.5f).toFloat(), 1f)
+            setPadding(0, dp(6), 0, 0)
+        }
+        nowPlayingBox.addView(musicHeroTitle)
+        nowPlayingBox.addView(musicHeroSubtitle)
+        musicCard.addView(nowPlayingBox, linearParams(topMargin = dp(16)))
+
+        val musicActionRow = buildButtonRow()
+        musicButton = buildButton(
+            label = if (theme.isXianxia) "进入灵音播放页" else "进入音乐播放页",
+            padV = 14,
+            icon = TvIcon.PLAY_TRIANGLE
+        ) {
+            startActivity(Intent(this@MainActivity, SendspinActivity::class.java))
+        }.apply { id = View.generateViewId() }
+        musicActionRow.addView(musicButton, weightedParams(0, gapDp = 0))
+        musicCard.addView(musicActionRow, linearParams(topMargin = dp(16)))
+        leftColumn.addView(musicCard, LinearLayout.LayoutParams(MATCH_PARENT, if (isWideScreen) MATCH_PARENT else WRAP_CONTENT))
+
+        // 右栏：精简健康状态（2x2 紧凑格）+ 日常 3 项高频快捷操作（移走二维码与开发 URL）
+        val rightColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
+            isFocusable = false
+        }
+
+        val statusCard = makeCard(padH = 14, padV = 12).apply {
+            isFocusable = false
+            isClickable = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+        }
+        val metricRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val (stateCell, stateVal) = buildMetricCell(if (theme.isXianxia) "阵法状态" else "服务状态")
+        val (overlayCell, overlayVal) = buildMetricCell(if (theme.isXianxia) "悬浮显形" else "悬浮窗权限")
+        stateMetricValue = stateVal
+        overlayMetricValue = overlayVal
+        metricRow1.addView(stateCell, weightedParams(0, gapDp = 8))
+        metricRow1.addView(overlayCell, weightedParams(1, gapDp = 8))
+        statusCard.addView(metricRow1)
+
+        val metricRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val (ipCell, ipVal) = buildMetricCell(if (theme.isXianxia) "本机地址" else "局域网地址")
+        val (wledCell, wledVal) = buildMetricCell("WLED 灯光联动")
+        ipMetricValue = ipVal
+        wledMetricValue = wledVal
+        metricRow2.addView(ipCell, weightedParams(0, gapDp = 8))
+        metricRow2.addView(wledCell, weightedParams(1, gapDp = 8))
+        statusCard.addView(metricRow2, linearParams(topMargin = dp(8)))
+        rightColumn.addView(statusCard)
+
+        val quickCard = makeCard(padH = 14, padV = 13)
+        quickCard.addView(makeText(theme.quickActionsTitle, 12.5f, theme.hintColor, true))
+        val quickRow1 = buildButtonRow()
+        quickHistoryButton = buildButton(theme.historyButtonText, padV = 12, icon = TvIcon.HISTORY) {
+            showHistoryDialog()
+        }.apply { id = View.generateViewId() }
+        quickThemeButton = buildButton(
+            label = if (theme.isXianxia) "切换法相" else "切换主题",
+            padV = 12,
+            icon = TvIcon.PALETTE
+        ) {
+            showThemeSelectorDialog()
+        }.apply { id = View.generateViewId() }
+        quickRow1.addView(quickHistoryButton, weightedParams(0, gapDp = 8))
+        quickRow1.addView(quickThemeButton, weightedParams(1, gapDp = 8))
+        quickCard.addView(quickRow1, linearParams(topMargin = dp(10)))
+
+        val quickRow2 = buildButtonRow()
+        quickConnectButton = buildButton(
+            label = if (theme.isXianxia) "扫码互联与符钥" else "扫码互联 / 手机端",
+            padV = 12,
+            icon = TvIcon.QR_CODE
+        ) {
+            switchMainTabToControl(MainTab.SYSTEM, haTabButton)
+        }.apply { id = View.generateViewId() }
+        quickRow2.addView(quickConnectButton, weightedParams(0, gapDp = 0))
+        quickCard.addView(quickRow2, linearParams(topMargin = dp(8)))
+        rightColumn.addView(
+            quickCard,
+            LinearLayout.LayoutParams(MATCH_PARENT, if (isWideScreen) 0 else WRAP_CONTENT, if (isWideScreen) 1f else 0f).apply {
+                topMargin = dp(10)
+            }
+        )
+
+        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.15f, rightWeight = 0.95f)
+    }
+
+    private fun buildPracticePage(isWideScreen: Boolean): View {
+        // 左栏：四大演练测试
+        val practiceCard = makeCard(padH = 18, padV = 16)
+        buildSectionHeader(practiceCard, theme.practiceCardTitle, theme.practiceCardSubtitle)
+
+        testButton = buildButton(
+            label = theme.testButtonText,
+            padV = 13,
+            icon = TvIcon.BELL,
+            onClick = { showTestBanner() }
+        ).apply { id = View.generateViewId() }
+        imageTestButton = buildButton(theme.imageTestButtonText, padV = 13, icon = TvIcon.IMAGE) {
+            showTestImageBanner()
+        }.apply { id = View.generateViewId() }
+        videoTestButton = buildButton(theme.videoTestButtonText, padV = 13, icon = TvIcon.VIDEO) {
+            showTestVideoBanner()
+        }.apply { id = View.generateViewId() }
+        ttsTestButton = buildButton(theme.ttsTestButtonText, padV = 13, icon = TvIcon.SPEAKER) {
+            showTestTtsBanner()
+        }.apply { id = View.generateViewId() }
+
+        val practiceRow1 = buildButtonRow()
+        practiceRow1.addView(testButton, weightedParams(0, gapDp = 10))
+        practiceRow1.addView(imageTestButton, weightedParams(1, gapDp = 10))
+        practiceCard.addView(practiceRow1, linearParams(topMargin = dp(12)))
+
+        val practiceRow2 = buildButtonRow()
+        practiceRow2.addView(videoTestButton, weightedParams(0, gapDp = 10))
+        practiceRow2.addView(ttsTestButton, weightedParams(1, gapDp = 10))
+        practiceCard.addView(practiceRow2, linearParams(topMargin = dp(10)))
+
+        practiceCard.addView(buildHintBox(theme.practiceCardHint), linearParams(topMargin = dp(14)))
+
+        // 右栏：通知与外观调控
+        val controlCard = makeCard(padH = 18, padV = 16)
+        buildSectionHeader(controlCard, theme.controlCardTitle, theme.controlCardSubtitle)
+
+        historyButton = buildButton(theme.historyButtonText, padV = 13, icon = TvIcon.HISTORY) {
+            showHistoryDialog()
+        }.apply { id = View.generateViewId() }
+        positionButton = buildButton(theme.positionButtonText(Prefs.getBannerPosition(this)), padV = 13, icon = TvIcon.POSITION) {
+            cycleBannerPosition()
+        }.apply { id = View.generateViewId() }
+        muteButton = buildButton(
+            theme.muteButtonText(Prefs.isMuted(this)),
+            padV = 13,
+            icon = if (Prefs.isMuted(this)) TvIcon.MUTE else TvIcon.SPEAKER
+        ) {
+            toggleMute()
+        }.apply { id = View.generateViewId() }
+        themeButton = buildButton(
+            label = themeToggleLabel(),
+            padV = 13,
+            icon = theme.vectorIcon(),
+            onClick = { showThemeSelectorDialog() },
+            onLongClick = { cycleTheme(); true }
+        ).apply { id = View.generateViewId() }
+
+        val controlRow1 = buildButtonRow()
+        controlRow1.addView(historyButton, weightedParams(0, gapDp = 10))
+        controlRow1.addView(positionButton, weightedParams(1, gapDp = 10))
+        controlCard.addView(controlRow1, linearParams(topMargin = dp(12)))
+
+        val controlRow2 = buildButtonRow()
+        controlRow2.addView(muteButton, weightedParams(0, gapDp = 10))
+        controlRow2.addView(themeButton, weightedParams(1, gapDp = 10))
+        controlCard.addView(controlRow2, linearParams(topMargin = dp(10)))
+
+        controlHintView = buildHintBox(theme.controlCardHint)
+        controlCard.addView(controlHintView, linearParams(topMargin = dp(14)))
+
+        return buildTwoColumnRow(isWideScreen, practiceCard, controlCard)
+    }
+
+    private fun buildSystemPage(isWideScreen: Boolean): View {
+        // 左栏：精简调用信息 + 符钥/直达/更新/关于与保活
         val leftColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -427,62 +672,7 @@ class MainActivity : Activity() {
             isFocusable = false
         }
 
-        val statusCard = makeCard(padH = 14, padV = 9).apply {
-            isFocusable = false
-            isClickable = false
-            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
-        }
-
-        val metricRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val (stateCell, stateVal) = buildMetricCell(if (theme.isXianxia) "阵法状态" else "服务状态")
-        val (portCell, portVal) = buildMetricCell(if (theme.isXianxia) "传音端口" else "监听端口")
-        stateMetricValue = stateVal
-        portMetricValue = portVal
-        metricRow1.addView(stateCell, weightedParams(0, gapDp = 8))
-        metricRow1.addView(portCell, weightedParams(1, gapDp = 8))
-        statusCard.addView(metricRow1)
-
-        val metricRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val (overlayCell, overlayVal) = buildMetricCell(if (theme.isXianxia) "显形之术（悬浮窗）" else "悬浮窗权限")
-        val (ipCell, ipVal) = buildMetricCell(if (theme.isXianxia) "本机方位（IPv4）" else "本机 IPv4")
-        overlayMetricValue = overlayVal
-        ipMetricValue = ipVal
-        metricRow2.addView(overlayCell, weightedParams(0, gapDp = 8))
-        metricRow2.addView(ipCell, weightedParams(1, gapDp = 8))
-        statusCard.addView(metricRow2, linearParams(topMargin = dp(6)))
-
-        // 音乐与 WLED 实时摘要条（纯信息展示，不抢占 D-Pad 焦点）
-        val mediaStrip = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(11), dp(7), dp(11), dp(7))
-            background = roundedRect(
-                if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
-                Color.argb(0x42, 0x00, 0x00, 0x00),
-                dp(1),
-                Color.argb(0x48, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
-            )
-        }
-        mediaSummaryValue = makeText("♪ 音乐待机中", 12.5f, Color.WHITE, true).apply {
-            setSingleLine(true)
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }
-        wledSummaryBadge = makeText("WLED 未开启", 11.5f, theme.hintColor, true).apply {
-            setSingleLine(true)
-            setPadding(dp(8), dp(2), dp(8), dp(2))
-            background = roundedRect(
-                if (theme == Theme.MINECRAFT) 0f else dp(6).toFloat(),
-                Color.argb(0x28, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)),
-                0,
-                Color.TRANSPARENT
-            )
-        }
-        mediaStrip.addView(mediaSummaryValue, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(8) })
-        mediaStrip.addView(wledSummaryBadge, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-        statusCard.addView(mediaStrip, linearParams(topMargin = dp(7)))
-        leftColumn.addView(statusCard)
-
-        val urlCard = makeCard(padH = 14, padV = 9)
+        val urlCard = makeCard(padH = 16, padV = 10)
         val urlHeaderRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -503,9 +693,11 @@ class MainActivity : Activity() {
         urlHeaderRow.addView(tokenValue)
         urlCard.addView(urlHeaderRow)
 
-        urlValue = makeText("", 13f, theme.accentColor, false).apply {
+        urlValue = makeText("", 12.5f, theme.accentColor, false).apply {
             typeface = Typeface.MONOSPACE
-            setPadding(dp(10), dp(7), dp(10), dp(7))
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            setPadding(dp(10), dp(6), dp(10), dp(6))
             background = roundedRect(
                 if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
                 Color.argb(0x48, 0x00, 0x00, 0x00),
@@ -515,29 +707,52 @@ class MainActivity : Activity() {
             setOnClickListener { copyCallUrl() }
         }
         urlCard.addView(urlValue, linearParams(topMargin = dp(6)))
-        leftColumn.addView(urlCard, linearParams(topMargin = dp(9)))
+        leftColumn.addView(urlCard)
 
-        val quickCard = makeCard(padH = 14, padV = 11)
-        quickCard.addView(makeText(theme.quickActionsTitle, 12.5f, theme.hintColor, true))
-        val quickRow = buildButtonRow()
-        musicButton = buildButton("Sendspin 音乐", padV = 11) {
-            startActivity(Intent(this@MainActivity, SendspinActivity::class.java))
+        val systemCard = makeCard(padH = 16, padV = 13)
+        buildSectionHeader(systemCard, theme.systemCardTitle, theme.systemCardSubtitle)
+
+        copyButton = buildButton(theme.copyButtonText, padV = 11, icon = TvIcon.COPY) {
+            copyCallUrl()
         }.apply { id = View.generateViewId() }
-        quickTestButton = buildButton(
-            label = theme.testButtonText,
+        resetButton = buildButton(theme.resetButtonText, padV = 11, icon = TvIcon.REFRESH) {
+            resetToken()
+        }.apply { id = View.generateViewId() }
+        launchPlayerButton = buildButton(launchToPlayerLabel(), padV = 11, icon = TvIcon.ROCKET) {
+            toggleLaunchToPlayer()
+        }.apply { id = View.generateViewId() }
+        updateButton = buildButton(AppUpdater.getButtonText(this, theme), padV = 11, icon = TvIcon.DOWNLOAD) {
+            checkUpdateManual()
+        }.apply { id = View.generateViewId() }
+        aboutButton = buildButton(
+            if (theme.isXianxia) "溯源与保活" else "关于与保活",
             padV = 11,
-            onClick = { showTestBanner() }
-        ).apply { id = View.generateViewId() }
-        quickHistoryButton = buildButton(theme.historyButtonText, padV = 11) {
-            showHistoryDialog()
+            icon = TvIcon.INFO
+        ) {
+            showAboutDialog()
         }.apply { id = View.generateViewId() }
-        quickRow.addView(musicButton, weightedParams(0, gapDp = 8))
-        quickRow.addView(quickTestButton, weightedParams(1, gapDp = 8))
-        quickRow.addView(quickHistoryButton, weightedParams(2, gapDp = 8))
-        quickCard.addView(quickRow, linearParams(topMargin = dp(8)))
-        leftColumn.addView(quickCard, linearParams(topMargin = dp(9)))
 
-        // 右栏：HA 自动发现集成 & 手机控制台二维码卡片（与左栏等高对齐）
+        val sysRow1 = buildButtonRow()
+        sysRow1.addView(copyButton, weightedParams(0, gapDp = 10))
+        sysRow1.addView(resetButton, weightedParams(1, gapDp = 10))
+        systemCard.addView(sysRow1, linearParams(topMargin = dp(10)))
+
+        val sysRow2 = buildButtonRow()
+        sysRow2.addView(launchPlayerButton, weightedParams(0, gapDp = 0))
+        systemCard.addView(sysRow2, linearParams(topMargin = dp(8)))
+
+        val sysRow3 = buildButtonRow()
+        sysRow3.addView(updateButton, weightedParams(0, gapDp = 10))
+        sysRow3.addView(aboutButton, weightedParams(1, gapDp = 10))
+        systemCard.addView(sysRow3, linearParams(topMargin = dp(8)))
+        leftColumn.addView(
+            systemCard,
+            LinearLayout.LayoutParams(MATCH_PARENT, if (isWideScreen) 0 else WRAP_CONTENT, if (isWideScreen) 1f else 0f).apply {
+                topMargin = dp(10)
+            }
+        )
+
+        // 右栏：HA 自动发现集成 & 手机控制台二维码卡片（从首页归位至互联页）
         val rightColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             clipChildren = false
@@ -551,13 +766,13 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(0, 0, 0, dp(10))
         }
-        haTabButton = buildTabButton("🌟 HA 自动发现集成", activeQrTab == QrTab.HA_INTEGRATION) {
+        haTabButton = buildTabButton("HA 自动发现集成", activeQrTab == QrTab.HA_INTEGRATION, TvIcon.HOME_HA) {
             if (activeQrTab != QrTab.HA_INTEGRATION) {
                 activeQrTab = QrTab.HA_INTEGRATION
                 refreshQrDisplay()
             }
         }.apply { id = View.generateViewId() }
-        tokenTabButton = buildTabButton("📱 手机控制台 & 符钥", activeQrTab == QrTab.WEB_CONSOLE) {
+        tokenTabButton = buildTabButton("手机控制台", activeQrTab == QrTab.WEB_CONSOLE, TvIcon.PHONE) {
             if (activeQrTab != QrTab.WEB_CONSOLE) {
                 activeQrTab = QrTab.WEB_CONSOLE
                 refreshQrDisplay()
@@ -613,117 +828,7 @@ class MainActivity : Activity() {
         qrCard.addView(qrCaptionView, linearParams(topMargin = dp(10)))
         rightColumn.addView(qrCard, LinearLayout.LayoutParams(MATCH_PARENT, if (isWideScreen) MATCH_PARENT else WRAP_CONTENT))
 
-        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.24f, rightWeight = 0.96f)
-    }
-
-    private fun buildPracticePage(isWideScreen: Boolean): View {
-        // 左栏：四大演练测试
-        val practiceCard = makeCard(padH = 18, padV = 16)
-        buildSectionHeader(practiceCard, theme.practiceCardTitle, theme.practiceCardSubtitle)
-
-        testButton = buildButton(
-            label = theme.testButtonText,
-            padV = 13,
-            onClick = { showTestBanner() }
-        ).apply { id = View.generateViewId() }
-        imageTestButton = buildButton(theme.imageTestButtonText, padV = 13) {
-            showTestImageBanner()
-        }.apply { id = View.generateViewId() }
-        videoTestButton = buildButton(theme.videoTestButtonText, padV = 13) {
-            showTestVideoBanner()
-        }.apply { id = View.generateViewId() }
-        ttsTestButton = buildButton(theme.ttsTestButtonText, padV = 13) {
-            showTestTtsBanner()
-        }.apply { id = View.generateViewId() }
-
-        val practiceRow1 = buildButtonRow()
-        practiceRow1.addView(testButton, weightedParams(0, gapDp = 10))
-        practiceRow1.addView(imageTestButton, weightedParams(1, gapDp = 10))
-        practiceCard.addView(practiceRow1, linearParams(topMargin = dp(12)))
-
-        val practiceRow2 = buildButtonRow()
-        practiceRow2.addView(videoTestButton, weightedParams(0, gapDp = 10))
-        practiceRow2.addView(ttsTestButton, weightedParams(1, gapDp = 10))
-        practiceCard.addView(practiceRow2, linearParams(topMargin = dp(10)))
-
-        practiceCard.addView(buildHintBox(theme.practiceCardHint), linearParams(topMargin = dp(14)))
-
-        // 右栏：阵法调控与主题偏好
-        val controlCard = makeCard(padH = 18, padV = 16)
-        buildSectionHeader(controlCard, theme.controlCardTitle, theme.controlCardSubtitle)
-
-        historyButton = buildButton(theme.historyButtonText, padV = 13) {
-            showHistoryDialog()
-        }.apply { id = View.generateViewId() }
-        positionButton = buildButton(theme.positionButtonText(Prefs.getBannerPosition(this)), padV = 13) {
-            cycleBannerPosition()
-        }.apply { id = View.generateViewId() }
-        muteButton = buildButton(theme.muteButtonText(Prefs.isMuted(this)), padV = 13) {
-            toggleMute()
-        }.apply { id = View.generateViewId() }
-        themeButton = buildButton(
-            label = themeToggleLabel(),
-            padV = 13,
-            onClick = { showThemeSelectorDialog() },
-            onLongClick = { cycleTheme(); true }
-        ).apply { id = View.generateViewId() }
-
-        val controlRow1 = buildButtonRow()
-        controlRow1.addView(historyButton, weightedParams(0, gapDp = 10))
-        controlRow1.addView(positionButton, weightedParams(1, gapDp = 10))
-        controlCard.addView(controlRow1, linearParams(topMargin = dp(12)))
-
-        val controlRow2 = buildButtonRow()
-        controlRow2.addView(muteButton, weightedParams(0, gapDp = 10))
-        controlRow2.addView(themeButton, weightedParams(1, gapDp = 10))
-        controlCard.addView(controlRow2, linearParams(topMargin = dp(10)))
-
-        controlHintView = buildHintBox(theme.controlCardHint)
-        controlCard.addView(controlHintView, linearParams(topMargin = dp(14)))
-
-        return buildTwoColumnRow(isWideScreen, practiceCard, controlCard)
-    }
-
-    private fun buildSystemPage(isWideScreen: Boolean): View {
-        // 左栏：符钥与版本管理
-        val systemCard = makeCard(padH = 18, padV = 16)
-        buildSectionHeader(systemCard, theme.systemCardTitle, theme.systemCardSubtitle)
-
-        copyButton = buildButton(theme.copyButtonText, padV = 13) {
-            copyCallUrl()
-        }.apply { id = View.generateViewId() }
-        resetButton = buildButton(theme.resetButtonText, padV = 13) {
-            resetToken()
-        }.apply { id = View.generateViewId() }
-        updateButton = buildButton(AppUpdater.getButtonText(this, theme), padV = 13) {
-            checkUpdateManual()
-        }.apply { id = View.generateViewId() }
-        aboutButton = buildButton(theme.aboutButtonText, padV = 13) {
-            showAboutDialog()
-        }.apply { id = View.generateViewId() }
-
-        val sysRow1 = buildButtonRow()
-        sysRow1.addView(copyButton, weightedParams(0, gapDp = 10))
-        sysRow1.addView(resetButton, weightedParams(1, gapDp = 10))
-        systemCard.addView(sysRow1, linearParams(topMargin = dp(12)))
-
-        val sysRow2 = buildButtonRow()
-        sysRow2.addView(updateButton, weightedParams(0, gapDp = 10))
-        sysRow2.addView(aboutButton, weightedParams(1, gapDp = 10))
-        systemCard.addView(sysRow2, linearParams(topMargin = dp(10)))
-
-        // 右栏：常驻与 Aerial 保活指南
-        val keepAliveCard = makeCard(padH = 18, padV = 16)
-        buildSectionHeader(keepAliveCard, theme.keepAliveCardTitle)
-
-        footerView = makeText(theme.footerHint, 12.5f, theme.hintColor, false).apply {
-            setLineSpacing(dp(4).toFloat(), 1f)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            background = roundedRect(dp(10).toFloat(), Color.argb(0x36, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
-        }
-        keepAliveCard.addView(footerView, linearParams(topMargin = dp(10)))
-
-        return buildTwoColumnRow(isWideScreen, systemCard, keepAliveCard)
+        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.15f, rightWeight = 0.95f)
     }
 
     private fun buildTwoColumnRow(
@@ -801,10 +906,11 @@ class MainActivity : Activity() {
 
         // 各页顶部控件向上均先回到当前所属主 Tab，防止跨页触发焦点切换
         musicButton.nextFocusUpId = ovId
-        quickTestButton.nextFocusUpId = ovId
         quickHistoryButton.nextFocusUpId = ovId
-        haTabButton.nextFocusUpId = ovId
-        tokenTabButton.nextFocusUpId = ovId
+        quickThemeButton.nextFocusUpId = ovId
+        quickConnectButton.nextFocusUpId = quickHistoryButton.id
+        quickHistoryButton.nextFocusDownId = quickConnectButton.id
+        quickThemeButton.nextFocusDownId = quickConnectButton.id
 
         testButton.nextFocusUpId = prId
         imageTestButton.nextFocusUpId = prId
@@ -813,14 +919,18 @@ class MainActivity : Activity() {
 
         copyButton.nextFocusUpId = syId
         resetButton.nextFocusUpId = syId
+        haTabButton.nextFocusUpId = syId
+        tokenTabButton.nextFocusUpId = syId
+        copyButton.nextFocusDownId = launchPlayerButton.id
+        resetButton.nextFocusDownId = launchPlayerButton.id
+        launchPlayerButton.nextFocusUpId = copyButton.id
+        launchPlayerButton.nextFocusDownId = updateButton.id
+        updateButton.nextFocusUpId = launchPlayerButton.id
+        aboutButton.nextFocusUpId = launchPlayerButton.id
 
-        // 页内与跨页左右流转：页内最右按右切下一页，最左按左切上一页
-        musicButton.nextFocusRightId = quickTestButton.id
-        quickTestButton.nextFocusLeftId = musicButton.id
-        quickTestButton.nextFocusRightId = quickHistoryButton.id
-        quickHistoryButton.nextFocusLeftId = quickTestButton.id
-        haTabButton.nextFocusRightId = tokenTabButton.id
-        tokenTabButton.nextFocusLeftId = haTabButton.id
+        // 页内左右流转
+        quickHistoryButton.nextFocusRightId = quickThemeButton.id
+        quickThemeButton.nextFocusLeftId = quickHistoryButton.id
 
         testButton.nextFocusRightId = imageTestButton.id
         imageTestButton.nextFocusLeftId = testButton.id
@@ -835,36 +945,46 @@ class MainActivity : Activity() {
         resetButton.nextFocusLeftId = copyButton.id
         updateButton.nextFocusRightId = aboutButton.id
         aboutButton.nextFocusLeftId = updateButton.id
+        haTabButton.nextFocusRightId = tokenTabButton.id
+        tokenTabButton.nextFocusLeftId = haTabButton.id
 
         bindDirectionalEdge(musicButton)
-        bindDirectionalEdge(resetButton)
-        bindDirectionalEdge(aboutButton)
-        bindDirectionalEdge(tokenTabButton, onRightTab = MainTab.PRACTICE, onRightTarget = { testButton })
+        bindDirectionalEdge(tokenTabButton)
+        bindDirectionalEdge(quickThemeButton, onRightTab = MainTab.PRACTICE, onRightTarget = { testButton })
+        bindDirectionalEdge(quickConnectButton, onRightTab = MainTab.PRACTICE, onRightTarget = { videoTestButton })
 
         if (isWideScreen) {
-            quickHistoryButton.nextFocusRightId = haTabButton.id
-            haTabButton.nextFocusLeftId = quickHistoryButton.id
+            musicButton.nextFocusRightId = quickHistoryButton.id
+            quickHistoryButton.nextFocusLeftId = musicButton.id
+            quickConnectButton.nextFocusLeftId = musicButton.id
 
             imageTestButton.nextFocusRightId = historyButton.id
             historyButton.nextFocusLeftId = imageTestButton.id
             ttsTestButton.nextFocusRightId = muteButton.id
             muteButton.nextFocusLeftId = ttsTestButton.id
 
-            bindDirectionalEdge(testButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
-            bindDirectionalEdge(videoTestButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            resetButton.nextFocusRightId = haTabButton.id
+            launchPlayerButton.nextFocusRightId = haTabButton.id
+            aboutButton.nextFocusRightId = haTabButton.id
+            haTabButton.nextFocusLeftId = resetButton.id
+
+            bindDirectionalEdge(testButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { quickThemeButton })
+            bindDirectionalEdge(videoTestButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { quickConnectButton })
             bindDirectionalEdge(positionButton, onRightTab = MainTab.SYSTEM, onRightTarget = { copyButton })
             bindDirectionalEdge(themeButton, onRightTab = MainTab.SYSTEM, onRightTarget = { updateButton })
 
             bindDirectionalEdge(copyButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { positionButton })
+            bindDirectionalEdge(launchPlayerButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { positionButton })
             bindDirectionalEdge(updateButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { themeButton })
         } else {
-            bindDirectionalEdge(quickHistoryButton, onRightTab = MainTab.PRACTICE, onRightTarget = { testButton })
-            bindDirectionalEdge(haTabButton)
+            bindDirectionalEdge(musicButton, onRightTab = MainTab.PRACTICE, onRightTarget = { testButton })
+            bindDirectionalEdge(quickHistoryButton)
+            bindDirectionalEdge(quickConnectButton, onRightTab = MainTab.PRACTICE, onRightTarget = { videoTestButton })
 
-            bindDirectionalEdge(testButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
-            bindDirectionalEdge(videoTestButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
-            bindDirectionalEdge(historyButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
-            bindDirectionalEdge(muteButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { tokenTabButton })
+            bindDirectionalEdge(testButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { quickThemeButton })
+            bindDirectionalEdge(videoTestButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { quickConnectButton })
+            bindDirectionalEdge(historyButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { quickThemeButton })
+            bindDirectionalEdge(muteButton, onLeftTab = MainTab.OVERVIEW, onLeftTarget = { quickConnectButton })
 
             bindDirectionalEdge(imageTestButton, onRightTab = MainTab.SYSTEM, onRightTarget = { copyButton })
             bindDirectionalEdge(ttsTestButton, onRightTab = MainTab.SYSTEM, onRightTarget = { updateButton })
@@ -872,7 +992,11 @@ class MainActivity : Activity() {
             bindDirectionalEdge(themeButton, onRightTab = MainTab.SYSTEM, onRightTarget = { updateButton })
 
             bindDirectionalEdge(copyButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { imageTestButton })
+            bindDirectionalEdge(launchPlayerButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { imageTestButton })
             bindDirectionalEdge(updateButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { ttsTestButton })
+            bindDirectionalEdge(haTabButton, onLeftTab = MainTab.PRACTICE, onLeftTarget = { ttsTestButton })
+            bindDirectionalEdge(resetButton)
+            bindDirectionalEdge(aboutButton)
         }
     }
 
@@ -985,7 +1109,7 @@ class MainActivity : Activity() {
     private fun buildMetricCell(label: String): Pair<LinearLayout, TextView> {
         val cell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(7), dp(12), dp(7))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             background = roundedRect(
                 if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
                 Color.argb(0x38, 0x00, 0x00, 0x00),
@@ -994,9 +1118,12 @@ class MainActivity : Activity() {
             )
         }
         val labelView = makeText(label, 11.5f, theme.hintColor, false)
-        val valueView = makeText("", 13.5f, Color.WHITE, true).apply {
-            setPadding(0, dp(3), 0, 0)
+        val valueView = makeText("", 13f, Color.WHITE, true).apply {
+            setPadding(0, dp(4), 0, 0)
             setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            gravity = Gravity.CENTER_VERTICAL
+            compoundDrawablePadding = dp(6)
         }
         cell.addView(labelView)
         cell.addView(valueView)
@@ -1030,19 +1157,35 @@ class MainActivity : Activity() {
         return view
     }
 
-    private fun buildTabButton(label: String, isSelected: Boolean, onClick: () -> Unit): Button {
+    private fun buildTabButton(
+        label: String,
+        isSelected: Boolean,
+        icon: TvIcon? = null,
+        onClick: () -> Unit
+    ): Button {
         val button = Button(this)
         button.text = label
+        button.isAllCaps = false
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         button.typeface = Typeface.DEFAULT_BOLD
+        button.gravity = Gravity.CENTER
         button.setPadding(dp(9), dp(7), dp(9), dp(7))
         button.isFocusable = true
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
+        button.setSingleLine(true)
 
         val bgNormal = if (isSelected) theme.accentColor else theme.buttonBg
         val textNormal = if (isSelected) Color.WHITE else theme.hintColor
         button.setTextColor(textNormal)
+
+        val iconDrawable = icon?.let {
+            TvVectorIconDrawable(this, it, textNormal, sizeDp = 14f, strokeDp = 1.75f).also { d ->
+                button.compoundDrawablePadding = dp(6)
+                button.setCompoundDrawables(d, null, null, null)
+            }
+        }
+        button.tag = iconDrawable
 
         val radius = themeButtonRadiusPx()
         val states = StateListDrawable()
@@ -1059,8 +1202,12 @@ class MainActivity : Activity() {
         button.setOnFocusChangeListener { v, hasFocus ->
             if (hasFocus) {
                 v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(120).start()
+                iconDrawable?.setIconColor(Color.WHITE)
             } else {
                 v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start()
+                val isCurrentlySelected = (v === haTabButton && activeQrTab == QrTab.HA_INTEGRATION) ||
+                    (v === tokenTabButton && activeQrTab == QrTab.WEB_CONSOLE)
+                iconDrawable?.setIconColor(if (isCurrentlySelected) Color.WHITE else theme.hintColor)
             }
         }
         button.setOnClickListener { onClick() }
@@ -1070,6 +1217,7 @@ class MainActivity : Activity() {
     private fun buildButton(
         label: String,
         padV: Int = 10,
+        icon: TvIcon? = null,
         onLongClick: (() -> Boolean)? = null,
         onClick: () -> Unit
     ): Button {
@@ -1090,21 +1238,33 @@ class MainActivity : Activity() {
 
         val button = Button(this)
         button.text = label
+        button.isAllCaps = false
         button.setTextColor(Color.WHITE)
         button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         button.typeface = Typeface.DEFAULT_BOLD
+        button.gravity = Gravity.CENTER
         button.background = states
-        button.setPadding(dp(9), dp(padV), dp(9), dp(padV))
+        button.setPadding(dp(10), dp(padV), dp(10), dp(padV))
         button.isFocusable = true
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
         button.setSingleLine(true)
 
+        val iconDrawable = icon?.let {
+            TvVectorIconDrawable(this, it, theme.accentColor, sizeDp = 15.5f, strokeDp = 1.85f).also { d ->
+                button.compoundDrawablePadding = dp(7)
+                button.setCompoundDrawables(d, null, null, null)
+            }
+        }
+        button.tag = iconDrawable
+
         button.setOnFocusChangeListener { v, hasFocus ->
             if (hasFocus) {
                 v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(140).start()
+                (v.tag as? TvVectorIconDrawable)?.setIconColor(Color.WHITE)
             } else {
                 v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140).start()
+                (v.tag as? TvVectorIconDrawable)?.setIconColor(theme.accentColor)
             }
         }
 
@@ -1113,6 +1273,12 @@ class MainActivity : Activity() {
             button.setOnLongClickListener { onLongClick() }
         }
         return button
+    }
+
+    private fun setLeadingIcon(view: TextView, icon: TvIcon, color: Int, sizeDp: Float = 13.5f) {
+        view.compoundDrawablePadding = dp(6)
+        view.gravity = Gravity.CENTER_VERTICAL
+        view.setCompoundDrawables(TvVectorIconDrawable(this, icon, color, sizeDp, 1.8f), null, null, null)
     }
 
     private fun linearParams(
@@ -1171,64 +1337,117 @@ class MainActivity : Activity() {
         currentUrl = "http://$ip:${NotifyService.PORT}/$token/notify"
         webConsoleUrl = "http://$ip:${NotifyService.PORT}/$token"
 
+        val warnAmber = Color.rgb(0xFF, 0xB0, 0x20)
+        val errRed = Color.rgb(0xFF, 0x6B, 0x6B)
+
+        val headerColor = if (running) theme.accentColor else warnAmber
         headerBadgeView.text = if (running) {
-            if (theme.isXianxia) "● 灵脉通畅 · :${NotifyService.PORT}" else "● 服务运行中 · :${NotifyService.PORT}"
+            if (theme.isXianxia) "灵脉通畅 · :${NotifyService.PORT}" else "服务运行中 · :${NotifyService.PORT}"
         } else {
-            if (theme.isXianxia) "○ 阵法待启" else "○ 服务未运行"
+            if (theme.isXianxia) "阵法待启" else "服务未运行"
         }
-        headerBadgeView.setTextColor(if (running) theme.accentColor else Color.rgb(0xFF, 0xB0, 0x20))
+        headerBadgeView.setTextColor(headerColor)
+        setLeadingIcon(
+            headerBadgeView,
+            if (running) TvIcon.STATUS_DOT_SOLID else TvIcon.STATUS_DOT_RING,
+            headerColor,
+            sizeDp = 11f
+        )
 
+        val stateColor = if (running) theme.accentColor else errRed
         stateMetricValue.text = when {
-            running -> if (theme.isXianxia) "● 已开启（常驻）" else "● 运行中（常驻）"
-            !errorMsg.isNullOrBlank() -> "❌ 异常：$errorMsg"
-            else -> if (theme.isXianxia) "○ 灵光未聚" else "○ 未运行"
+            running -> if (theme.isXianxia) "已开启（常驻）" else "运行中（常驻）"
+            !errorMsg.isNullOrBlank() -> "异常：$errorMsg"
+            else -> if (theme.isXianxia) "灵光未聚" else "未运行"
         }
-        stateMetricValue.setTextColor(if (running) theme.accentColor else Color.rgb(0xFF, 0x6B, 0x6B))
-
-        portMetricValue.text = "${NotifyService.PORT}（${if (running) (if (theme.isXianxia) "灵脉通畅" else "监听中") else "待监听"}）"
-        portMetricValue.setTextColor(Color.WHITE)
+        stateMetricValue.setTextColor(stateColor)
+        setLeadingIcon(
+            stateMetricValue,
+            when {
+                running -> TvIcon.STATUS_DOT_SOLID
+                !errorMsg.isNullOrBlank() -> TvIcon.ERROR_X
+                else -> TvIcon.STATUS_DOT_RING
+            },
+            stateColor,
+            sizeDp = 12f
+        )
 
         overlayMetricValue.text = if (overlayGranted) {
-            if (theme.isXianxia) "● 已授予" else "● 已允许"
+            if (theme.isXianxia) "已授予" else "已允许"
         } else {
-            if (theme.isXianxia) "▲ 未授予（点此授权）" else "▲ 未允许（点此授权）"
+            if (theme.isXianxia) "未授予" else "未允许"
         }
-        overlayMetricValue.setTextColor(if (overlayGranted) Color.WHITE else Color.rgb(0xFF, 0xB0, 0x20))
+        val overlayColor = if (overlayGranted) Color.WHITE else warnAmber
+        overlayMetricValue.setTextColor(overlayColor)
+        setLeadingIcon(
+            overlayMetricValue,
+            if (overlayGranted) TvIcon.SHIELD else TvIcon.WARNING,
+            if (overlayGranted) theme.accentColor else warnAmber,
+            sizeDp = 13f
+        )
 
-        ipMetricValue.text = if (ipUsable) "🌐 $ip" else "⚠️ 未连接局域网"
-        ipMetricValue.setTextColor(if (ipUsable) Color.WHITE else Color.rgb(0xFF, 0xB0, 0x20))
+        ipMetricValue.text = if (ipUsable) "$ip:${NotifyService.PORT}" else "未连接局域网"
+        val ipColor = if (ipUsable) Color.WHITE else warnAmber
+        ipMetricValue.setTextColor(ipColor)
+        setLeadingIcon(
+            ipMetricValue,
+            if (ipUsable) TvIcon.NETWORK else TvIcon.WARNING,
+            if (ipUsable) theme.accentColor else warnAmber,
+            sizeDp = 13f
+        )
 
         PlaylistStore.restoreIfEmpty(applicationContext)
         val playlistCount = PlaylistStore.current()?.playlists?.size ?: 0
         val musicStatus = SendspinRuntime.current()?.status()
         val trackTitle = musicStatus?.title?.trim().orEmpty()
-        mediaSummaryValue.text = when {
-            musicStatus != null && musicStatus.playing && trackTitle.isNotEmpty() ->
-                "♪ 正在播放：$trackTitle" + if (playlistCount > 0) " · $playlistCount 歌单" else ""
-            trackTitle.isNotEmpty() ->
-                "♪ 已暂停：$trackTitle" + if (playlistCount > 0) " · $playlistCount 歌单" else ""
-            playlistCount > 0 ->
-                "♪ 音乐待机中 · 已同步 $playlistCount 张歌单"
-            else ->
-                "♪ Sendspin 音乐待机中"
+        val trackArtist = musicStatus?.artist?.trim().orEmpty()
+        val isPlaying = musicStatus != null && musicStatus.playing && trackTitle.isNotEmpty()
+        musicHeroTitle.text = when {
+            isPlaying -> "正在播放：$trackTitle"
+            trackTitle.isNotEmpty() -> "已暂停：$trackTitle"
+            else -> "音乐待机中"
         }
+        setLeadingIcon(musicHeroTitle, TvIcon.MUSIC_NOTE, theme.accentColor, sizeDp = 16f)
+        musicHeroSubtitle.text = when {
+            trackTitle.isNotEmpty() && trackArtist.isNotEmpty() ->
+                "$trackArtist" + if (playlistCount > 0) "  ·  已同步 $playlistCount 张歌单" else ""
+            playlistCount > 0 ->
+                "已同步 $playlistCount 张歌单，按确认键立刻进入播放页与选歌列表"
+            else ->
+                "连接 Music Assistant 后即可大屏无损听歌、歌词同步与 WLED 律动"
+        }
+
         val wledAudioOn = Prefs.isWledSyncEnabled(this)
         val wledColorOn = Prefs.isWledColorSyncEnabled(this)
-        wledSummaryBadge.text = when {
-            wledAudioOn && wledColorOn -> "● WLED 律动 ${Prefs.getWledSyncDynamics(this)}% · 色彩"
-            wledAudioOn -> "● WLED 律动 ${Prefs.getWledSyncDynamics(this)}%"
-            wledColorOn -> "● WLED 封面色彩"
-            else -> "WLED 未开启"
+        val wledDynamics = Prefs.getWledSyncDynamics(this)
+        val wledActive = wledAudioOn || wledColorOn
+        val wledLabel = when {
+            wledAudioOn && wledColorOn -> "律动 $wledDynamics% · 色彩"
+            wledAudioOn -> "律动 $wledDynamics%"
+            wledColorOn -> "封面色彩"
+            else -> "未开启"
         }
-        wledSummaryBadge.setTextColor(if (wledAudioOn || wledColorOn) theme.accentColor else theme.hintColor)
+        wledSummaryBadge.text = if (wledActive) "WLED $wledLabel" else "WLED 未开启"
+        wledSummaryBadge.setTextColor(if (wledActive) theme.accentColor else theme.hintColor)
+        setLeadingIcon(wledSummaryBadge, TvIcon.WLED_SPARK, if (wledActive) theme.accentColor else theme.hintColor, sizeDp = 12.5f)
+
+        wledMetricValue.text = wledLabel
+        wledMetricValue.setTextColor(if (wledActive) Color.WHITE else theme.hintColor)
+        setLeadingIcon(wledMetricValue, TvIcon.WLED_SPARK, if (wledActive) theme.accentColor else theme.hintColor, sizeDp = 13f)
 
         tokenValue.text = theme.tokenLabel(token)
         urlValue.text = currentUrl
 
         positionButton.text = theme.positionButtonText(Prefs.getBannerPosition(this))
-        muteButton.text = theme.muteButtonText(Prefs.isMuted(this))
+        val muted = Prefs.isMuted(this)
+        muteButton.text = theme.muteButtonText(muted)
+        val muteDrawable = TvVectorIconDrawable(this, if (muted) TvIcon.MUTE else TvIcon.SPEAKER, if (muteButton.isFocused) Color.WHITE else theme.accentColor, 15.5f, 1.85f)
+        muteButton.tag = muteDrawable
+        muteButton.setCompoundDrawables(muteDrawable, null, null, null)
+
         themeButton.text = themeToggleLabel()
         controlHintView.text = theme.controlCardHint
+        launchPlayerButton.text = launchToPlayerLabel()
         updateButton.text = AppUpdater.getButtonText(this, theme)
 
         refreshQrDisplay()
@@ -1239,15 +1458,15 @@ class MainActivity : Activity() {
         val content = if (isHa) HA_INTEGRATION_URL else webConsoleUrl
 
         qrTitleView.text = if (isHa) {
-            "🌟 Home Assistant 专属集成"
+            "Home Assistant 专属集成"
         } else {
-            "📱 手机控制台 & 符钥"
+            "手机控制台 & 符钥"
         }
 
         qrSubtitleView.text = if (isHa) {
             "在 HA 安装 ha-yujian 集成后，局域网 mDNS 自动发现此电视，免配 IP 与 Token！"
         } else {
-            "手机扫码在浏览器中秒开发送通知、查阅简录历史、调控免扰模式与消散横幅"
+            "手机扫码在浏览器中秒开发送通知、查阅简录历史、调控免扰模式与 WLED 参数"
         }
 
         qrCaptionView.text = if (isHa) {
@@ -1269,6 +1488,8 @@ class MainActivity : Activity() {
         val isHa = activeQrTab == QrTab.HA_INTEGRATION
         haTabButton.setTextColor(if (isHa) Color.WHITE else theme.hintColor)
         tokenTabButton.setTextColor(if (!isHa) Color.WHITE else theme.hintColor)
+        (haTabButton.tag as? TvVectorIconDrawable)?.setIconColor(if (isHa || haTabButton.isFocused) Color.WHITE else theme.hintColor)
+        (tokenTabButton.tag as? TvVectorIconDrawable)?.setIconColor(if (!isHa || tokenTabButton.isFocused) Color.WHITE else theme.hintColor)
 
         haTabButton.background = createTabStateDrawable(isHa)
         tokenTabButton.background = createTabStateDrawable(!isHa)
@@ -1421,7 +1642,7 @@ class MainActivity : Activity() {
         val dialogItems = items.map { item ->
             val level = BannerLevel.fromRaw(item.level)
             val posName = theme.positionDisplayName(item.position)
-            val ttsTag = if (!item.tts.isNullOrBlank()) " · 🔊" else ""
+            val ttsTag = if (!item.tts.isNullOrBlank()) " · 语音" else ""
             val bodyPreview = item.text.replace('\n', ' ').trim().take(42)
             ThemeDialogItem(
                 title = item.title.ifEmpty { if (theme.isXianxia) "（无题灵简）" else "（无标题）" },
@@ -1479,6 +1700,25 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun launchToPlayerLabel(): String {
+        val on = Prefs.isLaunchToPlayer(this)
+        return if (theme.isXianxia) {
+            "启动直达灵音页：${if (on) "已开启" else "已关闭"}"
+        } else {
+            "启动直达音乐播放页：${if (on) "已开启" else "已关闭"}"
+        }
+    }
+
+    private fun toggleLaunchToPlayer() {
+        val enabled = !Prefs.isLaunchToPlayer(this)
+        Prefs.setLaunchToPlayer(this, enabled)
+        launchPlayerButton.text = launchToPlayerLabel()
+        toast(
+            if (enabled) "已开启：下次启动玉简直接进入音乐播放页"
+            else "已关闭：启动玉简默认进入首页"
+        )
+    }
+
     private fun showAboutDialog() {
         val version = try {
             packageManager.getPackageInfo(packageName, 0).versionName
@@ -1487,16 +1727,17 @@ class MainActivity : Activity() {
         }
         val message = buildString {
             append("玉简（YuJian）v").append(version).append('\n')
-            append("Android TV 局域网灵讯通知横幅\n\n")
+            append("Android TV 局域网灵讯通知横幅与无损音乐终端\n\n")
+            append("后台常驻与保活：\n").append(theme.footerHint).append("\n\n")
             append("应用仓库：\n").append(APP_REPO_URL).append("\n\n")
             append("HA 集成：\n").append(HA_INTEGRATION_URL).append("\n\n")
             append("致谢：\n感谢开源电视桌面 Aerial 的 ADB 保活机制，助力实现后台拉起服务通知。")
         }
         showThemedDialog(
             ThemedDialogBuilder(this, theme)
-                .setTitle(if (theme.isXianxia) "简牍溯源" else "关于")
+                .setTitle(if (theme.isXianxia) "简牍溯源与保活" else "关于与保活指南")
                 .setMessage(message)
-                .setMaxWidthDp(520)
+                .setMaxWidthDp(560)
                 .setPositiveButton(if (theme.isXianxia) "知道了" else "确定")
                 .create()
         )
@@ -1539,22 +1780,24 @@ class MainActivity : Activity() {
         toast(theme.tokenResetToast(token))
     }
 
-    private fun themeToggleLabel(): String = "${theme.emoji} 主题：${theme.shortName}"
+    private fun themeToggleLabel(): String = "主题：${theme.shortName}"
 
     private fun showThemeSelectorDialog() {
         val allThemes = Theme.entries
         val dialogItems = allThemes.map { item ->
             val previewPalette = ThemeDialogPalette.from(item)
-            val detail = item.fullName.substringAfter("（", "").removeSuffix("）").ifBlank { item.soundDesc }
+            val detail = item.displayLabel.substringAfter("（", "").removeSuffix("）").ifBlank { item.soundDesc }
             val selected = item == theme
             ThemeDialogItem(
-                title = "${item.emoji} ${item.shortName}",
+                title = item.shortName,
                 subtitle = detail,
                 selected = selected,
+                leadingIcon = item.vectorIcon(),
+                leadingIconColor = previewPalette.accentColor,
                 swatchFill = previewPalette.accentColor,
                 swatchStroke = previewPalette.strokeColor,
                 swatchSquare = item == Theme.MINECRAFT,
-                trailingBadge = if (selected) (if (theme.isXianxia) "✓ 当前法相" else "✓ 当前主题") else null
+                trailingBadge = if (selected) (if (theme.isXianxia) "当前法相" else "当前主题") else null
             ) {
                 applySelectedTheme(item)
             }
@@ -1593,11 +1836,15 @@ class MainActivity : Activity() {
         Theme.save(this, theme)
         setContentView(buildRootView())
         refreshUi()
-        themeButton.requestFocus()
+        if (activeMainTab == MainTab.OVERVIEW) {
+            quickThemeButton.requestFocus()
+        } else {
+            themeButton.requestFocus()
+        }
         if (Settings.canDrawOverlays(this)) {
             showTestBanner()
         } else {
-            toast("已切换至：${theme.fullName}")
+            toast("已切换至：${theme.displayLabel}")
         }
     }
 

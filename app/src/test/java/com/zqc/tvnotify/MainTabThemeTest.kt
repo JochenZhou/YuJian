@@ -9,13 +9,13 @@ class MainTabThemeTest {
 
     @Test
     fun mainTabTitlesFollowXianxiaAndModernThemes() {
-        assertEquals("灵台总览", Theme.XIUXIAN.mainTabTitle(MainTab.OVERVIEW))
-        assertEquals("演法调阵", Theme.XIUXIAN.mainTabTitle(MainTab.PRACTICE))
-        assertEquals("符钥天机", Theme.XIUXIAN.mainTabTitle(MainTab.SYSTEM))
+        assertEquals("玉简首页", Theme.XIUXIAN.mainTabTitle(MainTab.OVERVIEW))
+        assertEquals("传音与法相", Theme.XIUXIAN.mainTabTitle(MainTab.PRACTICE))
+        assertEquals("互联与天机", Theme.XIUXIAN.mainTabTitle(MainTab.SYSTEM))
 
-        assertEquals("总览与互联", Theme.DEFAULT.mainTabTitle(MainTab.OVERVIEW))
-        assertEquals("演练与调控", Theme.DEFAULT.mainTabTitle(MainTab.PRACTICE))
-        assertEquals("系统与运维", Theme.DEFAULT.mainTabTitle(MainTab.SYSTEM))
+        assertEquals("首页", Theme.DEFAULT.mainTabTitle(MainTab.OVERVIEW))
+        assertEquals("通知与外观", Theme.DEFAULT.mainTabTitle(MainTab.PRACTICE))
+        assertEquals("互联与系统", Theme.DEFAULT.mainTabTitle(MainTab.SYSTEM))
     }
 
     @Test
