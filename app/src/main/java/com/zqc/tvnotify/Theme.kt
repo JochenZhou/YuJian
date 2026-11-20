@@ -211,7 +211,7 @@ enum class Theme(
     val aboutButtonText: String get() = if (isXianxia) "简牍溯源" else "关于"
     val updateButtonText: String get() = if (isXianxia) "破境飞升" else "检查更新"
     fun updateAvailableButtonText(version: String): String =
-        if (isXianxia) "⚡ 破境 $version" else "⚡ 升级 $version"
+        if (isXianxia) "破境 $version" else "升级 $version"
     val checkingUpdateToast: String get() = if (isXianxia) "正在感应天机…" else "正在检查更新…"
     fun alreadyLatestToast(version: String): String =
         if (isXianxia) "当前已是最高境界（v$version）" else "当前已是最新版本（v$version）"
