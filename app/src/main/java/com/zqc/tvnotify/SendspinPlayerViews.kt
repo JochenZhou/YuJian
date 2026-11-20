@@ -1,5 +1,8 @@
 package com.zqc.tvnotify
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
@@ -30,6 +33,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.animation.PathInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -56,7 +60,7 @@ private fun View.animatePlayerFocus(focused: Boolean) {
     animate().scaleX(if (focused) 1.04f else 1f).scaleY(if (focused) 1.04f else 1f).setDuration(120L).start()
 }
 
-/** Two-column TV player stage (left: cover & controls, right: scrolling lyrics), centering cover when no lyrics exist. */
+/** Two-column TV player stage (left: cover & controls, right: scrolling lyrics), smoothly animating to centered cover when lyrics are unavailable. */
 internal class SendspinStageLayout(
     context: Context,
     private val leftColumn: View,
@@ -64,10 +68,15 @@ internal class SendspinStageLayout(
 ) : ViewGroup(context) {
     private var contentWidth = 0
     private var leftWidth = 0
+    private var leftX = 0
     private var rightWidth = 0
+    private var rightX = 0
     private var gap = 0
     private var stacked = false
-    private var centeredMode = false
+    private var targetCenteredMode = false
+    private var centerProgress = 0f
+    private var modeAnimator: ValueAnimator? = null
+    var onCenterProgressChanged: ((Float) -> Unit)? = null
 
     init {
         clipChildren = false
@@ -76,13 +85,74 @@ internal class SendspinStageLayout(
         addView(rightColumn)
     }
 
-    fun isCenteredMode(): Boolean = centeredMode
+    fun isCenteredMode(): Boolean = targetCenteredMode
 
-    fun setCenteredMode(centered: Boolean) {
-        if (centeredMode == centered) return
-        centeredMode = centered
-        rightColumn.visibility = if (centered) View.GONE else View.VISIBLE
-        requestLayout()
+    fun centerProgress(): Float = centerProgress
+
+    fun setCenteredMode(centered: Boolean, animate: Boolean = true) {
+        val target = if (centered) 1f else 0f
+        val changed = targetCenteredMode != centered
+        targetCenteredMode = centered
+        if (!changed && kotlin.math.abs(centerProgress - target) < 0.001f && modeAnimator?.isRunning != true) {
+            rightColumn.visibility = if (centered) View.GONE else View.VISIBLE
+            rightColumn.alpha = 1f - target
+            rightColumn.translationX = 0f
+            return
+        }
+        modeAnimator?.cancel()
+        modeAnimator = null
+
+        val shouldAnimate = animate && isAttachedToWindow && width > 0
+        if (!shouldAnimate) {
+            centerProgress = target
+            rightColumn.visibility = if (centered) View.GONE else View.VISIBLE
+            rightColumn.alpha = 1f - target
+            rightColumn.translationX = 0f
+            onCenterProgressChanged?.invoke(centerProgress)
+            requestLayout()
+            return
+        }
+
+        // Keep rightColumn visible during the transition so lyrics glide & fade cleanly.
+        rightColumn.visibility = View.VISIBLE
+        val start = centerProgress
+        val glideDist = context.playerDp(34f)
+        modeAnimator = ValueAnimator.ofFloat(start, target).apply {
+            duration = 420L
+            interpolator = PathInterpolator(0.22f, 1f, 0.36f, 1f)
+            addUpdateListener { anim ->
+                val p = anim.animatedValue as Float
+                centerProgress = p
+                rightColumn.alpha = (1f - p).coerceIn(0f, 1f)
+                rightColumn.translationX = p * glideDist
+                onCenterProgressChanged?.invoke(p)
+                requestLayout()
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                private var cancelled = false
+                override fun onAnimationCancel(animation: Animator) {
+                    cancelled = true
+                }
+                override fun onAnimationEnd(animation: Animator) {
+                    modeAnimator = null
+                    if (!cancelled) {
+                        centerProgress = target
+                        rightColumn.alpha = 1f - target
+                        rightColumn.translationX = 0f
+                        rightColumn.visibility = if (targetCenteredMode) View.GONE else View.VISIBLE
+                        onCenterProgressChanged?.invoke(centerProgress)
+                        requestLayout()
+                    }
+                }
+            })
+            start()
+        }
+    }
+
+    override fun onDetachedFromWindow() {
+        modeAnimator?.cancel()
+        modeAnimator = null
+        super.onDetachedFromWindow()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
@@ -91,17 +161,9 @@ internal class SendspinStageLayout(
         val density = resources.displayMetrics.density
         contentWidth = min(width, context.playerDp(1260f).toInt())
         val widthDp = contentWidth / density
-        stacked = !centeredMode && widthDp < 680f
+        stacked = widthDp < 680f && centerProgress < 0.01f
 
-        if (centeredMode) {
-            gap = 0
-            leftWidth = min(contentWidth, context.playerDp(560f).toInt())
-            rightWidth = 0
-            leftColumn.measure(
-                MeasureSpec.makeMeasureSpec(leftWidth, MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
-            )
-        } else if (stacked) {
+        if (stacked) {
             gap = context.playerDp(16f).toInt()
             val maxLeftHeight = ((height - gap) * 0.62f).toInt().coerceAtLeast(0)
             leftColumn.measure(
@@ -114,33 +176,43 @@ internal class SendspinStageLayout(
                 MeasureSpec.makeMeasureSpec(remainHeight, MeasureSpec.EXACTLY)
             )
         } else {
+            val start = (width - contentWidth) / 2
             gap = context.playerDp(if (widthDp < 860f) 28f else 48f).toInt().coerceAtMost(contentWidth / 10)
-            leftWidth = ((contentWidth - gap) * 0.45f).toInt().coerceAtLeast(0)
-            rightWidth = (contentWidth - gap - leftWidth).coerceAtLeast(0)
+            val twoColLeftW = ((contentWidth - gap) * 0.45f).toInt().coerceAtLeast(0)
+            val twoColRightW = (contentWidth - gap - twoColLeftW).coerceAtLeast(0)
+            val centeredLeftW = min(contentWidth, context.playerDp(560f).toInt())
+            val centeredLeftX = (width - centeredLeftW) / 2
+
+            leftWidth = (twoColLeftW + (centeredLeftW - twoColLeftW) * centerProgress).toInt().coerceAtLeast(0)
+            leftX = (start + (centeredLeftX - start) * centerProgress).toInt()
+            rightWidth = twoColRightW
+            rightX = start + twoColLeftW + gap
+
             leftColumn.measure(
                 MeasureSpec.makeMeasureSpec(leftWidth, MeasureSpec.EXACTLY),
                 MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
             )
-            rightColumn.measure(
-                MeasureSpec.makeMeasureSpec(rightWidth, MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
-            )
+            if (rightColumn.visibility != View.GONE) {
+                rightColumn.measure(
+                    MeasureSpec.makeMeasureSpec(rightWidth, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
+                )
+            }
         }
         setMeasuredDimension(width, height)
     }
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val start = (width - contentWidth) / 2
-        if (centeredMode) {
-            val leftStart = (width - leftWidth) / 2
-            leftColumn.layout(leftStart, 0, leftStart + leftWidth, height)
-        } else if (stacked) {
+        if (stacked) {
             val leftH = leftColumn.measuredHeight
             leftColumn.layout(start, 0, start + contentWidth, leftH)
             rightColumn.layout(start, leftH + gap, start + contentWidth, height)
         } else {
-            leftColumn.layout(start, 0, start + leftWidth, height)
-            rightColumn.layout(start + leftWidth + gap, 0, start + contentWidth, height)
+            leftColumn.layout(leftX, 0, leftX + leftWidth, height)
+            if (rightColumn.visibility != View.GONE) {
+                rightColumn.layout(rightX, 0, rightX + rightWidth, height)
+            }
         }
     }
 }

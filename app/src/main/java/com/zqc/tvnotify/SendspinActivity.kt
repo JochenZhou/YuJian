@@ -48,6 +48,7 @@ class SendspinActivity : Activity() {
     private lateinit var header: LinearLayout
     private lateinit var stage: SendspinStageLayout
     private lateinit var leftColumn: LinearLayout
+    private lateinit var artworkFrame: android.widget.FrameLayout
     private lateinit var artworkSwitcher: SendspinArtworkSwitcher
     private lateinit var lyricsView: LyricsScrollView
     private lateinit var ambient: SendspinAmbientDrawable
@@ -100,6 +101,7 @@ class SendspinActivity : Activity() {
     private var lyricsGeneration = 0L
     private var lyricsLoading = false
     private var hasLyrics = false
+    private var presentationCentered = true
     private var lastLyricsTrackKey = ""
     private var playerDialog: ThemedDialog? = null
     private var volumeDialogSeek: SendspinSeekBar? = null
@@ -232,21 +234,15 @@ class SendspinActivity : Activity() {
         brandRow.addView(brand, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         brandRow.addView(brandPlaylistTag, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
         header.addView(brandRow, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(14) })
-        wledBadge = text("", 11f, Color.rgb(218, 236, 234), true).apply {
+        wledBadge = text("", 11.5f, Color.rgb(186, 206, 208), false).apply {
             setSingleLine(true)
             gravity = Gravity.CENTER_VERTICAL
             compoundDrawablePadding = dp(5)
-            setPadding(dp(9), dp(4), dp(10), dp(4))
-            setCompoundDrawables(TvVectorIconDrawable(this@SendspinActivity, TvIcon.WLED_SPARK, accent, 13f, 1.8f), null, null, null)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(14).toFloat()
-                setColor(playerAlpha(accent, 42))
-                setStroke(dp(1), playerAlpha(accent, 115))
-            }
+            setCompoundDrawables(TvVectorIconDrawable(this@SendspinActivity, TvIcon.WLED_SPARK, accent, 14f), null, null, null)
+            background = null
             visibility = View.GONE
         }
-        header.addView(wledBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(12) })
+        header.addView(wledBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(14) })
         status = text("正在连接", 12f, Color.rgb(166, 182, 185)).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             setSingleLine(true)
@@ -278,7 +274,19 @@ class SendspinActivity : Activity() {
             setStyle(playerStyle)
             setOnClickListener { togglePlayerStyle() }
         }
-        leftColumn.addView(artworkSwitcher, LinearLayout.LayoutParams(dp(200), dp(200)))
+        artworkFrame = android.widget.FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            addView(
+                artworkSwitcher,
+                android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+        leftColumn.addView(artworkFrame, LinearLayout.LayoutParams(dp(200), dp(200)))
 
         title = text("音乐，在此刻", 26f, Color.rgb(245, 247, 247), true).apply {
             gravity = Gravity.CENTER_HORIZONTAL
@@ -387,10 +395,12 @@ class SendspinActivity : Activity() {
         leftColumn.addView(controls, params(top = dp(12)))
 
         lyricsView = LyricsScrollView(this, accent)
-        stage = SendspinStageLayout(this, leftColumn, lyricsView)
+        stage = SendspinStageLayout(this, leftColumn, lyricsView).apply {
+            onCenterProgressChanged = { progress -> applyCenterTransitionVisuals(progress) }
+        }
         root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(10) })
         applyLayoutMetrics(resources.configuration.screenWidthDp, resources.configuration.screenHeightDp)
-        syncLyricsPresentationMode()
+        syncLyricsPresentationMode(animate = false)
         applyPlayerStyleState()
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
@@ -401,26 +411,37 @@ class SendspinActivity : Activity() {
         setContentView(root)
     }
 
+    private fun applyCenterTransitionVisuals(progress: Float) {
+        val p = progress.coerceIn(0f, 1f)
+        val coverScale = 1f + p * 0.13f
+        artworkFrame.scaleX = coverScale
+        artworkFrame.scaleY = coverScale
+        // Gently shift text/timeline below artwork down slightly as cover expands so spacing breathes cleanly.
+        val extraOffset = dp(10) * p
+        title.translationY = extraOffset * 0.65f
+        artist.translationY = extraOffset * 0.65f
+        album.translationY = extraOffset * 0.65f
+        lyricsStatusChip.translationY = extraOffset * 0.55f
+        lyricsStatusChip.alpha = p
+        lyricsStatusChip.visibility = if (p > 0.02f || presentationCentered) View.VISIBLE else View.GONE
+    }
+
     private fun applyLayoutMetrics(widthDp: Int, heightDp: Int) {
         if (widthDp <= 0 || heightDp <= 0) return
         lastLayoutWidthDp = widthDp
         lastLayoutHeightDp = heightDp
-        val centered = !hasLyrics
-        val stacked = !centered && widthDp < 680
+        val stacked = !presentationCentered && widthDp < 680
         val compact = heightDp < 460 || widthDp < 760
         val tiny = heightDp < 360
         val hideSettingsText = widthDp < 840
         val vinylDp = when {
-            centered && tiny -> 144
-            centered && compact -> 196
-            centered -> (heightDp * 0.44f).toInt().coerceIn(200, 296)
             stacked && tiny -> 110
             stacked -> 148
-            tiny -> 124
-            compact -> 164
-            else -> (heightDp * 0.37f).toInt().coerceIn(168, 250)
+            tiny -> 128
+            compact -> 170
+            else -> (heightDp * 0.385f).toInt().coerceIn(176, 258)
         }
-        val key = "$centered/$stacked/$compact/$tiny/$hideSettingsText/$vinylDp"
+        val key = "$stacked/$compact/$tiny/$hideSettingsText/$vinylDp"
         if (appliedLayout == key) return
         appliedLayout = key
 
@@ -437,16 +458,11 @@ class SendspinActivity : Activity() {
         settingsLabel.visibility = if (hideSettingsText) View.GONE else View.VISIBLE
         (stage.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 8 else 12)
 
-        artworkSwitcher.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
-        title.textSize = when {
-            tiny -> 19f
-            compact -> if (centered) 24f else 22f
-            centered -> 28f
-            else -> 26f
-        }
-        artist.textSize = if (compact) 13.5f else if (centered) 16f else 15f
+        artworkFrame.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
+        title.textSize = if (tiny) 19f else if (compact) 22.5f else 26.5f
+        artist.textSize = if (compact) 13.5f else 15.5f
         album.textSize = if (compact) 11.5f else 12.5f
-        (title.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else if (centered) 14 else 12)
+        (title.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else 12)
         (artist.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (compact) 2 else 4)
         (album.layoutParams as LinearLayout.LayoutParams).topMargin = dp(2)
         (lyricsStatusChip.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 6 else 8)
@@ -471,13 +487,11 @@ class SendspinActivity : Activity() {
         root.requestLayout()
     }
 
-    private fun syncLyricsPresentationMode() {
-        val centered = !hasLyrics
-        stage.setCenteredMode(centered)
-        lyricsStatusChip.visibility = if (centered) View.VISIBLE else View.GONE
+    private fun syncLyricsPresentationMode(animate: Boolean = true) {
         setTextIfChanged(lyricsStatusChip, if (lyricsLoading) "正在检索歌词…" else "暂无歌词")
-        if (lastLayoutWidthDp > 0 && lastLayoutHeightDp > 0) {
-            applyLayoutMetrics(lastLayoutWidthDp, lastLayoutHeightDp)
+        stage.setCenteredMode(presentationCentered, animate = animate)
+        if (!animate || !stage.isAttachedToWindow || stage.width <= 0) {
+            applyCenterTransitionVisuals(if (presentationCentered) 1f else 0f)
         }
     }
 
@@ -733,14 +747,15 @@ class SendspinActivity : Activity() {
     private fun updateLyricsForTrack(state: SendspinRuntime.Status) {
         val cleanTitle = state.title.trim()
         if (cleanTitle.isEmpty()) {
-            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading || hasLyrics) {
+            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading || hasLyrics || !presentationCentered) {
                 lyricsGeneration++
                 lyricsLoading = false
                 hasLyrics = false
+                presentationCentered = true
                 lastLyricsTrackKey = ""
                 lyricsView.setLoading(false)
                 lyricsView.setLyrics(null)
-                syncLyricsPresentationMode()
+                syncLyricsPresentationMode(animate = visible)
             }
             return
         }
@@ -753,7 +768,8 @@ class SendspinActivity : Activity() {
         hasLyrics = false
         lyricsView.setLyrics(null)
         lyricsView.setLoading(true)
-        syncLyricsPresentationMode()
+        // 切歌与检索歌词期间保持当前版面不跳变，仅更新检索文案提示
+        setTextIfChanged(lyricsStatusChip, "正在检索歌词…")
 
         LyricsFetcher.fetchAsync(
             context = this,
@@ -764,14 +780,20 @@ class SendspinActivity : Activity() {
         ) { parsed ->
             main.post {
                 if (destroyed || generation != lyricsGeneration) return@post
-                lyricsLoading = false
-                hasLyrics = parsed != null && parsed.lines.isNotEmpty()
-                lyricsView.setLoading(false)
-                lyricsView.setLyrics(parsed)
-                lyricsView.updatePosition(projectedPosition())
-                syncLyricsPresentationMode()
+                applyLyricsSearchResult(parsed, animate = true)
             }
         }
+    }
+
+    private fun applyLyricsSearchResult(parsed: ParsedLyrics?, animate: Boolean = true) {
+        lyricsLoading = false
+        val found = parsed != null && parsed.lines.isNotEmpty()
+        hasLyrics = found
+        lyricsView.setLoading(false)
+        lyricsView.setLyrics(parsed)
+        lyricsView.updatePosition(projectedPosition())
+        presentationCentered = !found
+        syncLyricsPresentationMode(animate = animate)
     }
 
     private fun decodeArtwork(bytes: ByteArray): Bitmap? = try {

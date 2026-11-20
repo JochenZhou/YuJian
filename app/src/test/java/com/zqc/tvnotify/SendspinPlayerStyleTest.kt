@@ -10,6 +10,7 @@ import android.widget.TextView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -394,15 +395,18 @@ class SendspinPlayerStyleTest {
     }
 
     @Test
-    fun `player centers large artwork with lyrics chip when unavailable and expands two columns when lyrics exist`() {
+    fun `player keeps layout steady while fetching lyrics, switches only on search result, and renders frameless wled badge`() {
         val activity = buildPreparedSendspinActivity()
         val clazz = SendspinActivity::class.java
         val stage = clazz.getDeclaredField("stage").apply { isAccessible = true }.get(activity) as SendspinStageLayout
         val lyricsView = clazz.getDeclaredField("lyricsView").apply { isAccessible = true }.get(activity) as LyricsScrollView
         val lyricsChip = clazz.getDeclaredField("lyricsStatusChip").apply { isAccessible = true }.get(activity) as TextView
-        val hasLyricsField = clazz.getDeclaredField("hasLyrics").apply { isAccessible = true }
-        val loadingField = clazz.getDeclaredField("lyricsLoading").apply { isAccessible = true }
-        val syncMode = clazz.getDeclaredMethod("syncLyricsPresentationMode").apply { isAccessible = true }
+        val wledBadge = clazz.getDeclaredField("wledBadge").apply { isAccessible = true }.get(activity) as TextView
+        val applyResult = clazz.getDeclaredMethod("applyLyricsSearchResult", ParsedLyrics::class.java, Boolean::class.java).apply { isAccessible = true }
+        val updateLyrics = clazz.getDeclaredMethod("updateLyricsForTrack", SendspinRuntime.Status::class.java).apply { isAccessible = true }
+
+        // WLED header badge must be frameless (no pill box / focus-like stroke)
+        assertNull("WLED badge must not look like a selected box", wledBadge.background)
 
         // Default no-lyrics state uses centered immersive mode with tasteful "暂无歌词" chip
         assertTrue(stage.isCenteredMode())
@@ -410,19 +414,28 @@ class SendspinPlayerStyleTest {
         assertEquals(View.VISIBLE, lyricsChip.visibility)
         assertEquals("暂无歌词", lyricsChip.text.toString())
 
-        // Loading state keeps centered layout and informs user cleanly
-        loadingField.setBoolean(activity, true)
-        syncMode.invoke(activity)
-        assertTrue(stage.isCenteredMode())
-        assertEquals("正在检索歌词…", lyricsChip.text.toString())
-
-        // Once lyrics load, stage expands to two columns and hides the empty chip
-        loadingField.setBoolean(activity, false)
-        hasLyricsField.setBoolean(activity, true)
-        syncMode.invoke(activity)
+        // Lyrics search succeeds -> expands to two columns and hides empty chip
+        val sampleLyrics = ParsedLyrics(
+            synced = true,
+            lines = listOf(LrcLine(0L, "第一句歌词")),
+            source = "test"
+        )
+        applyResult.invoke(activity, sampleLyrics, false)
         assertFalse(stage.isCenteredMode())
         assertEquals(View.VISIBLE, lyricsView.visibility)
         assertEquals(View.GONE, lyricsChip.visibility)
+
+        // Switching track starts a new lyrics fetch -> MUST keep current two-column layout steady without flickering
+        updateLyrics.invoke(activity, SendspinRuntime.Status(state = "connected", title = "下一首测试", artist = "歌手B"))
+        assertFalse("Track switch while searching must NOT jump back to centered mode", stage.isCenteredMode())
+        assertEquals(View.VISIBLE, lyricsView.visibility)
+
+        // Only when search fails (null lyrics) does layout transition to centered large-cover mode
+        applyResult.invoke(activity, null, false)
+        assertTrue(stage.isCenteredMode())
+        assertEquals(View.GONE, lyricsView.visibility)
+        assertEquals(View.VISIBLE, lyricsChip.visibility)
+        assertEquals("暂无歌词", lyricsChip.text.toString())
     }
 
     @Test
