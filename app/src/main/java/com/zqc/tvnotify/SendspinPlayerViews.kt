@@ -56,7 +56,7 @@ private fun View.animatePlayerFocus(focused: Boolean) {
     animate().scaleX(if (focused) 1.04f else 1f).scaleY(if (focused) 1.04f else 1f).setDuration(120L).start()
 }
 
-/** Two-column TV player stage (left: vinyl disc & controls, right: scrolling lyrics), stacking on narrow screens. */
+/** Two-column TV player stage (left: cover & controls, right: scrolling lyrics), centering cover when no lyrics exist. */
 internal class SendspinStageLayout(
     context: Context,
     private val leftColumn: View,
@@ -67,6 +67,7 @@ internal class SendspinStageLayout(
     private var rightWidth = 0
     private var gap = 0
     private var stacked = false
+    private var centeredMode = false
 
     init {
         clipChildren = false
@@ -75,15 +76,32 @@ internal class SendspinStageLayout(
         addView(rightColumn)
     }
 
+    fun isCenteredMode(): Boolean = centeredMode
+
+    fun setCenteredMode(centered: Boolean) {
+        if (centeredMode == centered) return
+        centeredMode = centered
+        rightColumn.visibility = if (centered) View.GONE else View.VISIBLE
+        requestLayout()
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val width = MeasureSpec.getSize(widthMeasureSpec)
         val height = MeasureSpec.getSize(heightMeasureSpec)
         val density = resources.displayMetrics.density
         contentWidth = min(width, context.playerDp(1260f).toInt())
         val widthDp = contentWidth / density
-        stacked = widthDp < 680f
+        stacked = !centeredMode && widthDp < 680f
 
-        if (stacked) {
+        if (centeredMode) {
+            gap = 0
+            leftWidth = min(contentWidth, context.playerDp(560f).toInt())
+            rightWidth = 0
+            leftColumn.measure(
+                MeasureSpec.makeMeasureSpec(leftWidth, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY)
+            )
+        } else if (stacked) {
             gap = context.playerDp(16f).toInt()
             val maxLeftHeight = ((height - gap) * 0.62f).toInt().coerceAtLeast(0)
             leftColumn.measure(
@@ -97,7 +115,7 @@ internal class SendspinStageLayout(
             )
         } else {
             gap = context.playerDp(if (widthDp < 860f) 28f else 48f).toInt().coerceAtMost(contentWidth / 10)
-            leftWidth = ((contentWidth - gap) * 0.43f).toInt().coerceAtLeast(0)
+            leftWidth = ((contentWidth - gap) * 0.45f).toInt().coerceAtLeast(0)
             rightWidth = (contentWidth - gap - leftWidth).coerceAtLeast(0)
             leftColumn.measure(
                 MeasureSpec.makeMeasureSpec(leftWidth, MeasureSpec.EXACTLY),
@@ -113,7 +131,10 @@ internal class SendspinStageLayout(
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         val start = (width - contentWidth) / 2
-        if (stacked) {
+        if (centeredMode) {
+            val leftStart = (width - leftWidth) / 2
+            leftColumn.layout(leftStart, 0, leftStart + leftWidth, height)
+        } else if (stacked) {
             val leftH = leftColumn.measuredHeight
             leftColumn.layout(start, 0, start + contentWidth, leftH)
             rightColumn.layout(start, leftH + gap, start + contentWidth, height)

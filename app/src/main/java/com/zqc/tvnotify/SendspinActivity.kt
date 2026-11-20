@@ -51,10 +51,13 @@ class SendspinActivity : Activity() {
     private lateinit var artworkSwitcher: SendspinArtworkSwitcher
     private lateinit var lyricsView: LyricsScrollView
     private lateinit var ambient: SendspinAmbientDrawable
+    private lateinit var brandPlaylistTag: TextView
+    private lateinit var wledBadge: TextView
     private lateinit var status: TextView
     private lateinit var title: TextView
     private lateinit var artist: TextView
     private lateinit var album: TextView
+    private lateinit var lyricsStatusChip: TextView
     private lateinit var progress: SendspinSeekBar
     private lateinit var timeline: LinearLayout
     private lateinit var position: TextView
@@ -86,6 +89,8 @@ class SendspinActivity : Activity() {
     private var visible = false
     private var destroyed = false
     private var appliedLayout = ""
+    private var lastLayoutWidthDp = 0
+    private var lastLayoutHeightDp = 0
     private var artworkExecutor: ExecutorService? = null
     private var artworkFuture: Future<*>? = null
     private var artworkGeneration = 0L
@@ -94,6 +99,7 @@ class SendspinActivity : Activity() {
     private var appliedArtwork: ByteArray? = null
     private var lyricsGeneration = 0L
     private var lyricsLoading = false
+    private var hasLyrics = false
     private var lastLyricsTrackKey = ""
     private var playerDialog: ThemedDialog? = null
     private var volumeDialogSeek: SendspinSeekBar? = null
@@ -211,8 +217,33 @@ class SendspinActivity : Activity() {
         }
         back = iconButton(SendspinIcon.BACK, "返回") { finish() }
         header.addView(back, LinearLayout.LayoutParams(dp(40), dp(40)))
-        val brand = text("玉简 / SENDSPIN", 12f, Color.rgb(202, 212, 215), true).apply { letterSpacing = .16f; setSingleLine(true) }
-        header.addView(brand, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(14) })
+        val brandRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val brand = text("玉简音乐", 13.5f, Color.rgb(226, 234, 236), true).apply {
+            letterSpacing = .08f
+            setSingleLine(true)
+        }
+        brandPlaylistTag = text("· Sendspin", 12f, Color.rgb(154, 170, 175)).apply {
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        brandRow.addView(brand, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        brandRow.addView(brandPlaylistTag, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
+        header.addView(brandRow, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(14) })
+        wledBadge = text("", 11f, Color.rgb(218, 236, 234), true).apply {
+            setSingleLine(true)
+            setPadding(dp(9), dp(4), dp(9), dp(4))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(14).toFloat()
+                setColor(playerAlpha(accent, 42))
+                setStroke(dp(1), playerAlpha(accent, 115))
+            }
+            visibility = View.GONE
+        }
+        header.addView(wledBadge, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(12) })
         status = text("正在连接", 12f, Color.rgb(166, 182, 185)).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
             setSingleLine(true)
@@ -265,6 +296,24 @@ class SendspinActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
         }
         leftColumn.addView(album, params(top = dp(2)))
+        lyricsStatusChip = text("暂无歌词", 11.5f, Color.rgb(174, 189, 195)).apply {
+            gravity = Gravity.CENTER
+            setSingleLine(true)
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.argb(46, 255, 255, 255))
+                setStroke(dp(1), Color.argb(38, 255, 255, 255))
+            }
+        }
+        leftColumn.addView(
+            lyricsStatusChip,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(8)
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+        )
 
         timeline = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; clipChildren = false }
         progress = SendspinSeekBar(this, accent).apply {
@@ -338,6 +387,7 @@ class SendspinActivity : Activity() {
         stage = SendspinStageLayout(this, leftColumn, lyricsView)
         root.addView(stage, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(10) })
         applyLayoutMetrics(resources.configuration.screenWidthDp, resources.configuration.screenHeightDp)
+        syncLyricsPresentationMode()
         applyPlayerStyleState()
         root.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) {
@@ -349,18 +399,25 @@ class SendspinActivity : Activity() {
     }
 
     private fun applyLayoutMetrics(widthDp: Int, heightDp: Int) {
-        val stacked = widthDp < 680
+        if (widthDp <= 0 || heightDp <= 0) return
+        lastLayoutWidthDp = widthDp
+        lastLayoutHeightDp = heightDp
+        val centered = !hasLyrics
+        val stacked = !centered && widthDp < 680
         val compact = heightDp < 460 || widthDp < 760
         val tiny = heightDp < 360
         val hideSettingsText = widthDp < 840
         val vinylDp = when {
+            centered && tiny -> 144
+            centered && compact -> 196
+            centered -> (heightDp * 0.44f).toInt().coerceIn(200, 296)
             stacked && tiny -> 110
             stacked -> 148
             tiny -> 124
             compact -> 164
             else -> (heightDp * 0.37f).toInt().coerceIn(168, 250)
         }
-        val key = "$stacked/$compact/$tiny/$hideSettingsText/$vinylDp"
+        val key = "$centered/$stacked/$compact/$tiny/$hideSettingsText/$vinylDp"
         if (appliedLayout == key) return
         appliedLayout = key
 
@@ -378,12 +435,18 @@ class SendspinActivity : Activity() {
         (stage.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 8 else 12)
 
         artworkSwitcher.layoutParams = LinearLayout.LayoutParams(dp(vinylDp), dp(vinylDp))
-        title.textSize = if (tiny) 19f else if (compact) 22f else 26f
-        artist.textSize = if (compact) 13.5f else 15f
+        title.textSize = when {
+            tiny -> 19f
+            compact -> if (centered) 24f else 22f
+            centered -> 28f
+            else -> 26f
+        }
+        artist.textSize = if (compact) 13.5f else if (centered) 16f else 15f
         album.textSize = if (compact) 11.5f else 12.5f
-        (title.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else 12)
+        (title.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 6 else if (compact) 8 else if (centered) 14 else 12)
         (artist.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (compact) 2 else 4)
         (album.layoutParams as LinearLayout.LayoutParams).topMargin = dp(2)
+        (lyricsStatusChip.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 6 else 8)
         (timeline.layoutParams as LinearLayout.LayoutParams).topMargin = dp(if (tiny) 4 else if (compact) 6 else 10)
         progress.layoutParams.height = dp(if (tiny) 26 else 30)
         position.textSize = if (compact) 11f else 11.5f
@@ -403,6 +466,38 @@ class SendspinActivity : Activity() {
         playlistButton.layoutParams.height = pillHeight
         playlistLabel.visibility = if (hideSettingsText) View.GONE else View.VISIBLE
         root.requestLayout()
+    }
+
+    private fun syncLyricsPresentationMode() {
+        val centered = !hasLyrics
+        stage.setCenteredMode(centered)
+        lyricsStatusChip.visibility = if (centered) View.VISIBLE else View.GONE
+        setTextIfChanged(lyricsStatusChip, if (lyricsLoading) "正在检索歌词…" else "暂无歌词")
+        if (lastLayoutWidthDp > 0 && lastLayoutHeightDp > 0) {
+            applyLayoutMetrics(lastLayoutWidthDp, lastLayoutHeightDp)
+        }
+    }
+
+    private fun updateHeaderBadges(state: SendspinRuntime.Status = currentStatus) {
+        val activePlaylistName = PlaylistStore.resolveActivePlaylist(state.title, state.artist)?.name
+        setTextIfChanged(
+            brandPlaylistTag,
+            if (!activePlaylistName.isNullOrBlank()) "· $activePlaylistName" else "· Sendspin"
+        )
+        val audioOn = Prefs.isWledSyncEnabled(this)
+        val colorOn = Prefs.isWledColorSyncEnabled(this)
+        if (!audioOn && !colorOn) {
+            wledBadge.visibility = View.GONE
+        } else {
+            val dynamics = Prefs.getWledSyncDynamics(this)
+            val label = when {
+                audioOn && colorOn -> "● WLED 律动 $dynamics% · 色彩"
+                audioOn -> "● WLED 律动 $dynamics%"
+                else -> "● WLED 封面色彩"
+            }
+            setTextIfChanged(wledBadge, label)
+            wledBadge.visibility = View.VISIBLE
+        }
     }
 
     private fun render(state: SendspinRuntime.Status) {
@@ -468,6 +563,7 @@ class SendspinActivity : Activity() {
             volumeIcon.setImageDrawable(SendspinIconDrawable(this, if (state.muted) SendspinIcon.MUTED else SendspinIcon.VOLUME, Color.rgb(176, 189, 193), 18f))
         }
         updateFocusTargets()
+        updateHeaderBadges(state)
         updateVolumeDialog(state)
         updateArtwork(state.artwork)
         updateLyricsForTrack(state)
@@ -626,7 +722,7 @@ class SendspinActivity : Activity() {
         lyricsView.setBlurredBackdropActive(hasBlur)
         val shadowRadius = if (hasBlur) 6f else 0f
         val shadowColor = if (hasBlur) Color.argb(145, 0, 0, 0) else Color.TRANSPARENT
-        for (tv in arrayOf(status, title, artist, album, position, duration, volume, settingsLabel, playlistLabel)) {
+        for (tv in arrayOf(brandPlaylistTag, wledBadge, status, title, artist, album, lyricsStatusChip, position, duration, volume, settingsLabel, playlistLabel)) {
             tv.setShadowLayer(shadowRadius, 0f, if (hasBlur) 1.5f else 0f, shadowColor)
         }
     }
@@ -634,12 +730,14 @@ class SendspinActivity : Activity() {
     private fun updateLyricsForTrack(state: SendspinRuntime.Status) {
         val cleanTitle = state.title.trim()
         if (cleanTitle.isEmpty()) {
-            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading) {
+            if (lastLyricsTrackKey.isNotEmpty() || lyricsLoading || hasLyrics) {
                 lyricsGeneration++
                 lyricsLoading = false
+                hasLyrics = false
                 lastLyricsTrackKey = ""
                 lyricsView.setLoading(false)
                 lyricsView.setLyrics(null)
+                syncLyricsPresentationMode()
             }
             return
         }
@@ -649,8 +747,10 @@ class SendspinActivity : Activity() {
         lastLyricsTrackKey = trackKey
         val generation = ++lyricsGeneration
         lyricsLoading = true
+        hasLyrics = false
         lyricsView.setLyrics(null)
         lyricsView.setLoading(true)
+        syncLyricsPresentationMode()
 
         LyricsFetcher.fetchAsync(
             context = this,
@@ -662,9 +762,11 @@ class SendspinActivity : Activity() {
             main.post {
                 if (destroyed || generation != lyricsGeneration) return@post
                 lyricsLoading = false
+                hasLyrics = parsed != null && parsed.lines.isNotEmpty()
                 lyricsView.setLoading(false)
                 lyricsView.setLyrics(parsed)
                 lyricsView.updatePosition(projectedPosition())
+                syncLyricsPresentationMode()
             }
         }
     }
@@ -805,27 +907,32 @@ class SendspinActivity : Activity() {
         val autoEnabled = Prefs.isSendspinAutoPopup(this)
         val savedUrl = Prefs.getSendspinServerUrl(this).trim()
         val serverSummary = if (savedUrl.isEmpty()) "当前使用局域网自动发现，点击可手动指定地址" else "当前地址：$savedUrl"
+        val playlistCount = PlaylistStore.current()?.playlists?.size ?: 0
         val wledAudioEnabled = Prefs.isWledSyncEnabled(this)
-        val wledPort = Prefs.getWledSyncPort(this)
         val wledDynamics = Prefs.getWledSyncDynamics(this)
         val wledColorEnabled = Prefs.isWledColorSyncEnabled(this)
-        val wledHost = Prefs.getWledColorHost(this)
         val wledEffect = WledEffectPreset.fromRaw(Prefs.getWledEffect(this))
+        val wledSummary = buildList {
+            add(if (wledAudioEnabled) "律动已开($wledDynamics%)" else "律动已关")
+            add(if (wledColorEnabled) "色彩已开" else "色彩已关")
+            if (wledEffect != WledEffectPreset.CUSTOM) add(wledEffect.displayName)
+        }.joinToString(" · ")
         val items = listOf(
             ThemeDialogItem(
                 title = "浏览歌单",
-                subtitle = "查看已同步歌单与曲目详单，或选歌点播",
-                trailingBadge = "歌单",
+                subtitle = if (playlistCount > 0) "已同步 $playlistCount 张歌单，查看曲目或选歌点播" else "查看已同步歌单与曲目详单，或选歌点播",
+                trailingBadge = if (playlistCount > 0) "$playlistCount 张" else "歌单",
                 dismissOnClick = false
             ) {
                 showPlaylistDialog()
             },
             ThemeDialogItem(
-                title = "连接 Music Assistant",
-                subtitle = serverSummary,
+                title = "WLED 灯光联动",
+                subtitle = wledSummary,
+                trailingBadge = if (wledAudioEnabled || wledColorEnabled) "已开启" else "配置",
                 dismissOnClick = false
             ) {
-                showConnectionDialog()
+                showWledSettingsDialog()
             },
             ThemeDialogItem(
                 title = "播放页样式：$styleLabel",
@@ -841,6 +948,35 @@ class SendspinActivity : Activity() {
             ) {
                 toggleAutoPopup()
             },
+            ThemeDialogItem(
+                title = "连接 Music Assistant",
+                subtitle = serverSummary,
+                dismissOnClick = false
+            ) {
+                showConnectionDialog()
+            }
+        )
+        val dialog = ThemedDialogBuilder(this, theme)
+            .setTitle("播放器设置")
+            .setItems(items)
+            .setMaxWidthDp(520)
+            .setNegativeButton("关闭")
+            .create()
+        dialog.setOnDismissListener {
+            if (playerDialog === dialog) playerDialog = null
+            hideSystemBars()
+        }
+        showPlayerDialog(dialog)
+    }
+
+    private fun showWledSettingsDialog() {
+        val wledAudioEnabled = Prefs.isWledSyncEnabled(this)
+        val wledPort = Prefs.getWledSyncPort(this)
+        val wledDynamics = Prefs.getWledSyncDynamics(this)
+        val wledColorEnabled = Prefs.isWledColorSyncEnabled(this)
+        val wledHost = Prefs.getWledColorHost(this)
+        val wledEffect = WledEffectPreset.fromRaw(Prefs.getWledEffect(this))
+        val items = listOf(
             ThemeDialogItem(
                 title = "WLED 音乐律动：${if (wledAudioEnabled) "已开启" else "已关闭"}",
                 subtitle = "向局域网组播 239.0.0.1:$wledPort 及 $wledHost 发送 AudioReactive V2 律动",
@@ -858,7 +994,7 @@ class SendspinActivity : Activity() {
             },
             ThemeDialogItem(
                 title = "WLED 封面色彩同步：${if (wledColorEnabled) "已开启" else "已关闭"}",
-                subtitle = "向 $wledHost 同步封面主色调（主色调为黑时自动采用次色调）",
+                subtitle = "向 $wledHost 同步封面主色调（主色调偏暗或灰白时自动采用次色调）",
                 trailingBadge = if (wledColorEnabled) "已开启" else "已关闭"
             ) {
                 toggleWledColorSync()
@@ -881,9 +1017,12 @@ class SendspinActivity : Activity() {
             }
         )
         val dialog = ThemedDialogBuilder(this, theme)
-            .setTitle("播放器设置")
+            .setTitle("WLED 灯光联动")
             .setItems(items)
-            .setMaxWidthDp(520)
+            .setMaxWidthDp(540)
+            .setNeutralButton("返回设置", autoDismiss = false) {
+                showSettingsDialog()
+            }
             .setNegativeButton("关闭")
             .create()
         dialog.setOnDismissListener {
@@ -1169,6 +1308,7 @@ class SendspinActivity : Activity() {
         val port = Prefs.getWledSyncPort(this)
         val dynamics = Prefs.getWledSyncDynamics(this)
         runtime?.configureWledAudioSync(enabled, port, dynamics)
+        updateHeaderBadges()
         Toast.makeText(
             this,
             if (enabled) "已开启 WLED 音乐律动（解析度 $dynamics%）" else "已关闭 WLED 音乐律动",
@@ -1203,6 +1343,7 @@ class SendspinActivity : Activity() {
                     Prefs.getWledSyncPort(this),
                     value
                 )
+                updateHeaderBadges()
                 Toast.makeText(this, "WLED 律动解析度已设为 $value%", Toast.LENGTH_SHORT).show()
             }
         }
@@ -1225,6 +1366,7 @@ class SendspinActivity : Activity() {
         Prefs.setWledColorSyncEnabled(this, enabled)
         val host = Prefs.getWledColorHost(this)
         runtime?.configureWledColorSync(enabled, host)
+        updateHeaderBadges()
         Toast.makeText(
             this,
             if (enabled) "已开启 WLED 封面色彩同步（$host）" else "已关闭 WLED 封面色彩同步",

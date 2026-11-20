@@ -58,7 +58,7 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "TVNotifyMain"
         private const val REQUEST_CODE_NOTIFICATION = 1001
-        private const val QR_PIXEL_SIZE = 176
+        private const val QR_PIXEL_SIZE = 188
         const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-yujian"
         const val APP_REPO_URL = "https://github.com/JochenZhou/YuJian"
 
@@ -79,6 +79,8 @@ class MainActivity : Activity() {
     private lateinit var portMetricValue: TextView
     private lateinit var overlayMetricValue: TextView
     private lateinit var ipMetricValue: TextView
+    private lateinit var mediaSummaryValue: TextView
+    private lateinit var wledSummaryBadge: TextView
     private lateinit var tokenValue: TextView
     private lateinit var urlValue: TextView
     private lateinit var qrImage: ImageView
@@ -195,7 +197,7 @@ class MainActivity : Activity() {
 
     private fun buildRootView(): View {
         val scroll = ScrollView(this)
-        scroll.setBackgroundColor(theme.windowBg)
+        scroll.background = buildWindowBackground()
         scroll.isFillViewport = true
         scroll.isFocusable = false
         scroll.isFocusableInTouchMode = false
@@ -206,8 +208,10 @@ class MainActivity : Activity() {
         val rootColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             val padH = dp(if (isWideScreen) 34 else 18)
-            val padV = dp(14)
+            val padV = dp(12)
             setPadding(padH, padV, padH, padV)
+            clipChildren = false
+            clipToPadding = false
             isFocusable = false
         }
         scroll.addView(rootColumn, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -218,9 +222,11 @@ class MainActivity : Activity() {
         // 2. 顶部主导航页签栏（焦点移上即切换页面）
         rootColumn.addView(buildMainTabBar(), linearParams(topMargin = dp(2)))
 
-        // 3. 分页内容容器（三页均按双栏对称排布）
+        // 3. 分页内容容器（三页均按双栏等高对称排布）
         val contentContainer = FrameLayout(this).apply {
             isFocusable = false
+            clipChildren = false
+            clipToPadding = false
         }
         overviewPage = buildOverviewPage(isWideScreen)
         practicePage = buildPracticePage(isWideScreen)
@@ -233,8 +239,59 @@ class MainActivity : Activity() {
         contentContainer.addView(systemPage, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         rootColumn.addView(contentContainer, linearParams(topMargin = dp(12)))
 
+        // 4. 底部遥控器快捷键引导条（不抢占焦点）
+        val navHint = makeText(
+            if (theme.isXianxia) "◀▶ 切换页签  ·  ▲▼ 移动焦距  ·  确认 施法  ·  返回 归位导航"
+            else "◀▶ 切换页签  ·  ▲▼ 移动焦点  ·  确认 执行  ·  返回 回到导航",
+            11.5f,
+            theme.hintColor,
+            false
+        ).apply {
+            gravity = Gravity.CENTER
+            alpha = 0.78f
+            isFocusable = false
+            setPadding(0, dp(8), 0, dp(2))
+        }
+        rootColumn.addView(navHint, linearParams(topMargin = dp(4)))
+
         selectMainTab(activeMainTab)
         return scroll
+    }
+
+    private fun buildWindowBackground(): GradientDrawable {
+        if (theme == Theme.MINECRAFT) {
+            return GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(theme.windowBg)
+            }
+        }
+        val glowTop = blendColor(theme.windowBg, theme.accentColor, 0.11f)
+        val deepBottom = blendColor(theme.windowBg, Color.BLACK, 0.22f)
+        return GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(glowTop, theme.windowBg, deepBottom)
+        )
+    }
+
+    private fun blendColor(base: Int, tint: Int, ratio: Float): Int {
+        val r = ratio.coerceIn(0f, 1f)
+        return Color.rgb(
+            (Color.red(base) + (Color.red(tint) - Color.red(base)) * r).toInt(),
+            (Color.green(base) + (Color.green(tint) - Color.green(base)) * r).toInt(),
+            (Color.blue(base) + (Color.blue(tint) - Color.blue(base)) * r).toInt()
+        )
+    }
+
+    private fun themeCardRadiusPx(): Float = when (theme) {
+        Theme.MINECRAFT -> 0f
+        Theme.CYBERPUNK, Theme.MATRIX -> dp(6).toFloat()
+        else -> dp(14).toFloat()
+    }
+
+    private fun themeButtonRadiusPx(): Float = when (theme) {
+        Theme.MINECRAFT -> 0f
+        Theme.CYBERPUNK, Theme.MATRIX -> dp(5).toFloat()
+        else -> dp(10).toFloat()
     }
 
     private fun buildHeaderBar(isWideScreen: Boolean): View {
@@ -248,7 +305,7 @@ class MainActivity : Activity() {
             setImageResource(R.mipmap.ic_launcher)
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        headerBar.addView(appIconView, LinearLayout.LayoutParams(dp(40), dp(40)).apply {
+        headerBar.addView(appIconView, LinearLayout.LayoutParams(dp(42), dp(42)).apply {
             rightMargin = dp(14)
         })
 
@@ -259,10 +316,11 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        titleView = makeText(theme.appTitle, 22f, Color.WHITE, true)
-        if (theme == Theme.XIUXIAN) {
-            titleView.typeface = Typeface.SERIF
-            titleView.setShadowLayer(10f, 0f, 1f, Color.argb(0x80, 0x36, 0xD1, 0xA8))
+        titleView = makeText(theme.appTitle, 23f, Color.WHITE, true).apply {
+            typeface = theme.bannerTitleTypeface
+            if (theme == Theme.XIUXIAN || theme == Theme.CYBERPUNK || theme == Theme.PALACE) {
+                setShadowLayer(10f, 0f, 1f, Color.argb(0x70, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)))
+            }
         }
         titleRow.addView(titleView)
 
@@ -272,13 +330,13 @@ class MainActivity : Activity() {
             ""
         }
         if (versionName.isNotEmpty()) {
-            val verBadge = makeText("v$versionName", 11f, theme.accentColor, true).apply {
-                setPadding(dp(7), dp(2), dp(7), dp(2))
+            val verBadge = makeText("v$versionName", 11.5f, theme.accentColor, true).apply {
+                setPadding(dp(8), dp(2), dp(8), dp(2))
                 background = roundedRect(
-                    dp(6).toFloat(),
-                    Color.argb(0x22, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)),
+                    if (theme == Theme.MINECRAFT) 0f else dp(6).toFloat(),
+                    Color.argb(0x26, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)),
                     dp(1),
-                    Color.argb(0x55, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
+                    Color.argb(0x66, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
                 )
             }
             titleRow.addView(verBadge, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
@@ -287,15 +345,20 @@ class MainActivity : Activity() {
         }
         headerTitleCol.addView(titleRow)
 
-        subtitleView = makeText(theme.appSubtitle, 12f, theme.hintColor, false).apply {
-            setPadding(0, dp(2), 0, 0)
+        subtitleView = makeText(theme.appSubtitle, 12.5f, theme.hintColor, false).apply {
+            setPadding(0, dp(3), 0, 0)
         }
         headerTitleCol.addView(subtitleView)
         headerBar.addView(headerTitleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        headerBadgeView = makeText("", 12f, Color.WHITE, true).apply {
-            setPadding(dp(12), dp(5), dp(12), dp(5))
-            background = roundedRect(dp(16).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
+        headerBadgeView = makeText("", 12.5f, Color.WHITE, true).apply {
+            setPadding(dp(14), dp(6), dp(14), dp(6))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(18).toFloat(),
+                theme.cardBg,
+                dp(1),
+                theme.cardStroke
+            )
         }
         if (isWideScreen) {
             headerBar.addView(headerBadgeView, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
@@ -308,12 +371,12 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             // Keep the scaled end tabs inside the navigation card, not against its border.
-            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
             clipChildren = false
             clipToPadding = false
             background = roundedRect(
-                dp(12).toFloat(),
-                Color.argb(0x55, Color.red(theme.cardBg), Color.green(theme.cardBg), Color.blue(theme.cardBg)),
+                themeCardRadiusPx(),
+                Color.argb(0x66, Color.red(theme.cardBg), Color.green(theme.cardBg), Color.blue(theme.cardBg)),
                 dp(1),
                 theme.cardStroke
             )
@@ -359,6 +422,8 @@ class MainActivity : Activity() {
         // 左栏：2x2 状态指标网格 + 符钥接口卡片 + 高频快捷入口
         val leftColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             isFocusable = false
         }
 
@@ -385,63 +450,106 @@ class MainActivity : Activity() {
         metricRow2.addView(overlayCell, weightedParams(0, gapDp = 8))
         metricRow2.addView(ipCell, weightedParams(1, gapDp = 8))
         statusCard.addView(metricRow2, linearParams(topMargin = dp(6)))
+
+        // 音乐与 WLED 实时摘要条（纯信息展示，不抢占 D-Pad 焦点）
+        val mediaStrip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(11), dp(7), dp(11), dp(7))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
+                Color.argb(0x42, 0x00, 0x00, 0x00),
+                dp(1),
+                Color.argb(0x48, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
+            )
+        }
+        mediaSummaryValue = makeText("♪ 音乐待机中", 12.5f, Color.WHITE, true).apply {
+            setSingleLine(true)
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        wledSummaryBadge = makeText("WLED 未开启", 11.5f, theme.hintColor, true).apply {
+            setSingleLine(true)
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(6).toFloat(),
+                Color.argb(0x28, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)),
+                0,
+                Color.TRANSPARENT
+            )
+        }
+        mediaStrip.addView(mediaSummaryValue, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = dp(8) })
+        mediaStrip.addView(wledSummaryBadge, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        statusCard.addView(mediaStrip, linearParams(topMargin = dp(7)))
         leftColumn.addView(statusCard)
 
-        val urlCard = makeCard(padH = 14, padV = 8)
+        val urlCard = makeCard(padH = 14, padV = 9)
         val urlHeaderRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        callInfoTitleView = makeText(theme.callInfoTitle, 12f, theme.hintColor, true)
+        callInfoTitleView = makeText(theme.callInfoTitle, 12.5f, theme.hintColor, true)
         urlHeaderRow.addView(callInfoTitleView, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
         tokenValue = makeText("", 12.5f, Color.WHITE, true).apply {
             typeface = Typeface.MONOSPACE
-            setPadding(dp(7), dp(2), dp(7), dp(2))
-            background = roundedRect(dp(6).toFloat(), Color.argb(0x40, 0x00, 0x00, 0x00), dp(1), theme.cardStroke)
+            setPadding(dp(8), dp(2), dp(8), dp(2))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(6).toFloat(),
+                Color.argb(0x40, 0x00, 0x00, 0x00),
+                dp(1),
+                theme.cardStroke
+            )
         }
         urlHeaderRow.addView(tokenValue)
         urlCard.addView(urlHeaderRow)
 
         urlValue = makeText("", 13f, theme.accentColor, false).apply {
             typeface = Typeface.MONOSPACE
-            setPadding(dp(9), dp(6), dp(9), dp(6))
-            background = roundedRect(dp(8).toFloat(), Color.argb(0x48, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
+                Color.argb(0x48, 0x00, 0x00, 0x00),
+                0,
+                Color.TRANSPARENT
+            )
             setOnClickListener { copyCallUrl() }
         }
         urlCard.addView(urlValue, linearParams(topMargin = dp(6)))
-        leftColumn.addView(urlCard, linearParams(topMargin = dp(8)))
+        leftColumn.addView(urlCard, linearParams(topMargin = dp(9)))
 
-        val quickCard = makeCard(padH = 14, padV = 10)
-        quickCard.addView(makeText(theme.quickActionsTitle, 12f, theme.hintColor, true))
+        val quickCard = makeCard(padH = 14, padV = 11)
+        quickCard.addView(makeText(theme.quickActionsTitle, 12.5f, theme.hintColor, true))
         val quickRow = buildButtonRow()
-        musicButton = buildButton("Sendspin 音乐") {
+        musicButton = buildButton("Sendspin 音乐", padV = 11) {
             startActivity(Intent(this@MainActivity, SendspinActivity::class.java))
         }.apply { id = View.generateViewId() }
         quickTestButton = buildButton(
             label = theme.testButtonText,
+            padV = 11,
             onClick = { showTestBanner() }
         ).apply { id = View.generateViewId() }
-        quickHistoryButton = buildButton(theme.historyButtonText) {
+        quickHistoryButton = buildButton(theme.historyButtonText, padV = 11) {
             showHistoryDialog()
         }.apply { id = View.generateViewId() }
         quickRow.addView(musicButton, weightedParams(0, gapDp = 8))
         quickRow.addView(quickTestButton, weightedParams(1, gapDp = 8))
         quickRow.addView(quickHistoryButton, weightedParams(2, gapDp = 8))
-        quickCard.addView(quickRow, linearParams(topMargin = dp(7)))
-        leftColumn.addView(quickCard, linearParams(topMargin = dp(8)))
+        quickCard.addView(quickRow, linearParams(topMargin = dp(8)))
+        leftColumn.addView(quickCard, linearParams(topMargin = dp(9)))
 
-        // 右栏：HA 自动发现集成 & 手机控制台二维码卡片
+        // 右栏：HA 自动发现集成 & 手机控制台二维码卡片（与左栏等高对齐）
         val rightColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            clipChildren = false
+            clipToPadding = false
             isFocusable = false
         }
-        val qrCard = makeCard(padH = 16, padV = 12).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
+        val qrCard = makeCard(padH = 16, padV = 14).apply {
+            gravity = Gravity.CENTER_HORIZONTAL or Gravity.CENTER_VERTICAL
         }
         val tabRow = buildButtonRow().apply {
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(8))
+            setPadding(0, 0, 0, dp(10))
         }
         haTabButton = buildTabButton("🌟 HA 自动发现集成", activeQrTab == QrTab.HA_INTEGRATION) {
             if (activeQrTab != QrTab.HA_INTEGRATION) {
@@ -459,21 +567,27 @@ class MainActivity : Activity() {
         tabRow.addView(tokenTabButton, weightedParams(1, gapDp = 8))
         qrCard.addView(tabRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        qrTitleView = makeText("", 14.5f, Color.WHITE, true).apply {
+        qrTitleView = makeText("", 15f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, dp(2), 0, dp(2))
+            typeface = theme.bannerTitleTypeface
+            setPadding(0, dp(2), 0, dp(3))
         }
-        qrSubtitleView = makeText("", 11.5f, theme.hintColor, false).apply {
+        qrSubtitleView = makeText("", 12f, theme.hintColor, false).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setLineSpacing(dp(2).toFloat(), 1f)
-            setPadding(dp(6), 0, dp(6), dp(8))
+            setPadding(dp(6), 0, dp(6), dp(10))
         }
         qrCard.addView(qrTitleView)
         qrCard.addView(qrSubtitleView)
 
         val qrBox = LinearLayout(this).apply {
-            setPadding(dp(7), dp(7), dp(7), dp(7))
-            background = roundedRect(dp(12).toFloat(), Color.WHITE, dp(2), theme.accentColor)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(12).toFloat(),
+                Color.WHITE,
+                dp(2),
+                theme.accentColor
+            )
             gravity = Gravity.CENTER
         }
         qrImage = ImageView(this).apply {
@@ -484,17 +598,22 @@ class MainActivity : Activity() {
         qrBox.addView(qrImage, LinearLayout.LayoutParams(dp(QR_PIXEL_SIZE), dp(QR_PIXEL_SIZE)))
         qrCard.addView(qrBox)
 
-        qrCaptionView = makeText("", 11f, theme.accentColor, false).apply {
+        qrCaptionView = makeText("", 11.5f, theme.accentColor, false).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setLineSpacing(dp(2).toFloat(), 1f)
-            setPadding(dp(8), dp(7), dp(8), dp(3))
-            background = roundedRect(dp(8).toFloat(), Color.argb(0x38, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
+            setPadding(dp(10), dp(8), dp(10), dp(4))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
+                Color.argb(0x38, 0x00, 0x00, 0x00),
+                0,
+                Color.TRANSPARENT
+            )
             setOnClickListener { copyActiveQrUrl() }
         }
-        qrCard.addView(qrCaptionView, linearParams(topMargin = dp(8)))
-        rightColumn.addView(qrCard)
+        qrCard.addView(qrCaptionView, linearParams(topMargin = dp(10)))
+        rightColumn.addView(qrCard, LinearLayout.LayoutParams(MATCH_PARENT, if (isWideScreen) MATCH_PARENT else WRAP_CONTENT))
 
-        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.28f, rightWeight = 0.92f)
+        return buildTwoColumnRow(isWideScreen, leftColumn, rightColumn, leftWeight = 1.24f, rightWeight = 0.96f)
     }
 
     private fun buildPracticePage(isWideScreen: Boolean): View {
@@ -617,12 +736,14 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = if (isWideScreen) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             isFocusable = false
+            clipChildren = false
+            clipToPadding = false
         }
         if (isWideScreen) {
-            val leftParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, leftWeight).apply {
+            val leftParams = LinearLayout.LayoutParams(0, MATCH_PARENT, leftWeight).apply {
                 rightMargin = dp(16)
             }
-            val rightParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, rightWeight)
+            val rightParams = LinearLayout.LayoutParams(0, MATCH_PARENT, rightWeight)
             row.addView(leftView, leftParams)
             row.addView(rightView, rightParams)
         } else {
@@ -633,19 +754,28 @@ class MainActivity : Activity() {
     }
 
     private fun buildSectionHeader(card: LinearLayout, title: String, subtitle: String? = null) {
-        card.addView(makeText(title, 16f, Color.WHITE, true))
+        card.addView(
+            makeText(title, 17f, Color.WHITE, true).apply {
+                typeface = theme.bannerTitleTypeface
+            }
+        )
         if (!subtitle.isNullOrBlank()) {
-            val subView = makeText(subtitle, 12f, theme.hintColor, false).apply {
+            val subView = makeText(subtitle, 12.5f, theme.hintColor, false).apply {
                 setLineSpacing(dp(2).toFloat(), 1f)
             }
             card.addView(subView, linearParams(topMargin = dp(4)))
         }
     }
 
-    private fun buildHintBox(text: String): TextView = makeText(text, 11.5f, theme.hintColor, false).apply {
-        setLineSpacing(dp(3).toFloat(), 1f)
-        setPadding(dp(10), dp(8), dp(10), dp(8))
-        background = roundedRect(dp(8).toFloat(), Color.argb(0x36, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
+    private fun buildHintBox(text: String): TextView = makeText(text, 12f, theme.hintColor, false).apply {
+        setLineSpacing(dp(3.5f).toFloat(), 1f)
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        background = roundedRect(
+            if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
+            Color.argb(0x3C, 0x00, 0x00, 0x00),
+            dp(1),
+            Color.argb(0x40, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor))
+        )
     }
 
     private fun wireMainTabNavigation(isWideScreen: Boolean) {
@@ -816,14 +946,15 @@ class MainActivity : Activity() {
     }
 
     private fun createMainTabStateDrawable(isSelected: Boolean): StateListDrawable {
+        val radius = themeButtonRadiusPx()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(dp(9).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(android.R.attr.state_pressed),
-            roundedRect(dp(9).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
         )
         if (isSelected) {
             val selectedBg = Color.argb(
@@ -834,12 +965,12 @@ class MainActivity : Activity() {
             )
             states.addState(
                 intArrayOf(),
-                roundedRect(dp(9).toFloat(), selectedBg, dp(2), theme.accentColor)
+                roundedRect(radius, selectedBg, dp(2), theme.accentColor)
             )
         } else {
             states.addState(
                 intArrayOf(),
-                roundedRect(dp(9).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
+                roundedRect(radius, theme.cardBg, dp(1), theme.cardStroke)
             )
         }
         return states
@@ -854,12 +985,17 @@ class MainActivity : Activity() {
     private fun buildMetricCell(label: String): Pair<LinearLayout, TextView> {
         val cell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(11), dp(6), dp(11), dp(6))
-            background = roundedRect(dp(8).toFloat(), Color.argb(0x36, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            background = roundedRect(
+                if (theme == Theme.MINECRAFT) 0f else dp(8).toFloat(),
+                Color.argb(0x38, 0x00, 0x00, 0x00),
+                0,
+                Color.TRANSPARENT
+            )
         }
-        val labelView = makeText(label, 11f, theme.hintColor, false)
-        val valueView = makeText("", 13f, Color.WHITE, true).apply {
-            setPadding(0, dp(2), 0, 0)
+        val labelView = makeText(label, 11.5f, theme.hintColor, false)
+        val valueView = makeText("", 13.5f, Color.WHITE, true).apply {
+            setPadding(0, dp(3), 0, 0)
             setSingleLine(true)
         }
         cell.addView(labelView)
@@ -871,7 +1007,7 @@ class MainActivity : Activity() {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
         card.setPadding(dp(padH), dp(padV), dp(padH), dp(padV))
-        card.background = roundedRect(dp(14).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
+        card.background = roundedRect(themeCardRadiusPx(), theme.cardBg, dp(1), theme.cardStroke)
         card.clipChildren = false
         card.clipToPadding = false
         return card
@@ -897,9 +1033,9 @@ class MainActivity : Activity() {
     private fun buildTabButton(label: String, isSelected: Boolean, onClick: () -> Unit): Button {
         val button = Button(this)
         button.text = label
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         button.typeface = Typeface.DEFAULT_BOLD
-        button.setPadding(dp(8), dp(6), dp(8), dp(6))
+        button.setPadding(dp(9), dp(7), dp(9), dp(7))
         button.isFocusable = true
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
@@ -908,14 +1044,15 @@ class MainActivity : Activity() {
         val textNormal = if (isSelected) Color.WHITE else theme.hintColor
         button.setTextColor(textNormal)
 
+        val radius = themeButtonRadiusPx()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(dp(8).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(),
-            roundedRect(dp(8).toFloat(), bgNormal, dp(1), theme.buttonStroke)
+            roundedRect(radius, bgNormal, dp(1), theme.buttonStroke)
         )
         button.background = states
 
@@ -932,31 +1069,32 @@ class MainActivity : Activity() {
 
     private fun buildButton(
         label: String,
-        padV: Int = 9,
+        padV: Int = 10,
         onLongClick: (() -> Boolean)? = null,
         onClick: () -> Unit
     ): Button {
+        val radius = themeButtonRadiusPx()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(dp(9).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(android.R.attr.state_pressed),
-            roundedRect(dp(9).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(),
-            roundedRect(dp(9).toFloat(), theme.buttonBg, dp(1), theme.buttonStroke)
+            roundedRect(radius, theme.buttonBg, dp(1), theme.buttonStroke)
         )
 
         val button = Button(this)
         button.text = label
         button.setTextColor(Color.WHITE)
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         button.typeface = Typeface.DEFAULT_BOLD
         button.background = states
-        button.setPadding(dp(8), dp(padV), dp(8), dp(padV))
+        button.setPadding(dp(9), dp(padV), dp(9), dp(padV))
         button.isFocusable = true
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
@@ -1060,6 +1198,30 @@ class MainActivity : Activity() {
         ipMetricValue.text = if (ipUsable) "🌐 $ip" else "⚠️ 未连接局域网"
         ipMetricValue.setTextColor(if (ipUsable) Color.WHITE else Color.rgb(0xFF, 0xB0, 0x20))
 
+        PlaylistStore.restoreIfEmpty(applicationContext)
+        val playlistCount = PlaylistStore.current()?.playlists?.size ?: 0
+        val musicStatus = SendspinRuntime.current()?.status()
+        val trackTitle = musicStatus?.title?.trim().orEmpty()
+        mediaSummaryValue.text = when {
+            musicStatus != null && musicStatus.playing && trackTitle.isNotEmpty() ->
+                "♪ 正在播放：$trackTitle" + if (playlistCount > 0) " · $playlistCount 歌单" else ""
+            trackTitle.isNotEmpty() ->
+                "♪ 已暂停：$trackTitle" + if (playlistCount > 0) " · $playlistCount 歌单" else ""
+            playlistCount > 0 ->
+                "♪ 音乐待机中 · 已同步 $playlistCount 张歌单"
+            else ->
+                "♪ Sendspin 音乐待机中"
+        }
+        val wledAudioOn = Prefs.isWledSyncEnabled(this)
+        val wledColorOn = Prefs.isWledColorSyncEnabled(this)
+        wledSummaryBadge.text = when {
+            wledAudioOn && wledColorOn -> "● WLED 律动 ${Prefs.getWledSyncDynamics(this)}% · 色彩"
+            wledAudioOn -> "● WLED 律动 ${Prefs.getWledSyncDynamics(this)}%"
+            wledColorOn -> "● WLED 封面色彩"
+            else -> "WLED 未开启"
+        }
+        wledSummaryBadge.setTextColor(if (wledAudioOn || wledColorOn) theme.accentColor else theme.hintColor)
+
         tokenValue.text = theme.tokenLabel(token)
         urlValue.text = currentUrl
 
@@ -1114,14 +1276,15 @@ class MainActivity : Activity() {
 
     private fun createTabStateDrawable(isSelected: Boolean): StateListDrawable {
         val bgNormal = if (isSelected) theme.accentColor else theme.buttonBg
+        val radius = themeButtonRadiusPx()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(dp(8).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(),
-            roundedRect(dp(8).toFloat(), bgNormal, dp(1), theme.buttonStroke)
+            roundedRect(radius, bgNormal, dp(1), theme.buttonStroke)
         )
         return states
     }

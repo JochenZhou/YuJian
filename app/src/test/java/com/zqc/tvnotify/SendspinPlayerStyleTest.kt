@@ -282,12 +282,22 @@ class SendspinPlayerStyleTest {
 
         val activity = buildPreparedSendspinActivity()
         val clazz = SendspinActivity::class.java
-        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
-        Shadows.shadowOf(Looper.getMainLooper()).idle()
+        fun openWledMenu(): ThemedDialog {
+            clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            val settingsDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+            assertTrue(settingsDialog.isShowing)
+            val topRows = settingsDialog.itemViews.map { collectAllTexts(it).joinToString(" | ") }
+            val wledMenuIdx = topRows.indexOfFirst { it.contains("WLED 灯光联动") }
+            assertTrue("Expected grouped WLED settings entry: $topRows", wledMenuIdx >= 0)
+            settingsDialog.itemViews[wledMenuIdx].performClick()
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            return clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
+        }
 
-        val settingsDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
-        assertTrue(settingsDialog.isShowing)
-        val rows = settingsDialog.itemViews.map { collectAllTexts(it).joinToString(" | ") }
+        val wledDialog = openWledMenu()
+        assertTrue(wledDialog.isShowing)
+        val rows = wledDialog.itemViews.map { collectAllTexts(it).joinToString(" | ") }
         val audioRowIdx = rows.indexOfFirst { it.contains("WLED 音乐律动") }
         val colorRowIdx = rows.indexOfFirst { it.contains("WLED 封面色彩同步") }
         val configRowIdx = rows.indexOfFirst { it.contains("WLED 参数设置") }
@@ -296,24 +306,20 @@ class SendspinPlayerStyleTest {
         assertTrue("Expected WLED config row in settings: $rows", configRowIdx >= 0)
 
         // Toggle audio sync ON cleanly
-        settingsDialog.itemViews[audioRowIdx].performClick()
+        wledDialog.itemViews[audioRowIdx].performClick()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         assertTrue(Prefs.isWledSyncEnabled(context))
         assertFalse(Prefs.isWledColorSyncEnabled(context))
 
-        // Open settings again and toggle color sync ON independently
-        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
-        Shadows.shadowOf(Looper.getMainLooper()).idle()
-        val settingsDialog2 = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
-        settingsDialog2.itemViews[colorRowIdx].performClick()
+        // Open WLED menu again and toggle color sync ON independently
+        val wledDialog2 = openWledMenu()
+        wledDialog2.itemViews[colorRowIdx].performClick()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         assertTrue(Prefs.isWledColorSyncEnabled(context))
 
         // Open WLED config sub-dialog
-        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
-        Shadows.shadowOf(Looper.getMainLooper()).idle()
-        val settingsDialog3 = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
-        settingsDialog3.itemViews[configRowIdx].performClick()
+        val wledDialog3 = openWledMenu()
+        wledDialog3.itemViews[configRowIdx].performClick()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
 
         val configDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
@@ -367,15 +373,13 @@ class SendspinPlayerStyleTest {
         assertEquals(11988, Prefs.getWledSyncPort(context))
         assertEquals("192.168.101.206", Prefs.getWledColorHost(context))
 
-        // Open settings -> recommended WLED effects dialog and verify preset persistence
-        clazz.getDeclaredMethod("showSettingsDialog").apply { isAccessible = true }.invoke(activity)
-        Shadows.shadowOf(Looper.getMainLooper()).idle()
-        val settingsDialog4 = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
-        val effectRowIdx = settingsDialog4.itemViews
+        // Open WLED menu -> recommended WLED effects dialog and verify preset persistence
+        val wledDialog4 = openWledMenu()
+        val effectRowIdx = wledDialog4.itemViews
             .map { collectAllTexts(it).joinToString(" | ") }
             .indexOfFirst { it.contains("推荐 WLED 律动效果") }
-        assertTrue("Expected recommended WLED effect row in settings", effectRowIdx >= 0)
-        settingsDialog4.itemViews[effectRowIdx].performClick()
+        assertTrue("Expected recommended WLED effect row in WLED menu", effectRowIdx >= 0)
+        wledDialog4.itemViews[effectRowIdx].performClick()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
 
         val effectsDialog = clazz.getDeclaredField("playerDialog").apply { isAccessible = true }.get(activity) as ThemedDialog
@@ -387,6 +391,38 @@ class SendspinPlayerStyleTest {
         effectsDialog.itemViews[gravIdx].performClick()
         Shadows.shadowOf(Looper.getMainLooper()).idle()
         assertEquals("gravcentric", Prefs.getWledEffect(context))
+    }
+
+    @Test
+    fun `player centers large artwork with lyrics chip when unavailable and expands two columns when lyrics exist`() {
+        val activity = buildPreparedSendspinActivity()
+        val clazz = SendspinActivity::class.java
+        val stage = clazz.getDeclaredField("stage").apply { isAccessible = true }.get(activity) as SendspinStageLayout
+        val lyricsView = clazz.getDeclaredField("lyricsView").apply { isAccessible = true }.get(activity) as LyricsScrollView
+        val lyricsChip = clazz.getDeclaredField("lyricsStatusChip").apply { isAccessible = true }.get(activity) as TextView
+        val hasLyricsField = clazz.getDeclaredField("hasLyrics").apply { isAccessible = true }
+        val loadingField = clazz.getDeclaredField("lyricsLoading").apply { isAccessible = true }
+        val syncMode = clazz.getDeclaredMethod("syncLyricsPresentationMode").apply { isAccessible = true }
+
+        // Default no-lyrics state uses centered immersive mode with tasteful "暂无歌词" chip
+        assertTrue(stage.isCenteredMode())
+        assertEquals(View.GONE, lyricsView.visibility)
+        assertEquals(View.VISIBLE, lyricsChip.visibility)
+        assertEquals("暂无歌词", lyricsChip.text.toString())
+
+        // Loading state keeps centered layout and informs user cleanly
+        loadingField.setBoolean(activity, true)
+        syncMode.invoke(activity)
+        assertTrue(stage.isCenteredMode())
+        assertEquals("正在检索歌词…", lyricsChip.text.toString())
+
+        // Once lyrics load, stage expands to two columns and hides the empty chip
+        loadingField.setBoolean(activity, false)
+        hasLyricsField.setBoolean(activity, true)
+        syncMode.invoke(activity)
+        assertFalse(stage.isCenteredMode())
+        assertEquals(View.VISIBLE, lyricsView.visibility)
+        assertEquals(View.GONE, lyricsChip.visibility)
     }
 
     @Test
