@@ -56,8 +56,7 @@ internal fun playerAlpha(color: Int, alpha: Int): Int =
 private fun Context.playerDp(value: Float): Float = value * resources.displayMetrics.density
 
 private fun View.animatePlayerFocus(focused: Boolean) {
-    animate().cancel()
-    animate().scaleX(if (focused) 1.04f else 1f).scaleY(if (focused) 1.04f else 1f).setDuration(120L).start()
+    TvFocusMotion.animateFocusScale(this, focused, focusedScale = 1.04f, elevationLiftDp = 4f)
 }
 
 /** Two-column TV player stage (left: cover & controls, right: scrolling lyrics), smoothly animating to centered cover when lyrics are unavailable. */
@@ -513,6 +512,11 @@ internal class SendspinIconButton(
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         animatePlayerFocus(gainFocus)
     }
+
+    override fun performClick(): Boolean {
+        TvFocusMotion.animateClickPulse(this, 1.04f)
+        return super.performClick()
+    }
 }
 
 internal class SendspinFocusPill(context: Context, accent: Int) : LinearLayout(context) {
@@ -530,6 +534,11 @@ internal class SendspinFocusPill(context: Context, accent: Int) : LinearLayout(c
     override fun onFocusChanged(gainFocus: Boolean, direction: Int, previouslyFocusedRect: Rect?) {
         super.onFocusChanged(gainFocus, direction, previouslyFocusedRect)
         animatePlayerFocus(gainFocus)
+    }
+
+    override fun performClick(): Boolean {
+        TvFocusMotion.animateClickPulse(this, 1.04f)
+        return super.performClick()
     }
 
     override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {

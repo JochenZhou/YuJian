@@ -59,6 +59,7 @@ class MainActivity : Activity() {
         private const val TAG = "TVNotifyMain"
         private const val REQUEST_CODE_NOTIFICATION = 1001
         private const val QR_PIXEL_SIZE = 188
+        private const val STATE_ACTIVE_MAIN_TAB = "active_main_tab"
         const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-yujian"
         const val APP_REPO_URL = "https://github.com/JochenZhou/YuJian"
 
@@ -73,6 +74,7 @@ class MainActivity : Activity() {
     private lateinit var overviewPage: View
     private lateinit var practicePage: View
     private lateinit var systemPage: View
+    private lateinit var focusOverlay: TvFocusGlowOverlay
 
     private lateinit var headerBadgeView: TextView
     private lateinit var stateMetricValue: TextView
@@ -136,6 +138,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         theme = Theme.current(this)
+        activeMainTab = savedInstanceState?.getString(STATE_ACTIVE_MAIN_TAB)
+            ?.let { raw -> MainTab.entries.firstOrNull { it.name == raw } }
+            ?: Prefs.resolveAndConsumeInitialMainTab(this)
         bannerController = BannerController(this)
         setContentView(buildRootView())
         requestNotificationPermissionIfNeeded()
@@ -158,6 +163,11 @@ class MainActivity : Activity() {
         if (savedInstanceState == null && Prefs.isLaunchToPlayer(this)) {
             startActivity(Intent(this, SendspinActivity::class.java))
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString(STATE_ACTIVE_MAIN_TAB, activeMainTab.name)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onResume() {
@@ -189,6 +199,9 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (::focusOverlay.isInitialized) {
+            focusOverlay.cancelAnimations()
+        }
         activeDialog?.dismiss()
         activeDialog = null
         bannerController?.dismissImmediately()
@@ -203,11 +216,24 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------
 
     private fun buildRootView(): View {
+        val outerFrame = FrameLayout(this).apply {
+            clipChildren = false
+            clipToPadding = false
+            background = buildWindowBackground()
+        }
+        focusOverlay = TvFocusGlowOverlay(
+            context = this,
+            hostContainer = outerFrame,
+            initialAccent = theme.accentColor,
+            pixelSharp = theme == Theme.MINECRAFT
+        )
+
         val scroll = ScrollView(this)
-        scroll.background = buildWindowBackground()
         scroll.isFillViewport = true
         scroll.isFocusable = false
         scroll.isFocusableInTouchMode = false
+        scroll.clipChildren = false
+        scroll.clipToPadding = false
 
         val screenWidthDp = resources.displayMetrics.widthPixels / resources.displayMetrics.density
         val isWideScreen = screenWidthDp >= 600f
@@ -262,7 +288,9 @@ class MainActivity : Activity() {
         rootColumn.addView(navHint, linearParams(topMargin = dp(4)))
 
         selectMainTab(activeMainTab)
-        return scroll
+        outerFrame.addView(scroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        outerFrame.addView(focusOverlay, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        return outerFrame
     }
 
     private fun buildWindowBackground(): GradientDrawable {
@@ -411,17 +439,21 @@ class MainActivity : Activity() {
             stateListAnimator = null
             setSingleLine(true)
         }
+        val liftDp = if (theme == Theme.MINECRAFT) 0f else 3f
+        focusOverlay.registerTarget(
+            button,
+            TvFocusTargetSpec(cornerRadiusPx = themeButtonRadiusPx(), focusedScale = 1.03f)
+        )
         button.setOnFocusChangeListener { v, hasFocus ->
-            if (hasFocus) {
-                v.animate().scaleX(1.03f).scaleY(1.03f).setDuration(120).start()
-                if (activeMainTab != tab) {
-                    selectMainTab(tab)
-                }
-            } else {
-                v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start()
+            TvFocusMotion.animateFocusScale(v, hasFocus, focusedScale = 1.03f, elevationLiftDp = liftDp)
+            if (hasFocus && activeMainTab != tab) {
+                selectMainTab(tab)
             }
         }
-        button.setOnClickListener { selectMainTab(tab) }
+        button.setOnClickListener {
+            TvFocusMotion.animateClickPulse(button, 1.03f)
+            selectMainTab(tab)
+        }
         return button
     }
 
@@ -1033,27 +1065,59 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun pageForTab(tab: MainTab): View = when (tab) {
+        MainTab.OVERVIEW -> overviewPage
+        MainTab.PRACTICE -> practicePage
+        MainTab.SYSTEM -> systemPage
+    }
+
+    private fun applyTabPageVisibility(previousTab: MainTab, nextTab: MainTab) {
+        val targetPage = pageForTab(nextTab)
+        for (tab in MainTab.entries) {
+            val page = pageForTab(tab)
+            page.animate().cancel()
+            if (tab != nextTab) {
+                page.alpha = 1f
+                page.translationX = 0f
+                page.visibility = View.GONE
+            }
+        }
+        targetPage.visibility = View.VISIBLE
+        if (previousTab != nextTab && targetPage.isAttachedToWindow && targetPage.width > 0) {
+            val direction = if (nextTab.ordinal > previousTab.ordinal) 1f else -1f
+            targetPage.alpha = 0.42f
+            targetPage.translationX = direction * dp(16).toFloat()
+            targetPage.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .setDuration(185L)
+                .setInterpolator(TvFocusMotion.TAB_INTERPOLATOR)
+                .withEndAction {
+                    targetPage.alpha = 1f
+                    targetPage.translationX = 0f
+                }
+                .start()
+        } else {
+            targetPage.alpha = 1f
+            targetPage.translationX = 0f
+        }
+    }
+
     private fun switchMainTabToControl(targetTab: MainTab, targetControl: View) {
         // Show the destination page and move focus BEFORE hiding the previous page, so ViewRoot
         // does not temporarily fall back to the top tab bar and re-trigger selectMainTab.
-        when (targetTab) {
-            MainTab.OVERVIEW -> overviewPage.visibility = View.VISIBLE
-            MainTab.PRACTICE -> practicePage.visibility = View.VISIBLE
-            MainTab.SYSTEM -> systemPage.visibility = View.VISIBLE
-        }
+        val previousTab = activeMainTab
+        pageForTab(targetTab).visibility = View.VISIBLE
         activeMainTab = targetTab
         updateMainTabButtonStyles()
         targetControl.requestFocus()
-        overviewPage.visibility = if (targetTab == MainTab.OVERVIEW) View.VISIBLE else View.GONE
-        practicePage.visibility = if (targetTab == MainTab.PRACTICE) View.VISIBLE else View.GONE
-        systemPage.visibility = if (targetTab == MainTab.SYSTEM) View.VISIBLE else View.GONE
+        applyTabPageVisibility(previousTab, targetTab)
     }
 
     private fun selectMainTab(tab: MainTab) {
+        val previousTab = activeMainTab
         activeMainTab = tab
-        overviewPage.visibility = if (tab == MainTab.OVERVIEW) View.VISIBLE else View.GONE
-        practicePage.visibility = if (tab == MainTab.PRACTICE) View.VISIBLE else View.GONE
-        systemPage.visibility = if (tab == MainTab.SYSTEM) View.VISIBLE else View.GONE
+        applyTabPageVisibility(previousTab, tab)
         updateMainTabButtonStyles()
     }
 
@@ -1199,18 +1263,25 @@ class MainActivity : Activity() {
         )
         button.background = states
 
+        val liftDp = if (theme == Theme.MINECRAFT) 0f else 4f
+        focusOverlay.registerTarget(
+            button,
+            TvFocusTargetSpec(cornerRadiusPx = radius, focusedScale = 1.04f)
+        )
         button.setOnFocusChangeListener { v, hasFocus ->
+            TvFocusMotion.animateFocusScale(v, hasFocus, focusedScale = 1.04f, elevationLiftDp = liftDp)
             if (hasFocus) {
-                v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(120).start()
                 iconDrawable?.setIconColor(Color.WHITE)
             } else {
-                v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start()
                 val isCurrentlySelected = (v === haTabButton && activeQrTab == QrTab.HA_INTEGRATION) ||
                     (v === tokenTabButton && activeQrTab == QrTab.WEB_CONSOLE)
                 iconDrawable?.setIconColor(if (isCurrentlySelected) Color.WHITE else theme.hintColor)
             }
         }
-        button.setOnClickListener { onClick() }
+        button.setOnClickListener {
+            TvFocusMotion.animateClickPulse(button, 1.04f)
+            onClick()
+        }
         return button
     }
 
@@ -1258,17 +1329,20 @@ class MainActivity : Activity() {
         }
         button.tag = iconDrawable
 
+        val liftDp = if (theme == Theme.MINECRAFT) 0f else 4f
+        focusOverlay.registerTarget(
+            button,
+            TvFocusTargetSpec(cornerRadiusPx = radius, focusedScale = 1.04f)
+        )
         button.setOnFocusChangeListener { v, hasFocus ->
-            if (hasFocus) {
-                v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(140).start()
-                (v.tag as? TvVectorIconDrawable)?.setIconColor(Color.WHITE)
-            } else {
-                v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140).start()
-                (v.tag as? TvVectorIconDrawable)?.setIconColor(theme.accentColor)
-            }
+            TvFocusMotion.animateFocusScale(v, hasFocus, focusedScale = 1.04f, elevationLiftDp = liftDp)
+            (v.tag as? TvVectorIconDrawable)?.setIconColor(if (hasFocus) Color.WHITE else theme.accentColor)
         }
 
-        button.setOnClickListener { onClick() }
+        button.setOnClickListener {
+            TvFocusMotion.animateClickPulse(button, 1.04f)
+            onClick()
+        }
         if (onLongClick != null) {
             button.setOnLongClickListener { onLongClick() }
         }

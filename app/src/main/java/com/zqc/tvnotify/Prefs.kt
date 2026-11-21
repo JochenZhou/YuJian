@@ -28,6 +28,7 @@ object Prefs {
     private const val KEY_SENDSPIN_CLIENT_NAME = "sendspin_client_name"
     private const val KEY_SENDSPIN_PLAYER_STYLE = "sendspin_player_style"
     private const val KEY_SENDSPIN_LAST_CENTERED = "sendspin_last_centered"
+    private const val KEY_MAIN_SETUP_SHOWN = "main_setup_shown"
     private const val KEY_WLED_SYNC_ENABLED = "wled_sync_enabled"
     private const val KEY_WLED_SYNC_PORT = "wled_sync_port"
     private const val KEY_WLED_SYNC_DYNAMICS = "wled_sync_dynamics"
@@ -189,6 +190,38 @@ object Prefs {
     /** 持久化播放页版面样式，保证退出播放页再进或重启后保持上次样式。 */
     fun setSendspinPresentationCentered(context: Context, centered: Boolean) {
         prefs(context).edit().putBoolean(KEY_SENDSPIN_LAST_CENTERED, centered).apply()
+    }
+
+    /** 是否已展示过首次启动的「互联与系统」引导页。 */
+    fun isMainSetupShown(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_MAIN_SETUP_SHOWN, false)
+
+    /**
+     * 决定本次冷启动应展示的初始主页签：
+     * - 全新安装且尚无任何历史配置/访问口令：首次先展示「互联与系统」便于扫码互联与配置，并立即持久化标记；
+     * - 已有配置的老设备升级或非首次启动：跳过引导，直接显示「首页」。
+     */
+    fun resolveAndConsumeInitialMainTab(context: Context): MainTab {
+        val store = prefs(context)
+        if (store.getBoolean(KEY_MAIN_SETUP_SHOWN, false)) {
+            return MainTab.OVERVIEW
+        }
+        synchronized(this) {
+            if (store.getBoolean(KEY_MAIN_SETUP_SHOWN, false)) {
+                return MainTab.OVERVIEW
+            }
+            val hasExistingSetup = store.contains(KEY_TOKEN) ||
+                store.contains(KEY_SENDSPIN_SERVER_URL) ||
+                store.contains(KEY_THEME) ||
+                store.contains(KEY_HISTORY) ||
+                store.contains(KEY_LAUNCH_TO_PLAYER) ||
+                store.contains(KEY_WLED_SYNC_ENABLED) ||
+                store.contains(KEY_WLED_COLOR_SYNC_ENABLED) ||
+                store.contains(KEY_SENDSPIN_LAST_CENTERED) ||
+                store.contains("sendspin_client_id")
+            store.edit().putBoolean(KEY_MAIN_SETUP_SHOWN, true).commit()
+            return if (hasExistingSetup) MainTab.OVERVIEW else MainTab.SYSTEM
+        }
     }
 
     /** 是否开启 WLED 音乐律动 UDP 广播；默认关闭。 */

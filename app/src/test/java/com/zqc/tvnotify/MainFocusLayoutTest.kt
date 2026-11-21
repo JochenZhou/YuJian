@@ -376,4 +376,48 @@ class MainFocusLayoutTest {
         Prefs.setLaunchToPlayer(activity, false)
         assertFalse(Prefs.isLaunchToPlayer(activity))
     }
+
+    @Test fun `fresh install lands on system tab once then opens overview, while configured upgrades skip to overview`() {
+        val context = org.robolectric.RuntimeEnvironment.getApplication()
+        val rawPrefs = context.getSharedPreferences("tvnotify_prefs", android.content.Context.MODE_PRIVATE)
+
+        // 1. Brand-new clean install: opens on SYSTEM ("互联与系统") first, then OVERVIEW ("首页") afterwards
+        rawPrefs.edit().clear().commit()
+        assertFalse(Prefs.isMainSetupShown(context))
+        assertEquals(MainTab.SYSTEM, Prefs.resolveAndConsumeInitialMainTab(context))
+        assertTrue(Prefs.isMainSetupShown(context))
+        assertEquals(MainTab.OVERVIEW, Prefs.resolveAndConsumeInitialMainTab(context))
+
+        // 2. Upgraded existing device that already saved token / server / theme: skips onboarding straight to OVERVIEW
+        for (existingKey in listOf("access_token", "sendspin_server_url", "ui_theme", "sendspin_last_centered")) {
+            rawPrefs.edit().clear().putString(existingKey, "configured").commit()
+            assertEquals("Existing setup ($existingKey) should skip to OVERVIEW", MainTab.OVERVIEW, Prefs.resolveAndConsumeInitialMainTab(context))
+            assertTrue(Prefs.isMainSetupShown(context))
+        }
+    }
+
+    @Test fun `focus glow overlay tracks focused targets and draws cleanly across themes`() {
+        for (theme in listOf(Theme.XIUXIAN, Theme.MINECRAFT)) {
+            val (_, activity) = activity(theme)
+            layout(activity, 1280)
+            val overlay = field(activity, "focusOverlay") as TvFocusGlowOverlay
+            val musicButton = field(activity, "musicButton") as Button
+            val quickHistoryButton = field(activity, "quickHistoryButton") as Button
+
+            overlay.measure(
+                View.MeasureSpec.makeMeasureSpec(1280, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY)
+            )
+            overlay.layout(0, 0, 1280, 1080)
+
+            runInKeyMode(activity) {
+                assertTrue(musicButton.requestFocus())
+                assertTrue(quickHistoryButton.requestFocus())
+            }
+            overlay.syncToCurrentFocus(animate = false)
+            val bmp = android.graphics.Bitmap.createBitmap(1280, 1080, android.graphics.Bitmap.Config.ARGB_8888)
+            overlay.draw(android.graphics.Canvas(bmp))
+            overlay.cancelAnimations()
+        }
+    }
 }

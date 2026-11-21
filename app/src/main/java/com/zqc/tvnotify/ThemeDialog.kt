@@ -739,9 +739,9 @@ internal class ThemedDialogBuilder(
             }.also { row.addView(it) }
         }
 
+        val elevationLift = if (theme == Theme.MINECRAFT) 0f else 2f
         row.setOnFocusChangeListener { v, hasFocus ->
-            v.animate().cancel()
-            v.animate().scaleX(if (hasFocus) 1.02f else 1f).scaleY(if (hasFocus) 1.02f else 1f).setDuration(110L).start()
+            TvFocusMotion.animateFocusScale(v, hasFocus, focusedScale = 1.02f, elevationLiftDp = elevationLift)
             val fg = if (hasFocus) palette.focusedTextColor else titleColorIdle
             val subFg = if (hasFocus) palette.focusedTextColor else subColorIdle
             titleView.setTextColor(fg)
@@ -765,6 +765,7 @@ internal class ThemedDialogBuilder(
             }
         }
         row.setOnClickListener {
+            TvFocusMotion.animateClickPulse(row, 1.02f)
             item.onClick(dialog)
             if (item.dismissOnClick && dialog.isShowing) {
                 dialog.dismiss()
@@ -779,6 +780,7 @@ internal class ThemedDialogBuilder(
         onClick: () -> Unit
     ): Button {
         val idleTextColor = if (emphasized) palette.titleColor else palette.bodyColor
+        val elevationLift = if (theme == Theme.MINECRAFT) 0f else 3f
         return Button(context).apply {
             text = label
             isAllCaps = false
@@ -797,11 +799,13 @@ internal class ThemedDialogBuilder(
             stateListAnimator = null
             background = palette.buildButtonBackground(density, emphasized)
             setOnFocusChangeListener { v, hasFocus ->
-                v.animate().cancel()
-                v.animate().scaleX(if (hasFocus) 1.04f else 1f).scaleY(if (hasFocus) 1.04f else 1f).setDuration(110L).start()
+                TvFocusMotion.animateFocusScale(v, hasFocus, focusedScale = 1.04f, elevationLiftDp = elevationLift)
                 setTextColor(if (hasFocus) palette.focusedTextColor else idleTextColor)
             }
-            setOnClickListener { onClick() }
+            setOnClickListener {
+                TvFocusMotion.animateClickPulse(this, 1.04f)
+                onClick()
+            }
         }
     }
 
