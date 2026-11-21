@@ -56,7 +56,13 @@ internal fun playerAlpha(color: Int, alpha: Int): Int =
 private fun Context.playerDp(value: Float): Float = value * resources.displayMetrics.density
 
 private fun View.animatePlayerFocus(focused: Boolean) {
-    TvFocusMotion.animateFocusScale(this, focused, focusedScale = 1.04f, elevationLiftDp = 4f)
+    TvFocusMotion.animateFocusScale(
+        view = this,
+        hasFocus = focused,
+        focusedScale = 1.05f,
+        elevationLiftDp = 0f,
+        useOvershoot = false
+    )
 }
 
 /** Two-column TV player stage (left: cover & controls, right: scrolling lyrics), smoothly animating to centered cover when lyrics are unavailable. */

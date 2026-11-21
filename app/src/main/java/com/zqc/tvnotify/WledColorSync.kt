@@ -355,13 +355,23 @@ class WledColorSync(
             return """{"seg":[{"id":0,"col":[[$r,$g,$b]]}]}"""
         }
 
-        fun buildPowerStateJson(on: Boolean): String = """{"on":$on}"""
+        fun buildPowerStateJson(on: Boolean, enableAudioSync: Boolean = false): String {
+            val audioPrefix = if (enableAudioSync) """"udpn":{"recv":true},"AudioReactive":{"on":true},""" else ""
+            return """{$audioPrefix"on":$on}"""
+        }
 
-        fun buildEffectStateJson(fxId: Int, speed: Int, intensity: Int, turnOn: Boolean = false): String {
+        fun buildEffectStateJson(
+            fxId: Int,
+            speed: Int,
+            intensity: Int,
+            turnOn: Boolean = false,
+            enableAudioSync: Boolean = false
+        ): String {
             val clampedSx = speed.coerceIn(0, 255)
             val clampedIx = intensity.coerceIn(0, 255)
             val powerPrefix = if (turnOn) """"on":true,""" else ""
-            return """{$powerPrefix"seg":[{"id":0,"fx":$fxId,"sx":$clampedSx,"ix":$clampedIx}]}"""
+            val audioPrefix = if (enableAudioSync) """"udpn":{"recv":true},"AudioReactive":{"on":true},""" else ""
+            return """{$powerPrefix$audioPrefix"seg":[{"id":0,"fx":$fxId,"sx":$clampedSx,"ix":$clampedIx}]}"""
         }
 
         fun resolveEffectId(preset: WledEffectPreset, effectsJson: String?): Int {
@@ -430,17 +440,25 @@ class WledColorSync(
             onResult?.invoke(true, "已设为保持灯带当前效果")
             return
         }
-        applyEffectOrPowerAsync(preset = preset, turnOn = false, resyncColor = false, onResult = onResult)
+        applyEffectOrPowerAsync(
+            preset = preset,
+            turnOn = false,
+            enableAudioSync = false,
+            resyncColor = false,
+            onResult = onResult
+        )
     }
 
     /**
      * Triggered when music playback actively starts while WLED integration is enabled:
-     * optionally powers the strip on, re-applies the configured effect preset (unless CUSTOM),
-     * and force re-pushes the current album artwork color if color sync is active.
+     * optionally powers the strip on, enables WLED UDP Sync Receive + AudioReactive,
+     * re-applies the configured effect preset (unless CUSTOM), and force re-pushes the
+     * current album artwork color if color sync is active.
      */
     fun applyPlaybackStart(
         preset: WledEffectPreset,
         turnOn: Boolean = true,
+        enableAudioSync: Boolean = false,
         resyncColor: Boolean = false,
         onResult: ((Boolean, String) -> Unit)? = null
     ) {
@@ -448,16 +466,23 @@ class WledColorSync(
             onResult?.invoke(false, "WLED 服务已关闭")
             return
         }
-        if (!turnOn && (preset == WledEffectPreset.CUSTOM || preset.fallbackFxId < 0) && !resyncColor) {
+        if (!turnOn && !enableAudioSync && (preset == WledEffectPreset.CUSTOM || preset.fallbackFxId < 0) && !resyncColor) {
             onResult?.invoke(true, "已设为保持灯带当前效果")
             return
         }
-        applyEffectOrPowerAsync(preset = preset, turnOn = turnOn, resyncColor = resyncColor, onResult = onResult)
+        applyEffectOrPowerAsync(
+            preset = preset,
+            turnOn = turnOn,
+            enableAudioSync = enableAudioSync,
+            resyncColor = resyncColor,
+            onResult = onResult
+        )
     }
 
     private fun applyEffectOrPowerAsync(
         preset: WledEffectPreset,
         turnOn: Boolean,
+        enableAudioSync: Boolean,
         resyncColor: Boolean,
         onResult: ((Boolean, String) -> Unit)?
     ) {
@@ -474,10 +499,16 @@ class WledColorSync(
                 if (preset != WledEffectPreset.CUSTOM && preset.fallbackFxId >= 0) {
                     val effectsJson = effectsUrl?.let { runCatching { getter.getBody(it) }.getOrNull() }
                     val fxId = resolveEffectId(preset, effectsJson)
-                    val body = buildEffectStateJson(fxId, preset.defaultSpeed, preset.defaultIntensity, turnOn = turnOn)
+                    val body = buildEffectStateJson(
+                        fxId = fxId,
+                        speed = preset.defaultSpeed,
+                        intensity = preset.defaultIntensity,
+                        turnOn = turnOn,
+                        enableAudioSync = enableAudioSync
+                    )
                     poster.postJson(stateUrl, body)
-                } else if (turnOn) {
-                    poster.postJson(stateUrl, buildPowerStateJson(true))
+                } else if (turnOn || enableAudioSync) {
+                    poster.postJson(stateUrl, buildPowerStateJson(on = true, enableAudioSync = enableAudioSync))
                 }
 
                 if (resyncColor) {
@@ -659,7 +690,13 @@ internal class WledPlaybackCoordinator(
     private val getWledHost: () -> String,
     private val getWledEffect: () -> WledEffectPreset,
     private val setAudioPlaybackActive: (Boolean) -> Unit,
-    private val applyWledPlaybackStart: (host: String, preset: WledEffectPreset, turnOn: Boolean, resyncColor: Boolean) -> Unit,
+    private val applyWledPlaybackStart: (
+        host: String,
+        preset: WledEffectPreset,
+        turnOn: Boolean,
+        enableAudioSync: Boolean,
+        resyncColor: Boolean
+    ) -> Unit,
     private val cooldownNs: Long = DEFAULT_COOLDOWN_NS,
     private val nowNs: () -> Long = System::nanoTime,
 ) {
@@ -687,7 +724,7 @@ internal class WledPlaybackCoordinator(
             val audioOn = isAudioSyncEnabled()
             val colorOn = isColorSyncEnabled()
             val preset = if (audioOn) getWledEffect() else WledEffectPreset.CUSTOM
-            applyWledPlaybackStart(getWledHost(), preset, true, colorOn)
+            applyWledPlaybackStart(getWledHost(), preset, true, audioOn, colorOn)
         }
     }
 

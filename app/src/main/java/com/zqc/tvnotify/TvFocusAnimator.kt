@@ -31,14 +31,17 @@ internal object TvFocusMotion {
 
     private const val FOCUS_GAIN_DURATION_MS = 165L
     private const val FOCUS_LOSS_DURATION_MS = 115L
-    private const val PULSE_PRESS_DURATION_MS = 55L
-    private const val PULSE_REBOUND_DURATION_MS = 125L
+    private const val CRISP_GAIN_DURATION_MS = 105L
+    private const val CRISP_LOSS_DURATION_MS = 80L
+    private const val PULSE_PRESS_DURATION_MS = 50L
+    private const val PULSE_REBOUND_DURATION_MS = 105L
 
     fun animateFocusScale(
         view: View,
         hasFocus: Boolean,
         focusedScale: Float = 1.04f,
-        elevationLiftDp: Float = 4f
+        elevationLiftDp: Float = 4f,
+        useOvershoot: Boolean = true
     ) {
         val targetScale = if (hasFocus) focusedScale else 1f
         val targetZ = if (hasFocus && elevationLiftDp > 0f) {
@@ -53,12 +56,19 @@ internal object TvFocusMotion {
             view.translationZ = targetZ
             return
         }
+        val duration = when {
+            !useOvershoot && hasFocus -> CRISP_GAIN_DURATION_MS
+            !useOvershoot -> CRISP_LOSS_DURATION_MS
+            hasFocus -> FOCUS_GAIN_DURATION_MS
+            else -> FOCUS_LOSS_DURATION_MS
+        }
+        val interpolator = if (hasFocus && useOvershoot) GAIN_INTERPOLATOR else LOSS_INTERPOLATOR
         view.animate()
             .scaleX(targetScale)
             .scaleY(targetScale)
             .translationZ(targetZ)
-            .setDuration(if (hasFocus) FOCUS_GAIN_DURATION_MS else FOCUS_LOSS_DURATION_MS)
-            .setInterpolator(if (hasFocus) GAIN_INTERPOLATOR else LOSS_INTERPOLATOR)
+            .setDuration(duration)
+            .setInterpolator(interpolator)
             .start()
     }
 
@@ -128,11 +138,11 @@ internal class TvFocusGlowOverlay(
 
     private val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 4.5f * density
+        strokeWidth = 3.5f * density
     }
     private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.5f * density
+        strokeWidth = 1.25f * density
     }
 
     private val focusListener = ViewTreeObserver.OnGlobalFocusChangeListener { _, newFocus ->
@@ -209,8 +219,8 @@ internal class TvFocusGlowOverlay(
             return
         }
         val aScale = haloAlpha.coerceIn(0f, 1f)
-        outerPaint.alpha = (96f * aScale).toInt().coerceIn(0, 255)
-        innerPaint.alpha = (212f * aScale).toInt().coerceIn(0, 255)
+        outerPaint.alpha = (68f * aScale).toInt().coerceIn(0, 255)
+        innerPaint.alpha = (148f * aScale).toInt().coerceIn(0, 255)
         if (pixelSharp || currentRadius <= 0.5f) {
             canvas.drawRect(currentRect, outerPaint)
             canvas.drawRect(currentRect, innerPaint)

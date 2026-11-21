@@ -75,7 +75,6 @@ class SendspinActivity : Activity() {
     private lateinit var playlistLabel: TextView
     private lateinit var settings: SendspinFocusPill
     private lateinit var settingsLabel: TextView
-    private lateinit var focusOverlay: TvFocusGlowOverlay
     private lateinit var theme: Theme
     private var playerStyle = Prefs.SendspinPlayerStyle.VINYL
     private var accent = Color.WHITE
@@ -170,7 +169,6 @@ class SendspinActivity : Activity() {
             lastLyricsTrackKey = ""
         }
         lyricsView.clearAnimation()
-        if (::focusOverlay.isInitialized) focusOverlay.cancelAnimations()
         for (view in arrayOf(back, artworkSwitcher, progress, previous, playPause, next, volumeControl, playlistButton, settings)) view.animate().cancel()
         playerDialog?.dismiss()
         playerDialog = null
@@ -179,7 +177,6 @@ class SendspinActivity : Activity() {
 
     override fun onDestroy() {
         destroyed = true
-        if (::focusOverlay.isInitialized) focusOverlay.cancelAnimations()
         runtime?.removeListener(listener)
         main.removeCallbacksAndMessages(null)
         cancelArtworkDecode()
@@ -212,7 +209,7 @@ class SendspinActivity : Activity() {
         ambient = SendspinAmbientDrawable(playerBase, accent)
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = ambient
+            background = null
             clipChildren = false
             clipToPadding = false
         }
@@ -417,19 +414,16 @@ class SendspinActivity : Activity() {
             clipChildren = false
             clipToPadding = false
         }
-        frame.addView(root, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        focusOverlay = TvFocusGlowOverlay(this, frame, accent, pixelSharp = false).apply {
-            val pillSpec = TvFocusTargetSpec(cornerRadiusPx = dp(14).toFloat(), focusedScale = 1.04f)
-            val circleSpec = TvFocusTargetSpec(cornerRadiusPx = 0f, focusedScale = 1.04f, circular = true)
-            registerTarget(back, circleSpec)
-            registerTarget(previous, circleSpec)
-            registerTarget(playPause, circleSpec)
-            registerTarget(next, circleSpec)
-            registerTarget(settings, pillSpec)
-            registerTarget(volumeControl, pillSpec)
-            registerTarget(playlistButton, pillSpec)
+        // 独立静态底图层启用硬件纹理缓存，避免按钮缩放/黑胶旋转/歌词滚动触发 1080p 高斯模糊底图重绘
+        val backdropView = View(this).apply {
+            background = ambient
+            isFocusable = false
+            isClickable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
         }
-        frame.addView(focusOverlay, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(backdropView, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        frame.addView(root, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(frame)
     }
 
@@ -703,7 +697,6 @@ class SendspinActivity : Activity() {
             artworkSwitcher.setAccentColor(accent)
             lyricsView.setAccentColor(accent)
             ambient.setAmbientColor(accent)
-            if (::focusOverlay.isInitialized) focusOverlay.updateAccent(accent)
             ambient.setBlurredBitmap(null)
             applyPlayerStyleState()
         }
@@ -732,7 +725,6 @@ class SendspinActivity : Activity() {
                     artworkSwitcher.setAccentColor(artColor)
                     lyricsView.setAccentColor(artColor)
                     ambient.setAmbientColor(artColor)
-                    if (::focusOverlay.isInitialized) focusOverlay.updateAccent(artColor)
                     ambient.setBlurredBitmap(blurred)
                     applyPlayerStyleState()
                 }

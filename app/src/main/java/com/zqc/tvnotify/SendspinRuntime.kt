@@ -128,11 +128,12 @@ class SendspinRuntime private constructor(private val context: Context) {
         getWledHost = { Prefs.getWledColorHost(app) },
         getWledEffect = { WledEffectPreset.fromRaw(Prefs.getWledEffect(app)) },
         setAudioPlaybackActive = { active -> wledAudioSync.setPlaybackActive(active) },
-        applyWledPlaybackStart = { host, preset, turnOn, resyncColor ->
+        applyWledPlaybackStart = { host, preset, turnOn, enableAudioSync, resyncColor ->
             wledColorSync.setHost(host)
             wledColorSync.applyPlaybackStart(
                 preset = preset,
                 turnOn = turnOn,
+                enableAudioSync = enableAudioSync,
                 resyncColor = resyncColor,
             )
         },

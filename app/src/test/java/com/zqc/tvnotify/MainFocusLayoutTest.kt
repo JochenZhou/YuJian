@@ -168,8 +168,17 @@ class MainFocusLayoutTest {
 
                 targetDrawable.state = intArrayOf(android.R.attr.state_focused)
                 val focusedSurface = targetDrawable.current as MainActivity.RoundedSurfaceDrawable
-                assertEquals("$targetName should highlight only when focused", theme.accentColor, focusedSurface.fillColor)
-                assertEquals(Color.WHITE, focusedSurface.strokeColor)
+                val expectedFocusedFill = MainActivity::class.java
+                    .getDeclaredMethod("focusedButtonFillColor")
+                    .apply { isAccessible = true }
+                    .invoke(activity) as Int
+                val expectedFocusedStroke = MainActivity::class.java
+                    .getDeclaredMethod("focusedBorderStrokeColor")
+                    .apply { isAccessible = true }
+                    .invoke(activity) as Int
+                assertEquals("$targetName should use refined soft highlight when focused", expectedFocusedFill, focusedSurface.fillColor)
+                assertEquals(expectedFocusedStroke, focusedSurface.strokeColor)
+                assertNotEquals("Focused fill should be softer than raw 100% accent glare", theme.accentColor, focusedSurface.fillColor)
                 targetDrawable.state = intArrayOf()
             }
         }

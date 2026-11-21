@@ -255,7 +255,7 @@ class WledColorSyncTest {
     }
 
     @Test
-    fun `playback start powers on WLED, reapplies effect preset, and resyncs cached artwork color`() {
+    fun `playback start powers on WLED, enables sync receive and audio reactive, reapplies effect preset, and resyncs cached artwork color`() {
         val fakeEffects = JSONArray().apply {
             put("Solid")
             for (i in 1 until 199) put("FX_$i")
@@ -266,8 +266,16 @@ class WledColorSyncTest {
 
         assertEquals("""{"on":true}""", WledColorSync.buildPowerStateJson(true))
         assertEquals(
+            """{"udpn":{"recv":true},"AudioReactive":{"on":true},"on":true}""",
+            WledColorSync.buildPowerStateJson(true, enableAudioSync = true)
+        )
+        assertEquals(
             """{"on":true,"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""",
             WledColorSync.buildEffectStateJson(199, 128, 165, turnOn = true)
+        )
+        assertEquals(
+            """{"on":true,"udpn":{"recv":true},"AudioReactive":{"on":true},"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""",
+            WledColorSync.buildEffectStateJson(199, 128, 165, turnOn = true, enableAudioSync = true)
         )
 
         val sync = WledColorSync(
@@ -286,28 +294,38 @@ class WledColorSyncTest {
         assertEquals("""{"seg":[{"id":0,"col":[[33,150,243]]}]}""", posts[0].second)
         posts.clear()
 
-        // Playback start with preset + turnOn + resyncColor -> turns lamp on, restores effect, and re-pushes color
-        sync.applyPlaybackStart(WledEffectPreset.GRAVCENTRIC, turnOn = true, resyncColor = true)
+        // Playback start with preset + turnOn + enableAudioSync + resyncColor -> powers on, enables udpn.recv + AudioReactive, restores effect, and re-pushes color
+        sync.applyPlaybackStart(WledEffectPreset.GRAVCENTRIC, turnOn = true, enableAudioSync = true, resyncColor = true)
         assertEquals(2, posts.size)
-        assertEquals("""{"on":true,"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""", posts[0].second)
+        assertEquals(
+            """{"on":true,"udpn":{"recv":true},"AudioReactive":{"on":true},"seg":[{"id":0,"fx":199,"sx":128,"ix":165}]}""",
+            posts[0].second
+        )
         assertEquals("""{"seg":[{"id":0,"col":[[33,150,243]]}]}""", posts[1].second)
         posts.clear()
 
-        // Playback start with CUSTOM preset still turns lamp on without overriding segment fx
-        sync.applyPlaybackStart(WledEffectPreset.CUSTOM, turnOn = true, resyncColor = false)
+        // Playback start with CUSTOM preset + enableAudioSync turns lamp on and activates udpn.recv + AudioReactive without overriding segment fx
+        sync.applyPlaybackStart(WledEffectPreset.CUSTOM, turnOn = true, enableAudioSync = true, resyncColor = false)
+        assertEquals(1, posts.size)
+        assertEquals("""{"udpn":{"recv":true},"AudioReactive":{"on":true},"on":true}""", posts[0].second)
+        posts.clear()
+
+        // Color-only playback start powers lamp on without toggling AudioReactive
+        sync.applyPlaybackStart(WledEffectPreset.CUSTOM, turnOn = true, enableAudioSync = false, resyncColor = false)
         assertEquals(1, posts.size)
         assertEquals("""{"on":true}""", posts[0].second)
         sync.close()
     }
 
     @Test
-    fun `playback coordinator triggers power and effect on inactive-to-playing edges with cooldown`() {
+    fun `playback coordinator triggers power, audio reactive sync receive, and effect on inactive-to-playing edges with cooldown`() {
         var nowNs = 1_000_000_000L
         var audioSyncEnabled = false
         var colorSyncEnabled = false
         var preset = WledEffectPreset.GRAVFREQ
         val audioStates = mutableListOf<Boolean>()
-        val applied = mutableListOf<Triple<WledEffectPreset, Boolean, Boolean>>()
+        data class StartEvent(val preset: WledEffectPreset, val turnOn: Boolean, val enableAudioSync: Boolean, val resyncColor: Boolean)
+        val applied = mutableListOf<StartEvent>()
 
         val coordinator = WledPlaybackCoordinator(
             isAudioSyncEnabled = { audioSyncEnabled },
@@ -315,8 +333,8 @@ class WledColorSyncTest {
             getWledHost = { "192.168.101.206" },
             getWledEffect = { preset },
             setAudioPlaybackActive = { active -> audioStates.add(active) },
-            applyWledPlaybackStart = { _, fx, turnOn, resyncColor ->
-                applied.add(Triple(fx, turnOn, resyncColor))
+            applyWledPlaybackStart = { _, fx, turnOn, enableAudioSync, resyncColor ->
+                applied.add(StartEvent(fx, turnOn, enableAudioSync, resyncColor))
             },
             cooldownNs = 3_000_000_000L,
             nowNs = { nowNs }
@@ -328,12 +346,12 @@ class WledColorSyncTest {
         assertTrue(applied.isEmpty())
         coordinator.updatePlaybackActive(false)
 
-        // Enable audio sync -> inactive-to-playing edge turns light on and sets configured effect
+        // Enable audio sync -> inactive-to-playing edge turns light on, enables sync_receive+AudioReactive, and sets configured effect
         audioSyncEnabled = true
         nowNs += 500_000_000L
         coordinator.updatePlaybackActive(true)
         assertEquals(1, applied.size)
-        assertEquals(Triple(WledEffectPreset.GRAVFREQ, true, false), applied[0])
+        assertEquals(StartEvent(WledEffectPreset.GRAVFREQ, turnOn = true, enableAudioSync = true, resyncColor = false), applied[0])
 
         // Redundant true emissions do not re-trigger
         coordinator.updatePlaybackActive(true)
@@ -345,17 +363,19 @@ class WledColorSyncTest {
         coordinator.updatePlaybackActive(true)
         assertEquals(1, applied.size)
 
-        // Pause -> resume after cooldown re-applies effect + powers on + color resync if enabled
+        // Pause -> resume after cooldown re-applies effect + powers on + audio sync + color resync if enabled
         coordinator.updatePlaybackActive(false)
         nowNs += 3_100_000_000L
         colorSyncEnabled = true
         coordinator.updatePlaybackActive(true)
         assertEquals(2, applied.size)
-        assertEquals(Triple(WledEffectPreset.GRAVFREQ, true, true), applied[1])
+        assertEquals(StartEvent(WledEffectPreset.GRAVFREQ, turnOn = true, enableAudioSync = true, resyncColor = true), applied[1])
 
-        // Session reset clears cooldown and active state
+        // Session reset clears cooldown and active state; color-only mode powers on without forcing AudioReactive
+        audioSyncEnabled = false
         coordinator.resetSession()
         coordinator.updatePlaybackActive(true)
         assertEquals(3, applied.size)
+        assertEquals(StartEvent(WledEffectPreset.CUSTOM, turnOn = true, enableAudioSync = false, resyncColor = true), applied[2])
     }
 }

@@ -1085,12 +1085,12 @@ class MainActivity : Activity() {
         targetPage.visibility = View.VISIBLE
         if (previousTab != nextTab && targetPage.isAttachedToWindow && targetPage.width > 0) {
             val direction = if (nextTab.ordinal > previousTab.ordinal) 1f else -1f
-            targetPage.alpha = 0.42f
-            targetPage.translationX = direction * dp(16).toFloat()
+            targetPage.alpha = 0.56f
+            targetPage.translationX = direction * dp(8).toFloat()
             targetPage.animate()
                 .alpha(1f)
                 .translationX(0f)
-                .setDuration(185L)
+                .setDuration(135L)
                 .setInterpolator(TvFocusMotion.TAB_INTERPOLATOR)
                 .withEndAction {
                     targetPage.alpha = 1f
@@ -1133,16 +1133,24 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun focusedButtonFillColor(): Int = blendColor(theme.buttonBg, theme.accentColor, 0.46f)
+
+    private fun focusedTabFillColor(): Int = blendColor(theme.cardBg, theme.accentColor, 0.48f)
+
+    private fun focusedBorderStrokeColor(): Int = blendColor(theme.accentColor, Color.WHITE, 0.42f)
+
     private fun createMainTabStateDrawable(isSelected: Boolean): StateListDrawable {
         val radius = themeButtonRadiusPx()
+        val focusedFill = focusedTabFillColor()
+        val focusedStroke = focusedBorderStrokeColor()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, focusedFill, dp(2), focusedStroke)
         )
         states.addState(
             intArrayOf(android.R.attr.state_pressed),
-            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, focusedFill, dp(2), focusedStroke)
         )
         if (isSelected) {
             val selectedBg = Color.argb(
@@ -1252,10 +1260,12 @@ class MainActivity : Activity() {
         button.tag = iconDrawable
 
         val radius = themeButtonRadiusPx()
+        val focusedFill = focusedButtonFillColor()
+        val focusedStroke = focusedBorderStrokeColor()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, focusedFill, dp(2), focusedStroke)
         )
         states.addState(
             intArrayOf(),
@@ -1293,14 +1303,16 @@ class MainActivity : Activity() {
         onClick: () -> Unit
     ): Button {
         val radius = themeButtonRadiusPx()
+        val focusedFill = focusedButtonFillColor()
+        val focusedStroke = focusedBorderStrokeColor()
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, focusedFill, dp(2), focusedStroke)
         )
         states.addState(
             intArrayOf(android.R.attr.state_pressed),
-            roundedRect(radius, theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(radius, focusedFill, dp(2), focusedStroke)
         )
         states.addState(
             intArrayOf(),
